@@ -239,7 +239,5 @@ invocation route, and available host version/route/session context.
 
 Save screenshots/recordings, OpenCode version/config notes, and a brief
 operator log of each route/action under `/private/tmp/opencode-m0-evidence/`.
-Separate source/API expectations from live observations. In particular,
-plugin loading, slash-command registration, display clarity, actual return
-values, permission independence, and Phase C bypass resistance remain
-unverified until the human operator runs this dogfood.
+Separate source/API expectations from live observations. Permission
+independence and Phase C bypass resistance remain unverified.
