@@ -2,8 +2,7 @@ import { appendFileSync, mkdirSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 
 const LOG_PATH = "/private/tmp/opencode-m0-dogfood.jsonl";
-const FIXTURE_REPOSITORY = "/private/tmp/opencode-m0-dogfood-target";
-const FIXTURE_BASELINE_HEAD = "f9da882e8b2c1fa49e94b1dedf0d1157143d630b";
+const FIXTURE_HEAD = "m0-fixture-head";
 const FIXTURE_PATHS = Object.freeze([
   ".opencode/plugins/m0-dogfood/tui.js",
   "docs/milestone-0-dogfood-harness.md",
@@ -31,17 +30,24 @@ function digestFixture(value) {
   return sha256(serializeFixedFixture(value));
 }
 
-function makeIntentCandidate() {
+function makeRepositoryFixture(location) {
+  const locationPath =
+    typeof location?.directory === "string" && location.directory.length > 0
+      ? location.directory
+      : "unavailable (TUI location not provided)";
+
+  return Object.freeze({
+    identity: "opencode-agents checkout",
+    locationPath,
+  });
+}
+
+function makeIntentCandidate(repository) {
   const candidate = freezeDeep({
     kind: "intent-authorization",
     objective:
       "Prepare the Milestone 0 ui.dialog.confirm dogfood harness; do not implement the production Coding Authority Protocol.",
-    repository: {
-      identity: "opencode-agents M0 disposable dogfood clone",
-      canonicalPath: FIXTURE_REPOSITORY,
-      worktreePath: FIXTURE_REPOSITORY,
-      baselineHead: FIXTURE_BASELINE_HEAD,
-    },
+    repository: { ...repository, baselineHead: FIXTURE_HEAD },
     exactScopePaths: [...FIXTURE_PATHS],
   });
 
@@ -52,9 +58,9 @@ function makeIntentCandidate() {
   });
 }
 
-function makeCommitCandidate() {
+function makeCommitCandidate(repository) {
   const reviewedTarget = freezeDeep({
-    baselineHead: FIXTURE_BASELINE_HEAD,
+    baselineHead: FIXTURE_HEAD,
     exactCommitPaths: [...FIXTURE_PATHS],
     proposedSummary: "Prepare the Milestone 0 confirmation dogfood harness",
     proposedMessage:
@@ -69,11 +75,9 @@ function makeCommitCandidate() {
   const candidate = freezeDeep({
     kind: "reviewed-target-commit-authorization",
     repository: {
-      identity: "opencode-agents M0 disposable dogfood clone",
-      canonicalPath: FIXTURE_REPOSITORY,
-      worktreePath: FIXTURE_REPOSITORY,
-      currentHead: FIXTURE_BASELINE_HEAD,
-      baselineHead: FIXTURE_BASELINE_HEAD,
+      ...repository,
+      currentHead: FIXTURE_HEAD,
+      baselineHead: FIXTURE_HEAD,
     },
     review: {
       reviewId: review.reviewId,
@@ -96,10 +100,12 @@ function makeCommitCandidate() {
   });
 }
 
-const FIXTURES = Object.freeze({
-  intent: makeIntentCandidate(),
-  commit: makeCommitCandidate(),
-});
+function makeFixture(scenario, context) {
+  const repository = makeRepositoryFixture(context.location);
+  return scenario === "intent"
+    ? makeIntentCandidate(repository)
+    : makeCommitCandidate(repository);
+}
 
 function formatCandidate(scenario, fixture) {
   const candidate = fixture.candidate;
@@ -114,19 +120,17 @@ function formatCandidate(scenario, fixture) {
     lines.push(
       `Objective: ${candidate.objective}`,
       `Repository identity: ${candidate.repository.identity}`,
-      `Canonical repository path: ${candidate.repository.canonicalPath}`,
-      `Worktree path: ${candidate.repository.worktreePath}`,
-      `Baseline HEAD: ${candidate.repository.baselineHead}`,
+      `Repository/worktree location: ${candidate.repository.locationPath}`,
+      `Baseline HEAD (fixture): ${candidate.repository.baselineHead}`,
       "Exact authorized paths:",
       ...candidate.exactScopePaths.map((path) => `  - ${path}`),
     );
   } else {
     lines.push(
       `Repository identity: ${candidate.repository.identity}`,
-      `Canonical repository path: ${candidate.repository.canonicalPath}`,
-      `Worktree path: ${candidate.repository.worktreePath}`,
-      `Current HEAD: ${candidate.repository.currentHead}`,
-      `Baseline HEAD: ${candidate.repository.baselineHead}`,
+      `Repository/worktree location: ${candidate.repository.locationPath}`,
+      `Current HEAD (fixture): ${candidate.repository.currentHead}`,
+      `Baseline HEAD (fixture): ${candidate.repository.baselineHead}`,
       `Passing review ID: ${candidate.review.reviewId}`,
       `Review result: ${candidate.review.result}`,
       `Review digest: ${candidate.review.reviewDigest}`,
@@ -162,7 +166,7 @@ function resultLabel(result) {
 }
 
 async function present(context, scenario, invocationRoute, inFlight) {
-  const fixture = FIXTURES[scenario];
+  const fixture = makeFixture(scenario, context);
   const experimentId = randomUUID();
   const started = {
     timestamp: new Date().toISOString(),

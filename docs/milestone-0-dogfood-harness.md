@@ -18,28 +18,26 @@ the sibling's TypeScript plugin is unnecessary here: this harness is plain
 JavaScript and imports only Node built-ins for SHA-256, UUIDs, and JSONL file
 append. No package metadata, third-party dependency, or build step is added.
 
-The fixtures are deliberately fixed and representative. The baseline is the
-repository commit `f9da882e8b2c1fa49e94b1dedf0d1157143d630b`; the setup below
-clones that commit to the fixture path named in the candidate. The reviewed
-target/review digests are hashes of fixed JSON fixture objects. They are not
-claims that a production review or Git target was independently verified.
-The JSON property order is fixed in source; this is not general-purpose
-canonicalization.
+The fixtures are deliberately fixed and representative. The repository/worktree
+location comes from the supported TUI context's `location.directory` value at
+invocation time. Launch from the root of this checkout so that value represents
+the checkout path; the harness does not verify a Git root or discover a
+worktree. If the TUI context has no location, the candidate says so. The
+baseline and current HEAD fields use the explicit `m0-fixture-head` marker;
+they are representative display fields, not real Git object IDs or a binding
+to the checkout's HEAD. Exact Git binding belongs to the later authority
+kernel. The reviewed target/review digests are hashes of fixed JSON fixture
+objects. They are not claims that a production review or Git target was
+independently verified. The JSON property order is fixed in source; this is not
+general-purpose canonicalization.
 
-## Prepare an isolated target
+## Prepare isolated runtime and evidence directories
 
-Run these shell commands yourself before launching OpenCode. They use a
-disposable clone and isolated XDG directories. The guard stops if the target
-path already exists rather than deleting or overwriting it.
+Run these shell commands yourself before launching OpenCode. The plugin and
+documentation are used directly from this checkout; `/private/tmp` holds only
+isolated runtime state and operator evidence.
 
 ```sh
-SOURCE=/Users/mike/projects/opencode-agents
-TARGET=/private/tmp/opencode-m0-dogfood-target
-test ! -e "$TARGET" || { printf 'Target already exists: %s\n' "$TARGET"; return 1 2>/dev/null || exit 1; }
-git clone --no-hardlinks "$SOURCE" "$TARGET"
-mkdir -p "$TARGET/.opencode/plugins"
-cp -R "$SOURCE/.opencode/plugins/m0-dogfood" "$TARGET/.opencode/plugins/"
-cp "$SOURCE/docs/milestone-0-dogfood-harness.md" "$TARGET/docs/"
 mkdir -p /private/tmp/opencode-m0-dogfood-xdg/data \
   /private/tmp/opencode-m0-dogfood-xdg/config \
   /private/tmp/opencode-m0-dogfood-xdg/cache \
@@ -47,16 +45,13 @@ mkdir -p /private/tmp/opencode-m0-dogfood-xdg/data \
   /private/tmp/opencode-m0-evidence
 ```
 
-If the source repository HEAD has changed from the fixture baseline above,
-stop and update the fixed baseline value in the plugin before copying it.
-Do not run OpenCode to prepare the target.
-
 ## Launch OpenCode manually
 
-From a shell, run this exact command after the setup above:
+From a shell, replace the checkout placeholder with the path to this
+`opencode-agents` checkout and run:
 
 ```sh
-cd /private/tmp/opencode-m0-dogfood-target
+cd <actual opencode-agents checkout>
 XDG_DATA_HOME=/private/tmp/opencode-m0-dogfood-xdg/data \
 XDG_CONFIG_HOME=/private/tmp/opencode-m0-dogfood-xdg/config \
 XDG_CACHE_HOME=/private/tmp/opencode-m0-dogfood-xdg/cache \
@@ -69,8 +64,8 @@ file contains evidence from an earlier run, move it aside before starting so
 the current run is easy to identify. The log includes the loaded host version
 from TUI context when available. Use `/private/tmp/opencode-m0-evidence/` for
 screenshots, screen recordings, and the operator's route/action notes. Set up
-model credentials in the isolated configuration if Phase C needs a model;
-do not copy production authorization state into the fixture.
+model credentials in the isolated configuration if Phase C needs a model; do
+not copy production authorization state into the isolated configuration.
 
 The plugin registers two TUI commands in the same way:
 
@@ -83,13 +78,13 @@ approve the candidate.
 ## Phase A — core UI behavior
 
 1. In the TUI, enter `/m0-intent`. Inspect the whole dialog and verify that
-   the objective, exact scope paths, repository/worktree identity, baseline
-   HEAD, kind, and candidate digest are readable. Note any clipping, missing
-   text, scrolling, or ambiguity; capture the display.
+   the objective, exact scope paths, repository/worktree identity, fixture
+   baseline HEAD, kind, and candidate digest are readable. Note any clipping,
+   missing text, scrolling, or ambiguity; capture the display.
 2. Open `/m0-commit`. Inspect the whole dialog and verify that the passing
    review ID/result/digest, reviewed-target digest, exact commit paths,
-   current/baseline HEAD, proposed summary/message, kind, and candidate
-   digest are readable. Capture the display.
+   fixture current/baseline HEAD, proposed summary/message, kind, and
+   candidate digest are readable. Capture the display.
 3. In a fresh `/m0-intent` interaction, use the visible trusted TUI Confirm
    action. Verify a `confirmation-returned` record with `rawResult: true`.
 4. Open `/m0-commit` again and choose Cancel. Verify `rawResult: false`.
@@ -108,9 +103,9 @@ an abrupt process kill means no result was captured; it does not mean `true`.
 
 ## Phase B — permission independence
 
-Use only a harmless permission-governed action in the disposable target. The
-purpose is to see whether permission handling can settle an already-pending
-confirmation, not to test whether permissions can be bypassed.
+Use only a harmless permission-governed action in the `opencode-agents`
+checkout. The purpose is to see whether permission handling can settle an
+already-pending confirmation, not to test whether permissions can be bypassed.
 
 1. In the isolated OpenCode config, establish and verify a generic permission
    `allow` for the harmless action. Open `/m0-intent`, then submit the same
@@ -120,12 +115,12 @@ confirmation, not to test whether permissions can be bypassed.
 2. Repeat with a saved `always` permission rule. Again, while a confirmation
    is pending, submit the harmless action through the same route and observe
    the dialog result separately from the permission result.
-3. Restart the disposable TUI with automatic permission behavior enabled by
+3. Restart OpenCode with automatic permission behavior enabled by
    the investigated host's `--auto` option, keeping the same isolated XDG
    directories. For that run, use this launch command:
 
    ```sh
-   cd /private/tmp/opencode-m0-dogfood-target
+   cd <actual opencode-agents checkout>
    XDG_DATA_HOME=/private/tmp/opencode-m0-dogfood-xdg/data \
    XDG_CONFIG_HOME=/private/tmp/opencode-m0-dogfood-xdg/config \
    XDG_CACHE_HOME=/private/tmp/opencode-m0-dogfood-xdg/cache \
