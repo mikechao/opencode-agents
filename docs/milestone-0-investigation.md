@@ -1,10 +1,31 @@
-# Milestone 0 investigation — exact human authorization
+# Milestone 0 investigation — trusted UI authorization boundary
 
-## Executive result
+## Executive status
 
-**HOST GAP.** OpenCode `v2.0.16` has a project-local TUI confirmation API that can display trusted code's text and return `true`, `false`, or `undefined`. Its supported result contains no host-attested human-origin provenance, candidate identity, or single-use receipt. The other native seams are programmatically invocable or are subject to generic permission policy. No end-to-end human authorization has been demonstrated. The Coding Authority Protocol must not treat any of these results as authority yet.
+**PENDING MANUAL DOGFOOD — final M0 outcome not yet assigned.**
 
-This is a gap in the current host boundary, not evidence that a small authority kernel is impossible. A narrow host-issued confirmation primitive, described below, could close it. Whether a real human can use the present dialog comfortably remains **UNPROVEN — manual dogfood required**; usability would not by itself close the provenance gap.
+The existing source investigation establishes that OpenCode `v2.0.16` loads
+dependency-free local server and TUI plugins, and that the TUI
+`ui.dialog.confirm` API returns `true`, `false`, or `undefined` for Confirm,
+Cancel, and close. It also establishes how the investigated permission,
+command, session, form, tool-context, and keymap APIs behave. No end-to-end
+dialog action or pending-confirmation bypass attempt was exercised.
+
+The earlier **HOST GAP** conclusion is withdrawn. It treated the absence of
+host-attested human provenance, candidate identity/digest, and durable
+single-use receipts as missing host capabilities. Under the revised V1 trust
+model those are not host requirements: the authority kernel and durable store
+construct and freeze candidates, bind the UI result, check freshness, record
+authorization, consume it once, prevent replay, and define restart behavior.
+Physical-human attestation and defense against OS-level input injection or
+malicious code already inside the trusted computing base are out of scope.
+
+Programmatic or model-triggered opening of the dialog is allowed. The
+remaining host question is whether any supported model-accessible or
+non-interactive OpenCode path can make an already-pending confirmation
+positive without the trusted UI confirmation action. That, along with the
+visible candidate and real UI result behavior, still requires manual dogfood.
+This report does not assign PASS before that evidence exists.
 
 ## Environment and source identity
 
@@ -18,98 +39,267 @@ Observed on 2026-09-25 in the disposable probe and this repository:
 | Matching upstream source | [`anomalyco/opencode` tag `v2.0.16`](https://github.com/anomalyco/opencode/tree/v2.0.16), commit `3a103fe0aff726a4edc7492f03f7b88195d9e4c9`, verified with `git ls-remote --tags` and a filtered local clone. Source references below are pinned to this tag. |
 | Isolation | Ordinary startup tried to write `~/.local/share/opencode/log/opencode.log` and failed with `EPERM`. Setting `XDG_DATA_HOME`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, and `XDG_STATE_HOME` to `/private/tmp/opencode-m0-probe/{data,config,cache,state}` allowed version and plugin probes without modifying the user's OpenCode state. |
 
-The separately installed `~/.config/opencode/node_modules/@opencode-ai/plugin` is `1.17.10`, so it was **not** used as the `2.0.16` API contract. The matching tag's [`packages/plugin/src`](https://github.com/anomalyco/opencode/tree/v2.0.16/packages/plugin/src), [`packages/tui/src/plugin`](https://github.com/anomalyco/opencode/tree/v2.0.16/packages/tui/src/plugin), [`packages/core/src`](https://github.com/anomalyco/opencode/tree/v2.0.16/packages/core/src), and [`packages/server/src`](https://github.com/anomalyco/opencode/tree/v2.0.16/packages/server/src) were used instead. This version has a new `@opencode/plugin` API; older OpenCode or `codex-agents` API assumptions were not applied.
+The separately installed `~/.config/opencode/node_modules/@opencode-ai/plugin`
+is `1.17.10`, so it was **not** used as the `2.0.16` API contract. The matching
+tag's [`packages/plugin/src`](https://github.com/anomalyco/opencode/tree/v2.0.16/packages/plugin/src),
+[`packages/tui/src/plugin`](https://github.com/anomalyco/opencode/tree/v2.0.16/packages/tui/src/plugin),
+[`packages/core/src`](https://github.com/anomalyco/opencode/tree/v2.0.16/packages/core/src),
+and [`packages/server/src`](https://github.com/anomalyco/opencode/tree/v2.0.16/packages/server/src)
+were used instead. This version has a new `@opencode/plugin` API; older
+OpenCode or `codex-agents` API assumptions were not applied.
 
-## Mechanisms and trust analysis
+## Established host and source evidence
 
-| Seam | Authority-bearing path and finding | Classification |
+The following records the observations and source contracts already gathered.
+They establish API shape and available paths; source inspection is not
+presented as an end-to-end UI experiment.
+
+| Seam | Existing observation | Revised classification |
 | --- | --- | --- |
-| TUI plugin `ui.dialog.confirm` | A TUI plugin can supply `title` and `message`; `createDialogApi` maps confirm/cancel/close to `true`/`false`/`undefined`. The result has no candidate/digest, input-origin, session, agent, message, or call fields. The dialog component invokes its confirm callback from Return or mouse-up. TUI plugin code must retain the immutable candidate and compare it itself. There is no supported attestation that the callback was caused by a human rather than synthetic UI activity. | **HOST CONTRACT** for the API shape; **ASSUMPTION** for human provenance; insufficient for PASS. [Contract](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/plugin/src/tui/context.ts), [adapter](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/tui/src/plugin/api.tsx), [component](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/tui/src/ui/dialog-confirm.tsx) |
-| Native permissions | `allow` skips a prompt; a saved `always` rule can make future requests `allow`; the API accepts `once`, `always`, or `reject`. `session.permission.create` accepts caller-supplied action, resources, metadata, source, agent, and optional request ID; `session.permission.reply` is an API operation. A permission result therefore cannot prove the exact candidate was approved by a human. | **REJECTED**. [Core evaluation and reply](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/core/src/permission.ts), [HTTP handlers](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/server/src/handlers/permission.ts), [schema](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/schema/src/permission.ts) |
-| Server commands and TUI keymaps | A server command gets session ID, prompt, and delivery, with no human-origin field; `session.command` invokes it through the API. Named TUI keymap commands are explicitly dispatchable with `keymap.dispatch(id)`, and their `run` callback receives a keyboard event only on keyboard dispatch. Absence of an event can exclude direct dispatch, but does not authenticate a real human or mouse action. The built-in confirm uses an anonymous inline Return binding, so `dispatch(id)` cannot directly name that binding; this is a narrow observation, not a general origin guarantee. | **REJECTED** as an authority event. [Command contract](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/plugin/src/promise/command.ts), [server handler](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/server/src/handlers/session.ts), [keymap contract](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/plugin/src/tui/context.ts), [dispatch implementation](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/tui/src/context/keymap.tsx) |
-| Session input and events | `session.prompt` is a public client/API operation and accepts caller-supplied text, files, metadata, delivery, and optional ID. The `session.prompt` plugin hook receives these values and host message/session IDs, but no user-origin attestation. `session.synthetic` is separately available; the distinction between a `user` record and a `synthetic` record does not prove a person entered the `user` payload. | **REJECTED**. [Prompt hook](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/plugin/src/promise/session.ts), [server handlers](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/server/src/handlers/session.ts), [inbox schema](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/schema/src/session-inbox.ts) |
-| Native forms / questions | The form core enforces a pending-to-answered/cancelled transition by ID in an in-memory cache, but `reply` accepts an answer through an API route, and forms do not return a human-origin proof. Pending forms are cancelled on service close. A form ID and answer are replayable caller inputs as authority. | **REJECTED**. [Form core](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/core/src/form.ts), [TUI plugin client surface](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/plugin/src/tui/context.ts) |
-| Tool-call context | In a normal model tool call, OpenCode constructs `sessionID`, `agent`, `messageID`, and call `id` in the tool snapshot before calling plugin tool code. These are useful call identifiers. They say nothing about a human action. Tool input remains model-controlled. The plugin's location context exposes directory, project, and optionally workspace information, but Git baseline and canonical worktree facts would still need trusted observation. | **HOST CONTRACT** for ordinary tool execution, **REJECTED** as sole human provenance. [Context schema](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/schema/src/tool.ts), [construction](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/core/src/tool.ts), [session schema](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/schema/src/session.ts) |
+| TUI plugin `ui.dialog.confirm` | A TUI plugin supplies `title` and `message`; `createDialogApi` maps confirm/cancel/close to `true`/`false`/`undefined`. The result has no candidate/digest, input-origin, session, agent, message, or call fields. The dialog component invokes its confirm callback from Return or mouse-up. | **HOST CONTRACT** for the API shape and result mapping. Missing candidate identity, durable receipts, and physical-input provenance are not host gaps. Real display and result behavior remain **PENDING MANUAL DOGFOOD**. [Contract](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/plugin/src/tui/context.ts), [adapter](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/tui/src/plugin/api.tsx), [component](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/tui/src/ui/dialog-confirm.tsx) |
+| Native permissions | `allow` skips a prompt; a saved `always` rule can make later requests `allow`; the API accepts `once`, `always`, or `reject`. `session.permission.create` accepts caller-supplied action, resources, metadata, source, agent, and optional request ID; `session.permission.reply` is an API operation. | **HOST CONTRACT** that permission success/replies are distinct from the dialog API. The kernel must not treat them as confirmation. Runtime independence from a pending dialog remains **PENDING MANUAL DOGFOOD**. [Core evaluation and reply](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/core/src/permission.ts), [HTTP handlers](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/server/src/handlers/permission.ts), [schema](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/schema/src/permission.ts) |
+| Server commands and TUI keymaps | A server command gets session ID, prompt, and delivery, with no human-origin field; `session.command` invokes it through the API. Named TUI keymap commands are explicitly dispatchable with `keymap.dispatch(id)`, and their `run` callback receives a keyboard event on keyboard dispatch. The built-in confirm uses an anonymous inline Return binding, so `dispatch(id)` cannot directly name that binding. | **HOST CONTRACT** for these command and dispatch paths. A command/keymap may open the dialog; that is **ALLOWED** and is not approval. The source trace does not establish whether any supported route can positively resolve a pending dialog; that remains **PENDING MANUAL DOGFOOD**. [Command contract](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/plugin/src/promise/command.ts), [server handler](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/server/src/handlers/session.ts), [keymap contract](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/plugin/src/tui/context.ts), [dispatch implementation](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/tui/src/context/keymap.tsx) |
+| Session input and events | `session.prompt` is a public client/API operation and accepts caller-supplied text, files, metadata, delivery, and optional ID. The `session.prompt` plugin hook receives these values and host message/session IDs, but no user-origin attestation. `session.synthetic` is separately available; a `user` record versus a `synthetic` record does not establish who supplied the `user` payload. | **HOST CONTRACT** for the available inputs. Session text and role labels cannot substitute for the trusted UI result; the kernel must keep them separate. Their ability to resolve a pending confirmation positively is part of the manual bypass check. [Prompt hook](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/plugin/src/promise/session.ts), [server handlers](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/server/src/handlers/session.ts), [inbox schema](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/schema/src/session-inbox.ts) |
+| Native forms / questions | The form core enforces a pending-to-answered/cancelled transition by ID in an in-memory cache, but `reply` accepts an answer through an API route. Forms do not return human-origin proof; pending forms are cancelled on service close. | **HOST CONTRACT** for the form API and lifecycle. A form reply is not the trusted confirmation result. Test only whether a supported path can positively resolve the pending confirmation; no form ID or answer is a host attestation. [Form core](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/core/src/form.ts), [TUI plugin client surface](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/plugin/src/tui/context.ts) |
+| Tool-call context | In a normal model tool call, OpenCode constructs `sessionID`, `agent`, `messageID`, and call `id` in the tool snapshot before calling plugin tool code. These are useful call identifiers, not evidence of a human action. Tool input remains model-controlled. The plugin location context exposes directory, project, and optionally workspace information, but Git baseline and canonical worktree facts still need trusted observation. | **HOST CONTRACT** for ordinary tool execution. Tool context may help trusted code locate repository facts, but its IDs and model-controlled input do not constitute approval. [Context schema](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/schema/src/tool.ts), [construction](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/core/src/tool.ts), [session schema](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/schema/src/session.ts) |
 
-OpenCode supplies session IDs, optional parent/fork relationship, selected agent, model request message IDs, and tool-call IDs in the paths above. They are host-provided in those callbacks, though client APIs can create prompts and sessions and can select or switch agents. None is a human-origin credential. A different session ID does not imply a different person or an independent authorization. The TUI route offers only a current session ID when a session is selected; `confirm` itself returns no route or caller context. [Session schema](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/schema/src/session.ts), [TUI route and dialog contracts](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/plugin/src/tui/context.ts).
+OpenCode supplies session IDs, optional parent/fork relationship, selected
+agent, model request message IDs, and tool-call IDs in the paths above. They
+are host-provided in those callbacks, though client APIs can create prompts
+and sessions and can select or switch agents. A different session ID does
+not imply a different person or an independent authorization. None is a
+physical-user credential, and V1 does not require one. The TUI route offers
+only a current session ID when a session is selected; `confirm` itself
+returns no route or caller context. [Session schema](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/schema/src/session.ts),
+[TUI route and dialog contracts](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/plugin/src/tui/context.ts).
 
-## Focused experiments and exact observations
+### Focused experiments and exact observations
 
-1. **Installed host, independent of this repository's metadata.** `command -v opencode` returned the executable path above. With isolated XDG directories, `opencode --version` returned `opencode v2.0.16`. `git ls-remote` returned `refs/tags/v2.0.16` at `3a103fe0…`. No package or build files were added to this repository.
-2. **Dependency-free server plugin.** In `/private/tmp/opencode-m0-probe`, a disposable Git repository, the file `.opencode/plugins/m0/server.js` exported `{ id: "m0.probe", setup(context) { … } }` without imports, package metadata, or dependencies. Running `opencode plugin list` with isolated XDG directories invoked `setup`. Its written JSON reported `context.app.version: "2.0.16"`, `context.location.directory: "/private/tmp/opencode-m0-probe"`, project `canonical: "/private/tmp/opencode-m0-probe"`, and context keys including `permission`, `session`, `tool`, and `location`. This **PROVES** that the installed host loads a dependency-free local server plugin. Initially, the managed service port `49374` was occupied. Setting port `49783` with `opencode service set port 49783` in the isolated configuration let `opencode plugin list` complete and list the local plugin. No tool call or human action was inferred from this probe.
-3. **Dependency-free TUI plugin startup.** A disposable `.opencode/plugins/m0/tui.js` was added to the same temporary project to record available dialog/keymap keys on setup. With the isolated service port, the ordinary `opencode` TUI invoked it. Its `tui-loaded.json` reported `context.app.version: "2.0.16"`, route `{ "type": "home" }`, dialog keys `alert, clear, confirm, prompt, select, set, show`, and keymap keys `active, commands, dispatch, layer, mode, pending, shortcuts`. This **PROVES** the installed TUI loads a dependency-free local plugin and exposes those methods. No dialog was approved, rejected, or dismissed. An earlier `opencode mini` attempt did not produce the TUI-plugin record and was not used to infer plugin behavior.
-4. **Permission bypass source trace.** `Permission.evaluateInput` returns `allow` for matching configured or saved rules; `Permission.assert` returns directly on `allow`. A reply of `always` can save rules and resolve other pending requests that then evaluate to `allow`. The API reply handler calls the same core `reply` path. These are concrete bypasses of any proposal that treats permission success, `once`, or a `permission.replied` event as human authority. This is source evidence, not an executed permission-prompt test.
-5. **Programmatic entry source trace.** `keymap.dispatch(id)` calls `dispatchCommand(id)`; `session.command` and `session.prompt` accept client requests. Thus commands and session input cannot be authority even if their visible use often starts with a person. The anonymous Return binding in the built-in confirmation is not directly name-dispatchable by this particular `keymap.dispatch` method, but a trustworthy keyboard-origin signal is still absent from its returned boolean.
+1. **Installed host, independent of this repository's metadata.**
+   `command -v opencode` returned the executable path above. With isolated XDG
+   directories, `opencode --version` returned `opencode v2.0.16`.
+   `git ls-remote` returned `refs/tags/v2.0.16` at `3a103fe0…`. No package or
+   build files were added to this repository.
+2. **Dependency-free server plugin.** In `/private/tmp/opencode-m0-probe`, a
+   disposable Git repository, `.opencode/plugins/m0/server.js` exported
+   `{ id: "m0.probe", setup(context) { … } }` without imports, package
+   metadata, or dependencies. Running `opencode plugin list` with isolated
+   XDG directories invoked `setup`. Its written JSON reported
+   `context.app.version: "2.0.16"`,
+   `context.location.directory: "/private/tmp/opencode-m0-probe"`, project
+   `canonical: "/private/tmp/opencode-m0-probe"`, and context keys including
+   `permission`, `session`, `tool`, and `location`. This **PROVES** that the
+   installed host loads a dependency-free local server plugin. Initially,
+   managed service port `49374` was occupied. Setting port `49783` with
+   `opencode service set port 49783` in the isolated configuration let
+   `opencode plugin list` complete and list the local plugin. No tool call or
+   human action was inferred from this probe.
+3. **Dependency-free TUI plugin startup.** A disposable
+   `.opencode/plugins/m0/tui.js` was added to the same temporary project to
+   record dialog/keymap keys on setup. With the isolated service port, the
+   ordinary `opencode` TUI invoked it. Its `tui-loaded.json` reported
+   `context.app.version: "2.0.16"`, route `{ "type": "home" }`, dialog keys
+   `alert, clear, confirm, prompt, select, set, show`, and keymap keys
+   `active, commands, dispatch, layer, mode, pending, shortcuts`. This
+   **PROVES** the installed TUI loads a dependency-free local plugin and
+   exposes those methods. No dialog was approved, rejected, or dismissed. An
+   earlier `opencode mini` attempt did not produce the TUI-plugin record and
+   was not used to infer plugin behavior.
+4. **Permission source trace.** `Permission.evaluateInput` returns `allow`
+   for matching configured or saved rules; `Permission.assert` returns
+   directly on `allow`. A reply of `always` can save rules and resolve other
+   pending requests that then evaluate to `allow`. The API reply handler calls
+   the same core `reply` path. These are concrete reasons permission success,
+   `once`, or a `permission.replied` event cannot serve as the authorization
+   decision. This is source evidence, not an executed permission-prompt test.
+5. **Programmatic entry source trace.** `keymap.dispatch(id)` calls
+   `dispatchCommand(id)`; `session.command` and `session.prompt` accept client
+   requests. The anonymous Return binding in the built-in confirmation is
+   not directly name-dispatchable by this particular `keymap.dispatch`
+   method. Named command dispatch can nevertheless open a confirmation flow,
+   which is expected; neither invocation nor successful tool execution is
+   itself a positive confirmation. Whether any supported path can resolve a
+   pending confirmation positively was not tested.
 
-No approve, reject, dismiss, one-byte mutation, replay, or restart scenario was exercised end-to-end with a human. No result below silently promotes source inspection into such a test.
+No Confirm, Cancel, dismiss, interruption, one-byte mutation, replay, or
+restart scenario was exercised end-to-end. No source observation below is
+promoted into such a test result.
 
-## Exact binding and one-time requirement
+## Kernel and durable-store responsibility boundary
 
-A tiny kernel could construct immutable intent and commit candidates, serialize their authority-bearing fields canonically, compute a digest, and render the full meaningful fields plus digest. For intent, the display would need requested intent, exact scope, canonical repository/worktree identity, and bound baseline. For commit, it would need passing review ID/digest, exact reviewed target/digest, commit paths, current Git baseline, and human-readable commit intent. A one-byte change to any authority-bearing field must yield a different digest, and a gate must compare the digest and kind before consuming approval. Intent and commit authorizations must be separate.
+The kernel constructs and freezes each intent or commit candidate, including
+its authority-bearing contents and canonical serialization/digest. It
+associates the UI result with the frozen candidate that was presented,
+distinguishes intent from commit authorization, and checks candidate and
+repository freshness before granting authority. A changed candidate or stale
+repository state is refused by the kernel. These are system responsibilities;
+the host dialog need not return a candidate ID or digest.
 
-Those are requirements on trusted code, **not demonstrated host guarantees**. `ui.dialog.confirm` passes text into a UI component and returns a bare boolean. It does not attest which bytes were actually rendered, whether the display and candidate remained synchronized, or whether the callback refers to the same candidate after an asynchronous change. A safe local implementation could freeze a snapshot and recheck it, but it would still lack proven human provenance. The dialog `settle` helper settles one promise once; it is not a durable, atomic, cross-session authorization consumption record. [Dialog adapter](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/tui/src/plugin/api.tsx).
+For an intent candidate, meaningful contents include requested intent,
+exact repository scope, canonical repository/worktree identity, and bound
+baseline information. A reviewed-target commit candidate includes passing
+review identity/digest, exact reviewed target or target digest, commit paths,
+relevant current Git baseline, and human-readable commit intent. The same TUI
+decision boundary can present both. The kernel must ensure that an intent
+decision cannot authorize a commit.
 
-The minimum local state property, if a suitable host confirmation existed, would be a durable atomic transition for the exact candidate and binding context from pending/confirmed to consumed, rejecting a second consumer and replay after restart. A compare-and-swap or transaction would suffice for this narrow fact; no production schema is specified here. The charter already anticipates SQLite for durable ordering, but M0 has not empirically validated a transaction implementation.
+The kernel and durable local store record authorization, enforce one-time
+consumption, prevent replay, and define safe restart behavior. A durable
+atomic transition for a candidate from pending/confirmed to consumed would
+reject a second consumer and replay after restart. The charter anticipates
+SQLite for durable ordering, but this investigation did not validate a
+transaction implementation. Milestone 0 does not require production SQLite
+or durable replay tests to prove the UI boundary.
+
+The TUI plugin, authority kernel, and local state are inside the V1 trusted
+computing base along with OpenCode, the TUI, and the local OS/user-account
+boundary. No defense against malicious code already executing in that
+boundary, OS-level input injection, or synthetic physical-input attacks is
+claimed. The former concern that a bare boolean lacks host-issued provenance
+or receipt fields is therefore not a missing host primitive. The dialog
+adapter's `settle` helper settles one promise once; it does not provide
+durable, atomic, cross-session consumption. The trusted plugin/kernel must
+retain and bind the frozen candidate itself, and the durable store must
+implement consumption. [Dialog adapter](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/tui/src/plugin/api.tsx).
 
 ## Falsification matrix
 
-The status evaluates the **current native seams without inventing an approval service**. `PASS` means the stated required behavior follows from the pinned host contract or the focused probe; it is not a milestone PASS. `FAIL` means a proposed host-only use of that seam fails the requirement. `UNPROVEN — manual dogfood required` means a genuine person/UI test is necessary and was not run. References above identify the source path for each source-based result.
+Statuses below distinguish existing source/runtime evidence from kernel/store
+design and the UI behavior still awaiting dogfood. A programmatic opener is
+not a bypass. A bypass is a supported model-accessible or non-interactive
+path making the pending confirmation positive without the trusted UI
+confirmation action.
 
-| Case | Status | Evidence or remaining gap |
+| Case | Revised status | Evidence or remaining work |
 | --- | --- | --- |
-| Human approves exact candidate A; A consumed once | **UNPROVEN — manual dogfood required** | No human dialog result was observed; dialog returns only boolean, with no host candidate receipt. |
-| Human rejects A | **UNPROVEN — manual dogfood required** | Source maps Cancel to `false`; real UI path untested. |
-| Human dismisses/closes | **UNPROVEN — manual dogfood required** | Source maps dialog close to `undefined`; real Escape, backdrop, interruption paths untested. |
-| Candidate changes after presentation | **FAIL** | No host candidate snapshot/digest binding; local code would have to freeze and recheck. |
-| Candidate B differs by one authority-bearing byte | **FAIL** | Host boolean has no A/B identity; digest comparison is local code still to be tested. |
-| Same approval submitted twice | **FAIL** | One promise settles once in one process, but no atomic durable consumption contract. |
-| Model claims `"user approved"` | **PASS** | None of the candidate native APIs accepts that text as a TUI confirmation result. It remains unsafe to treat session text as authority. |
-| Model reproduces candidate digest | **PASS** | Digest text is data only in the investigated APIs; no host authorization follows from it. |
-| Model invokes underlying command/tool directly | **FAIL** | Commands and tools are invocable paths without human provenance. A tool could open a dialog, but tool success cannot mean approval. |
-| Programmatic command dispatch invokes UI path | **FAIL** | Named keymap commands dispatch programmatically. The built-in confirm's anonymous Return binding is a narrower path, but its boolean has no attested origin. |
-| Existing `allow` permission | **FAIL** for permission candidate; **PASS** for dialog independence | Permission `assert` returns on `allow`; dialog API has no permission rule input. |
-| Existing `always` permission | **FAIL** for permission candidate; **PASS** for dialog independence | Saved rule can turn later permission checks into `allow`; it does not answer `ui.dialog.confirm`. |
-| Automatic permission behavior (`--auto`) | **FAIL** for permission candidate; **PASS** for dialog independence | CLI documents auto-approval of permissions not explicitly denied; dialog contract has no auto-permission path. A live `--auto` check was not run. |
-| Different session consumes candidate | **FAIL** | Dialog result has no session binding; any restriction would be local state and untested. |
-| Different agent consumes candidate | **FAIL** | Dialog result has no agent binding; tool context has agent ID, but no confirmation receipt connects them. |
-| Response lost or ambiguous | **UNPROVEN — manual dogfood required** | Source close/interruption semantics can be read, but no end-to-end crash/lost-response test or durable receipt exists. No authority may be inferred. |
-| Restart before approval | **FAIL** for host-only mechanism | In-process dialog/promise is lost; no host pending-candidate record. Treat as unapproved. |
-| Restart after recorded approval | **FAIL** for host-only mechanism | No host approval record identifies a candidate; local durable state would be required. |
-| Consumed candidate replayed after restart | **FAIL** for host-only mechanism | No host consumption record; local transactional state would be required. |
-| Client replies to permission/form API instead of using UI | **FAIL** | Both expose client reply operations, so successful reply is not user provenance. |
-| Synthetic or client-created `user` session message claims approval | **FAIL** | `session.prompt` accepts a caller payload and creates a user-shaped input; role label is not origin attestation. |
-| Another plugin attempts to trigger UI action | **UNPROVEN — manual dogfood required** | TUI plugins share a client-local process and can access keymap and renderer APIs; no supported per-plugin origin attestation on confirm. An isolated adversarial plugin check should record exact behavior, but cannot establish a trust boundary absent a host contract. |
+| Trusted code presents a frozen realistic candidate; Confirm is selected in the TUI | **PENDING MANUAL DOGFOOD** | Source maps confirm to `true`; actual display and result have not been observed. |
+| Cancel is selected | **PENDING MANUAL DOGFOOD** | Source maps cancel to `false`; actual UI path has not been observed. |
+| Dialog is dismissed, closed, interrupted, or ambiguous | **PENDING MANUAL DOGFOOD** | Source maps close to `undefined`; verify dismiss and interruption do not create a positive result. |
+| Programmatic or model-triggered flow opens the authorization UI | **ALLOWED** | Named keymap dispatch is supported by the source trace. Opening is expected and grants no authority by itself. Dogfood may record the route used. |
+| Model directly invokes an underlying command or tool | **ALLOWED to request/open; not approval** | Commands/tools can be invoked through supported paths. A tool may open the dialog, but command/tool success cannot substitute for the pending confirmation result. |
+| Supported model-accessible/non-interactive path resolves pending confirmation positively without trusted UI confirmation | **PENDING MANUAL DOGFOOD; failure if observed** | This is the remaining host-boundary falsification question. The prior source trace does not answer it end-to-end. |
+| Model says `"I authorize"` or claims the user approved | **KERNEL/STORE RESPONSIBILITY** | Text is not the `ui.dialog.confirm` result. The authority gate must accept only the bound UI decision and kernel checks. Session/API routes are included in the pending-path dogfood check. |
+| Model supplies `authorized: true` | **KERNEL/STORE RESPONSIBILITY** | Tool input is model-controlled; the kernel must not accept it as authority. |
+| Model reproduces candidate digest | **KERNEL/STORE RESPONSIBILITY** | Digest text is data, not a UI result. The kernel binds its own frozen candidate and result. No host digest attestation is required. |
+| OpenCode permission `allow` or saved `always` substitutes for confirmation | **REJECTED as authority; independence pending dogfood** | Source shows `allow` skips permission prompting and `always` can save rules. Neither is the dialog result; manually confirm neither resolves the pending dialog. |
+| Automatic permission behavior substitutes for confirmation | **REJECTED as authority; independence pending dogfood** | CLI `--auto` documents auto-approval of permissions not explicitly denied; this concerns permissions, not `ui.dialog.confirm`. No live check was run. Verify behavior while a confirmation is pending. |
+| Session prompt/input, form reply, or model tool arguments contain approval text | **REJECTED as authority; pending-path check required** | The APIs accept caller inputs/replies, not the trusted confirmation result. Dogfood determines whether any supported route can resolve the pending confirmation positively. |
+| Candidate changes after display; candidate B differs from A in an authority-bearing value | **KERNEL RESPONSIBILITY** | Kernel retains the frozen candidate, binds the result to it, and refuses changed contents. Missing host candidate identity/digest is not a host failure. No production mutation test is needed for UI dogfood. |
+| Candidate or repository freshness changes before use | **KERNEL RESPONSIBILITY** | The kernel rechecks freshness and refuses stale authorization. |
+| Authorization is consumed twice, or replayed after restart | **DURABLE STORE/KERNEL RESPONSIBILITY** | A durable transaction enforces single consumption and replay prevention. The TUI dialog's one-promise settlement is not the system transaction; production SQLite/restart tests are outside this dogfood. |
+| Recorded or consumed authorization is encountered after restart | **DURABLE STORE/KERNEL DESIGN** | Define safe restart behavior in the system boundary; no host receipt or host restart behavior is required. |
+| Different session or agent presents/consumes an authorization | **KERNEL/STORE DESIGN, not host provenance** | Session and agent identifiers are useful context but not human credentials. Define any required candidate/run binding locally; no separate host-origin guarantee is required. |
+| Intent candidate and reviewed-target commit candidate use the same TUI boundary | **PENDING MANUAL DOGFOOD plus kernel design** | Present representative candidates for both and verify meaningful contents. Keep their authority distinct in the kernel. |
+| Hostile code already running inside the trusted computing base triggers UI behavior | **OUTSIDE V1 THREAT MODEL** | V1 trusts the OpenCode/TUI/plugin/kernel/OS boundary. No adversarial in-process plugin or OS-level input-injection test is required. Supported model-accessible routes remain in scope. |
 
-## Host contracts, empirical facts, and assumptions
+## Evidence classification
 
-**PROVEN by runtime:** `v2.0.16` executable identity and activation/context values from dependency-free local **server and TUI** plugins. The initial managed-service conflict and subsequent successful isolated-port run were observed. No human confirmation was exercised.
+**Proven by runtime:** `v2.0.16` executable identity and activation/context
+values from dependency-free local server and TUI plugins. The initial
+managed-service conflict and subsequent successful isolated-port run were
+observed. No human confirmation was exercised.
 
-**HOST CONTRACT from pinned source:** TUI `confirm` input/result shape and close mapping; keymap dispatch semantics; permission evaluation, saved `always`, and API reply path; session prompt/command/synthetic API paths; form reply and in-memory lifecycle; ordinary tool context and session/location fields.
+**Host contract from pinned source:** TUI `confirm` input/result shape and
+close mapping; keymap dispatch semantics; permission evaluation, saved
+`always`, and API reply path; session prompt/command/synthetic API paths; form
+reply and in-memory lifecycle; ordinary tool context and session/location
+fields. These findings describe OpenCode behavior and available paths; they
+do not establish manual UI outcomes.
 
-**ASSUMPTION, safety-critical:** that a TUI `true` can only result from the intended human's physical action; that another plugin or synthetic terminal input cannot produce an equivalent callback; that displayed bytes are mechanically bound to a specific immutable candidate; and that a bare boolean can safely cross from a client-local TUI plugin to a server-side authority gate. None is guaranteed by the supported API. These assumptions prevent a milestone PASS even if a human dogfood run sees the expected UI.
+**Kernel/store design:** candidate construction and freezing, canonical
+serialization/digest, result-to-candidate binding, intent/commit separation,
+freshness checks, durable recording, single consumption, replay prevention,
+and restart behavior. These are required system properties, not host
+attestations. Production persistence is not part of the UI dogfood.
 
-**REJECTED:** generic permission state, form reply, server command, TUI named command, session/user message, and tool-call identity as a standalone human-authorization credential.
+**Still unproven:** complete and clear candidate display; actual Confirm,
+Cancel, dismiss/close, interruption, and ambiguous outcomes; independence
+from generic permission behavior in a live pending-dialog interaction; and
+whether a supported model-accessible/non-interactive path can positively
+resolve that pending confirmation without the trusted UI action. These are
+the remaining manual dogfood items.
 
-## Manual dogfood procedure
+**Not a V1 assumption to prove:** physical-human provenance, resistance to
+synthetic physical input, and hostile code already running within the trusted
+computing base.
 
-This procedure is for observations that this Codex session cannot honestly make. Use a disposable Git repository and separate XDG directories. Record the exact executable/version and source tag. In this environment, set a private managed-service port in the isolated configuration (`opencode service set port 49783` worked); the default port was occupied. Put a dependency-free TUI plugin in `.opencode/plugins/m0/tui.js` with a named keymap command that constructs a frozen, explicit intent candidate A, logs its canonical fields/digest to a temporary file, then calls `ui.dialog.confirm` with **all** authority-bearing fields and the digest in `message`. Log the command invocation route, current TUI route/session, dialog result, and timestamps. Keep the candidate bytes fixed for each invocation.
+## Reduced manual dogfood procedure
 
-1. Launch OpenCode's TUI at the disposable repository. Record that the plugin loaded and capture the full visible dialog for A, including intent, scope, canonical worktree, baseline, and digest. Inspect for clipping or hidden fields.
-2. Approve with a physical keyboard or mouse action; record the visible action and logged result. Repeat in fresh interactions for Cancel and Escape/backdrop close; record `true`, `false`, or `undefined` respectively. Interruption/quit with a pending dialog must produce no approval fact.
-3. Dispatch the named opener using `context.keymap.dispatch(id)` from the plugin and record that the same dialog can be opened without a human. Attempt dispatch of the built-in confirmation via the supported keymap ID API and record whether it is addressable. Do not count a programmatically opened dialog as human approval. If testing a synthetic renderer input, label it synthetic and record whether it triggers `true`; a successful synthetic `true` falsifies human provenance for this dialog use.
-4. Present A, then change one authority-bearing byte in the candidate held by the probe before any eventual local consume check. Repeat with a commit candidate whose reviewed-target digest differs by one byte. Record exact before/after bytes and digests, visible contents, result, and whether any attempted consume rejects. Any acceptance of B from A's action is failure. Test the intent and commit kinds separately.
-5. If testing a tiny experimental local consume predicate, attempt duplicate consumption, consumption from a second session/agent, and replay after restarting the host. Record exact IDs, result, and state before/after. These observations would demonstrate that predicate only; they cannot supply the missing human-origin signal.
+Use a disposable Git repository and separate XDG directories. Record the
+OpenCode executable/version and source tag. The prior probe used private
+managed-service port `49783` because default port `49374` was occupied; reuse
+an available isolated port if needed. Use a dependency-free TUI plugin with a
+named opener that captures an immutable candidate snapshot, invokes
+`ui.dialog.confirm`, and logs the candidate snapshot, invocation route,
+current TUI route/session when available, result, and timestamps. Do not treat
+the opener invocation as approval.
 
-Expected UI observations from source are `true` on Confirm, `false` on Cancel, and `undefined` on close. A different outcome, invisible authority-bearing field, synthetic confirmation, permission-policy suppression, or acceptance of changed candidate is failure. Evidence should include screen recording or screenshots, temporary plugin source, verbatim candidate serialization and SHA-256 digest, timestamped probe log, OpenCode version, configuration, and exact action origin. Do not describe an automated keypress as a human action. Manual dogfood can validate display and behavior, but it cannot turn an undocumented origin assumption into a host contract.
+1. **Display both representative candidates.** Show an intent candidate with
+   requested intent, exact scope, repository/worktree identity, and bound
+   baseline. Show a reviewed-target commit candidate with review identity or
+   digest, exact target or target digest, commit paths, current Git baseline,
+   and readable commit intent. Confirm every meaningful field is visible and
+   clear, without clipping or hidden text. Record the exact frozen candidate
+   contents and the visible display; a host-issued candidate receipt is not
+   expected.
+2. **Exercise the UI result.** With a pending candidate, use the trusted TUI
+   action to Confirm and record the visible action plus returned `true`. In
+   fresh interactions, select Cancel and dismiss/close (for example Escape or
+   the supported close control), recording `false` and no positive result.
+   Interrupt/quit with a dialog pending and confirm no positive authorization
+   is produced. Source expectations are `true`, `false`, and `undefined`
+   respectively; dogfood must record actual results.
+3. **Check permission independence.** Repeat the pending-confirmation check
+   with generic permission `allow`, saved `always`, and automatic permission
+   behavior enabled. Each may affect permission handling, but none may
+   positively resolve the confirmation. Record any permission prompt or
+   automatic behavior separately from the dialog result.
+4. **Try supported model-accessible/non-interactive paths against a pending
+   confirmation.** Requesting or dispatching the named opener is allowed and
+   should only open the dialog. While it is pending, try the supported routes
+   available to the model/client, including approval text or tool arguments,
+   session input/command, form reply, permission reply, and any supported
+   direct dispatch route. Determine whether any can cause the confirmation
+   result to become positive without the trusted UI confirmation action.
+   Record each route and result. Do not use OS-level input injection or
+   synthetic physical-input attacks; those are outside V1.
 
-## Smallest missing host primitive
+Capture screenshots or a short screen recording of the dialogs, temporary
+plugin source, timestamped probe log, OpenCode version/configuration, the
+candidate contents, and the exact API/interaction route. No production
+SQLite, duplicate-consumption, cross-session replay, restart replay, or
+physical-user-provenance test is part of this UI dogfood.
 
-A supported host API should let trusted local code submit an immutable candidate payload (or its canonical bytes plus digest), display the meaningful payload, and return a host-issued, non-programmatically-dispatchable confirmation result tied to that exact digest, candidate kind, interaction ID, and relevant session/agent/call binding. The host must distinguish direct physical user action from client API replies, programmatic command/keymap dispatch, synthetic session input, another plugin's callback, and generic permission decisions; reject/dismiss/interruption must yield no successful receipt. The result must be single-use or be consumable by a small trusted kernel through an atomic local transition, with enough stable identity to reject replay after restart. An internal TUI-to-server authenticated handoff may be necessary because the current dialog result stays inside the TUI plugin; the public API must not allow arbitrary callers to mint or reply with the receipt.
+## Outcome and architectural consequence
 
-The enhancement can be narrow: one exact-resource human confirmation operation with provenance and a once-only result. This investigation does not justify MCP, a daemon, a workflow coordinator, or a general approval service.
+The final M0 outcome remains unassigned until the manual evidence above is
+available. A **PASS** requires clear frozen-candidate display, the expected
+positive Confirm and negative Cancel/dismiss behavior, independence from
+generic permission state, no supported model-accessible or non-interactive
+route that positively resolves a pending confirmation without its trusted UI
+action, and a credible kernel/store boundary for binding, freshness, durable
+single consumption, replay prevention, and restart safety.
 
-## Infrastructure findings and architectural consequence
+A **HOST GAP** is warranted only if OpenCode cannot provide a trusted UI
+decision distinct from supported model-accessible/non-interactive authority
+paths—for example, one of those paths can positively resolve the pending
+confirmation without the trusted UI action, or trusted plugin/kernel code
+cannot distinguish the decision from those paths. Absence of host candidate
+digest, durable receipts, physical-human attestation, or replay protection is
+not a HOST GAP under the revised milestone.
 
-No root `package.json`, `.opencode/package.json`, npm/Bun dependency, build system, test framework, or production plugin skeleton was required for either local plugin activation probe. Local transactional persistence **would** be required to durably consume authorization exactly once across restart if the host supplies a trustworthy confirmation result; the need follows from the dialog's lack of durable consumption, not from a tested schema. No other permanent component was demonstrated as necessary.
+A **FAIL** means the proposed Coding Authority architecture cannot meet its
+required authorization properties without granting authority to
+model/conversation claims, generic permission state, replayable inputs, or
+infrastructure comparable in complexity to the architecture the project
+intends to avoid. A FAIL requires architectural reconsideration before
+implementation.
 
-The proposed small OpenCode-only Coding Authority design must keep both intent authorization and reviewed-target commit authorization blocked. Next investigation can focus narrowly on whether OpenCode can add the missing exact-candidate human confirmation contract and on the manual dogfood above. Milestone 1 and production authorization implementation should wait for that boundary to be proven.
+The existing probes show that local server and TUI plugins can load without
+adding a root `package.json`, `.opencode/package.json`, npm/Bun dependency,
+build system, test framework, or production plugin skeleton. Durable local
+transactional persistence remains required for system authorization
+consumption, but this is a kernel/store design responsibility and was not
+validated by the activation probes. Milestone 1 and production authorization
+implementation should wait until the required UI dogfood is complete and the
+final M0 outcome is assigned.
