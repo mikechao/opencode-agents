@@ -101,6 +101,26 @@ If either candidate is not fully understandable on screen, record the exact
 field and display limitation. A missing `confirmation-returned` record after
 an abrupt process kill means no result was captured; it does not mean `true`.
 
+## Phase A execution status
+
+**COMPLETE on OpenCode `v2.0.16` — 2026-09-25.**
+
+Observed:
+
+- both M0 commands registered;
+- both candidate types rendered completely and readably;
+- Confirm -> `true`;
+- Cancel -> `false`;
+- Escape -> `undefined`;
+- Ctrl-C while pending -> `undefined`;
+- `SIGTERM` of the foreground TUI while pending -> plugin teardown with no
+  positive result.
+
+See `docs/milestone-0-investigation.md` for the evidence summary and
+experiment IDs.
+
+Phases B and C remain pending.
+
 ## Phase B — permission independence
 
 Use only a harmless permission-governed action in the `opencode-agents`

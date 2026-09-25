@@ -2,7 +2,30 @@
 
 ## Executive status
 
-**PENDING MANUAL DOGFOOD — final M0 outcome not yet assigned.**
+**PENDING MANUAL DOGFOOD — Phase A complete; Phases B and C remain. Final M0
+outcome not yet assigned.**
+
+Manual Phase A dogfood on OpenCode `v2.0.16` established the basic
+`ui.dialog.confirm` behavior:
+
+- the in-repository TUI plugin loaded and `/m0-intent` and `/m0-commit`
+  registered;
+- both representative authorization candidates were displayed completely and
+  intelligibly;
+- trusted TUI Confirm returned `true`;
+- Cancel returned `false`;
+- Escape dismissal returned `undefined`;
+- Ctrl-C while the modal was pending closed the dialog and returned
+  `undefined`;
+- terminating the foreground TUI with `SIGTERM` while a confirmation was
+  pending disposed the plugin and produced no confirmation result.
+
+No Phase A interaction produced a positive result except the explicit trusted
+TUI Confirm action.
+
+Generic permission independence and supported model-accessible/non-interactive
+bypass attempts remain untested. Therefore the final M0 outcome remains
+unassigned.
 
 The existing source investigation establishes that OpenCode `v2.0.16` loads
 dependency-free local server and TUI plugins, and that the TUI
@@ -26,6 +49,93 @@ non-interactive OpenCode path can make an already-pending confirmation
 positive without the trusted UI confirmation action. That, along with the
 visible candidate and real UI result behavior, still requires manual dogfood.
 This report does not assign PASS before that evidence exists.
+
+## Manual dogfood evidence — Phase A
+
+Date: 2026-09-25
+Host: OpenCode `v2.0.16`
+Repository: `opencode-agents`
+Harness: `.opencode/plugins/m0-dogfood/tui.js`
+Evidence log: `/private/tmp/opencode-m0-dogfood.jsonl`
+
+Phase A was executed directly from the `opencode-agents` checkout using the
+normal OpenCode environment. An earlier isolated-XDG launch stalled at
+`Starting background server...` before the TUI loaded; this was treated as a
+runtime-environment issue rather than evidence about the confirmation
+boundary.
+
+### Plugin and command activation
+
+Observed in the OpenCode TUI:
+
+- the M0 plugin loaded;
+- `/m0-intent` registered;
+- `/m0-commit` registered.
+
+### Candidate presentation
+
+The intent dialog visibly presented:
+
+- authorization kind;
+- candidate digest;
+- objective;
+- `opencode-agents` repository identity;
+- current checkout path;
+- representative baseline marker;
+- exact authorized paths;
+- distinct Cancel and Confirm actions.
+
+The reviewed-target commit dialog visibly presented:
+
+- authorization kind and candidate digest;
+- repository/worktree identity;
+- representative current/baseline markers;
+- passing review identity, result, and digest;
+- reviewed-target digest;
+- exact commit paths;
+- proposed commit summary and message;
+- distinct Cancel and Confirm actions.
+
+Both dialogs were readable without material clipping or omitted
+authority-bearing fields.
+
+### Result observations
+
+| Interaction | Observed result |
+| --- | --- |
+| Confirm | `true` |
+| Cancel | `false` |
+| Escape / dismiss | `undefined` |
+| Ctrl-C while modal pending | dialog closes, `undefined` |
+| `SIGTERM` foreground TUI while pending | plugin disposed; `no-result`, `completed: false` |
+
+Representative experiment evidence:
+
+- Escape/dismiss: `72447c80-2841-4c07-839d-1d0279ef59be`
+- Cancel: `491d283b-e952-41c9-873b-8cddb635012a`
+- Confirm: `352b4d8f-d9fc-476b-8c0a-63cacbce3485`
+- Ctrl-C dismissal: `d09cc6de-fd24-4729-8d81-9f7332f3bd95`
+- `SIGTERM` interruption: `afbc1d87-c476-4de8-bd8b-cc3f5f8ebb57`
+
+For the `SIGTERM` case, the log sequence was a
+`confirmation-presented` event followed by:
+
+`invocation-terminated`, `rawResult: "no-result"`,
+`completed: false`, with termination reason
+`plugin-disposed-while-confirmation-pending`.
+
+### Phase A assessment
+
+Phase A supports the required basic UI-boundary behavior:
+
+- trusted code can present both representative authorization candidates;
+- the explicit Confirm action is distinguishable from Cancel and dismissal;
+- dismissal and process interruption do not create a positive result.
+
+This is not yet an M0 PASS. Phase B must still establish independence from
+generic permission behavior, and Phase C must still test supported
+model-accessible/non-interactive routes against an already-pending
+confirmation.
 
 ## Environment and source identity
 
@@ -194,10 +304,11 @@ confirmation action.
 
 ## Evidence classification
 
-**Proven by runtime:** `v2.0.16` executable identity and activation/context
-values from dependency-free local server and TUI plugins. The initial
-managed-service conflict and subsequent successful isolated-port run were
-observed. No human confirmation was exercised.
+**Proven by runtime:** OpenCode `v2.0.16` plugin activation; registration of
+both M0 commands; complete and readable display of both representative
+candidate types; Confirm -> `true`; Cancel -> `false`; Escape and Ctrl-C
+dismissal -> `undefined`; foreground-TUI termination while pending -> no
+positive result.
 
 **Host contract from pinned source:** TUI `confirm` input/result shape and
 close mapping; keymap dispatch semantics; permission evaluation, saved
@@ -212,12 +323,10 @@ freshness checks, durable recording, single consumption, replay prevention,
 and restart behavior. These are required system properties, not host
 attestations. Production persistence is not part of the UI dogfood.
 
-**Still unproven:** complete and clear candidate display; actual Confirm,
-Cancel, dismiss/close, interruption, and ambiguous outcomes; independence
-from generic permission behavior in a live pending-dialog interaction; and
-whether a supported model-accessible/non-interactive path can positively
-resolve that pending confirmation without the trusted UI action. These are
-the remaining manual dogfood items.
+**Still unproven:** independence from generic permission `allow`, saved
+`always`, and automatic behavior; and whether any supported
+model-accessible/non-interactive path can positively resolve an already
+pending confirmation without the trusted UI Confirm action.
 
 **Not a V1 assumption to prove:** physical-human provenance, resistance to
 synthetic physical input, and hostile code already running within the trusted
