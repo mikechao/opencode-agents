@@ -31,8 +31,8 @@ The existing source investigation establishes that OpenCode `v2.0.16` loads
 dependency-free local server and TUI plugins, and that the TUI
 `ui.dialog.confirm` API returns `true`, `false`, or `undefined` for Confirm,
 Cancel, and close. It also establishes how the investigated permission,
-command, session, form, tool-context, and keymap APIs behave. No end-to-end
-dialog action or pending-confirmation bypass attempt was exercised.
+command, session, form, tool-context, and keymap APIs behave. No
+pending-confirmation bypass attempt was exercised.
 
 The earlier **HOST GAP** conclusion is withdrawn. It treated the absence of
 host-attested human provenance, candidate identity/digest, and durable
@@ -231,8 +231,8 @@ returns no route or caller context. [Session schema](https://github.com/anomalyc
    itself a positive confirmation. Whether any supported path can resolve a
    pending confirmation positively was not tested.
 
-No Confirm, Cancel, dismiss, interruption, one-byte mutation, replay, or
-restart scenario was exercised end-to-end. No source observation below is
+No one-byte mutation, replay, restart, permission-independence, or
+model/non-interactive bypass scenario was exercised end-to-end. No source observation below is
 promoted into such a test result.
 
 ## Kernel and durable-store responsibility boundary
