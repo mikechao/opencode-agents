@@ -2,11 +2,16 @@
 
 ## Status
 
-Architecture proof / falsification milestone.
+**PASS — completed 2026-09-25.** Manual dogfood established OpenCode
+`ui.dialog.confirm` as the trusted UI decision boundary for the V1 Coding
+Authority Protocol under the threat model defined below.
 
-No production Coding Authority Protocol implementation should depend on an
-authorization interaction until this milestone establishes that the OpenCode
-UI can serve as a trusted decision boundary.
+Phases A, B, and C demonstrated readable representative candidates, distinct
+Confirm/Cancel/dismiss results, independence from generic permission state,
+and no positive settlement by the supported model-accessible/non-interactive
+routes exercised on OpenCode `v2.0.16` and `v2.0.18`. Exact candidate binding,
+freshness, durable recording, single-use consumption, replay prevention, and
+restart behavior remain authority kernel/store responsibilities.
 
 ## 1. Objective
 
