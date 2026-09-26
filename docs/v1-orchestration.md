@@ -31,36 +31,53 @@ commit, and verifies its outcome. OpenCode editing and shell capabilities may
 be used during implementation, subject to normal OpenCode controls and CAP's
 resulting-target checks.
 
-## 3. V1 roles
+## 3. V1 roles and context boundaries
 
-These are responsibility assignments. The names alone do not establish
-security isolation or make role output a trusted observation.
+Planner, Implementer, and Reviewer each MUST run as separate OpenCode
+sub-agent invocations, each with a fresh context distinct from the other role
+invocations and the Orchestrator context. The Orchestrator MUST NOT pass one
+role's conversational or reasoning context into another role. Cross-role
+handoffs use only explicit artifacts, trusted references, and bounded inputs
+required by this contract.
+
+Role names alone are not trusted evidence. Trusted orchestration/plugin
+context MUST distinguish the relevant role invocations and bind their results
+to the current run and, where applicable, the exact target. Fresh sub-agent
+context separation defines Reviewer independence in V1. It does not require
+cryptographic attestation, process isolation, or model/provider diversity;
+the Implementer and Reviewer MAY use the same underlying model or model family.
 
 ### Planner
 
-The Planner proposes the requested intent and its exact repository scope.
-Its proposal is input to CAP intent authorization; it grants no authority.
+The Planner runs in its own fresh sub-agent context and receives the user
+request. It proposes the requested intent and exact repository scope as an
+explicit handoff artifact. Its proposal grants no authority.
 
 ### Implementer
 
-The Implementer makes changes after CAP has granted intent authorization for
-the bound intent, scope, worktree, and baseline. This is one bounded attempt.
+The Implementer runs in a new sub-agent context separate from the Planner and
+Orchestrator contexts. After CAP grants intent authorization, it receives the
+approved intent, exact scope, bound worktree and baseline, and any explicit
+plan artifact intentionally included in the handoff. It does not inherit the
+Planner's conversational or reasoning context. This is one bounded attempt.
 Implementation does not authorize review or commit, and the Implementer does
 not perform the final CAP-bounded commit.
 
 ### Reviewer
 
-The Reviewer independently reviews the exact trusted-derived target and owns
-the validation performed for that review. Review and validation must precede
-commit authorization. Reviewer claims alone do not establish trusted review
-or validation facts.
+The Reviewer runs in a new sub-agent context separate from the Implementer and
+Orchestrator contexts. It receives the exact trusted-derived target admitted
+to review and the bounded review inputs it needs. It does not inherit the
+Implementer's conversational or reasoning context. The Reviewer independently
+reviews that target and owns the validation performed for the review. Its
+claims alone do not establish trusted review or validation facts.
 
 ### Orchestrator
 
 The Orchestrator sequences these responsibilities, requests CAP operations,
-and passes the current run's references to the next step. It neither decides
-that CAP authority exists nor substitutes its own judgment for a trusted
-observation or effect.
+and passes only the current run's explicit handoff artifacts and references
+to the next step. It neither decides that CAP authority exists nor
+substitutes its own judgment for a trusted observation or effect.
 
 ## 4. Happy-path sequence
 
@@ -68,7 +85,7 @@ observation or effect.
 User request
     |
     v
-Planner
+Planner (fresh sub-agent context)
     |
     | proposed intent + exact scope
     v
@@ -76,7 +93,7 @@ CAP intent authorization
     |
     | trusted UI + kernel/store grant
     v
-Implementer
+Implementer (fresh sub-agent context)
     |
     v
 Trusted target derivation
@@ -84,10 +101,10 @@ Trusted target derivation
     | complete Git delta
     | exact-scope check
     v
-Reviewer
+Reviewer (fresh sub-agent context)
     |
-    | independent review
-    | reviewer-owned validation
+    | PASS independent review
+    | successful reviewer-owned validation
     v
 CAP reviewed-target commit authorization
     |
@@ -105,20 +122,22 @@ later named by commit authorization.
 
 ## 5. Trusted handoff boundaries
 
-1. **Intent to implementation.** The Planner's proposal goes to CAP. Only
-   CAP's trusted UI decision, exact-candidate binding, freshness checks, and
-   durable grant consumption authorize the attempt. Intent authorization
-   does not authorize commit.
+1. **Intent to implementation.** The Planner's proposed intent and scope go
+   to CAP. Only CAP's trusted UI decision, exact-candidate binding, freshness
+   checks, and durable grant consumption authorize the attempt. Intent
+   authorization does not authorize commit.
 2. **Implementation to review.** Trusted code derives the complete Git delta
    from the run's bound baseline and canonical worktree. It checks every
    resulting changed path against the exact authorized scope. An out-of-scope
    resulting change blocks advancement to review. Agent summaries do not
    replace the delta or scope check.
-3. **Review to commit authorization.** The Reviewer reviews the same derived
-   target and owns its validation. Trusted code must obtain or verify the
-   review and validation facts and bind them to that target; agent prose alone
-   is insufficient. Independent review and reviewer-owned validation happen
-   before CAP is asked to authorize the commit.
+3. **Review to commit authorization.** Trusted orchestration/plugin context
+   verifies that the Reviewer is a fresh sub-agent invocation distinct from
+   the Implementer, and binds its review and reviewer-owned validation
+   results to that invocation and the same derived target. Only a PASS
+   independent review together with successful reviewer-owned validation may
+   advance to CAP reviewed-target commit authorization. CAP receives the
+   trusted review and validation facts bound to the exact target.
 4. **Authorization to Git effect.** CAP separately authorizes the exact
    reviewed target and prepared paths. Trusted code rechecks the bound facts,
    performs only that bounded Git commit, and verifies the Git outcome. The
@@ -127,10 +146,13 @@ later named by commit authorization.
 
 ## 6. Failure and termination semantics
 
-An ordinary failure terminates the run. V1 has no automatic retry, repair,
-continuation, or reauthorization loop. A later run starts from current
-repository reality, binds a current baseline, and requires fresh authority;
-it inherits no approval, validation, review, or repair lineage.
+An ordinary failure terminates the run. This includes a failing review or
+validation, missing or ambiguous review/validation evidence, inability to
+establish the required fresh Reviewer context or invocation identity, and a
+target mismatch. No automatic repair, retry, continuation, or reauthorization
+follows. A later run starts from current repository reality, binds a current
+baseline, and requires fresh authority; it inherits no approval, validation,
+review, or repair lineage.
 
 The sole planned exception is ambiguous completion of `git commit`. In that
 case, only read-only reconciliation of Git state is allowed, as defined by
@@ -138,11 +160,21 @@ the charter and CAP. The commit is not retried under the consumed grant.
 
 ## 7. Ephemeral coordination state
 
-The orchestrator keeps only the coordination data needed for the current run,
-such as the proposed request, references to the bound worktree/baseline and
-scope, and trusted handoff results needed to request the next operation. CAP
-and its durable store remain the source of truth for grants and their
-consumption.
+For the current run only, the Orchestrator may retain these coordination
+references as needed:
+
+* approved intent and exact scope;
+* bound repository, worktree, and baseline;
+* Planner invocation/reference;
+* Implementer invocation/reference;
+* derived target identity or digest;
+* Reviewer invocation/reference;
+* review result/reference; and
+* reviewer-owned validation result/reference.
+
+These are run-local coordination references only. They are not durable
+workflow state and do not confer authority. CAP and its durable store remain
+the source of truth for grants and their consumption.
 
 V1 does not persist workflow phases, worker-attempt state, retry counters,
 continuation state, repair lineage, or reviewer-adjudication state. Such
@@ -165,17 +197,21 @@ semantics, or commit verification.
 
 1. Orchestration selects the next step; it never supplies authorization.
 2. Planner, Implementer, Reviewer, and Orchestrator are not authority sources.
-3. Intent and reviewed-target commit authorization are distinct CAP grants.
-4. No step advances based only on successful agent completion or agent prose
+3. Each Planner, Implementer, and Reviewer invocation starts in its own fresh
+   sub-agent context. Cross-role information is passed only through explicit
+   handoff artifacts or trusted references and bounded inputs required by
+   this contract.
+4. Intent and reviewed-target commit authorization are distinct CAP grants.
+5. No step advances based only on successful agent completion or agent prose
    where a trusted authorization, observation, or effect result is required.
-5. The exact-scope check applies to the complete trusted-derived Git delta
-   before review; review and reviewer-owned validation precede commit
-   authorization.
-6. A commit occurs only through the separately authorized bounded Git effect,
+6. The exact-scope check applies to the complete trusted-derived Git delta
+   before review; only a PASS independent review and successful
+   reviewer-owned validation advance to commit authorization.
+7. A commit occurs only through the separately authorized bounded Git effect,
    and its outcome is verified by trusted code.
-7. Ordinary failure ends the run; only ambiguous commit completion permits
+8. Ordinary failure ends the run; only ambiguous commit completion permits
    read-only reconciliation.
-8. Later runs start from current repository reality and require fresh
+9. Later runs start from current repository reality and require fresh
    authority.
 
 ## 10. Non-goals
@@ -184,13 +220,14 @@ V1 does not define a general workflow engine, persisted workflow phases,
 recovery or repair protocols, continuation machinery, retries as protocol
 state, child or parallel workflows, mutable scope, inherited authority,
 finding adjudication, a separate orchestration service, or an MCP workflow
-server.
+server. Reviewer context separation does not imply process isolation or
+cryptographic attestation.
 
 ## 11. Open implementation questions
 
-* How will OpenCode invoke the roles and pass handoff references while
-  preserving the trusted boundaries above?
+* How will OpenCode expose invocation references and bounded handoff artifacts
+  so trusted orchestration can distinguish roles and bind results to the
+  current run and exact target?
 * Which trusted component will derive the complete Git delta and bind the
   admitted target to review and commit authorization?
-* How will the implementation establish and verify reviewer independence and
-  reviewer-owned validation as trusted facts?
+* Which trusted observations establish successful reviewer-owned validation?
