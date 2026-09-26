@@ -2,7 +2,7 @@
 
 ## Executive status
 
-**PENDING MANUAL DOGFOOD — Phase A complete; Phases B and C remain. Final M0
+**PENDING MANUAL DOGFOOD — Phases A and B complete; Phase C remains. Final M0
 outcome not yet assigned.**
 
 Manual Phase A dogfood on OpenCode `v2.0.16` established the basic
@@ -23,9 +23,9 @@ Manual Phase A dogfood on OpenCode `v2.0.16` established the basic
 No Phase A interaction produced a positive result except the explicit trusted
 TUI Confirm action.
 
-Generic permission independence and supported model-accessible/non-interactive
-bypass attempts remain untested. Therefore the final M0 outcome remains
-unassigned.
+Generic permission independence is now established by Phase B runtime
+dogfood. Supported model-accessible/non-interactive bypass attempts remain
+untested. Therefore the final M0 outcome remains unassigned.
 
 The existing source investigation establishes that OpenCode `v2.0.16` loads
 dependency-free local server and TUI plugins, and that the TUI
@@ -132,10 +132,56 @@ Phase A supports the required basic UI-boundary behavior:
 - the explicit Confirm action is distinguishable from Cancel and dismissal;
 - dismissal and process interruption do not create a positive result.
 
-This is not yet an M0 PASS. Phase B must still establish independence from
-generic permission behavior, and Phase C must still test supported
+This is not yet an M0 PASS. Phase B now establishes independence from
+generic permission behavior. Phase C must still test supported
 model-accessible/non-interactive routes against an already-pending
 confirmation.
+
+
+
+## Manual dogfood evidence — Phase B
+
+Date: 2026-09-25  
+Host: OpenCode `v2.0.16`  
+Repository: `opencode-agents`  
+Harness: `.opencode/plugins/m0-dogfood/tui.js`  
+Evidence log: `/private/tmp/opencode-m0-dogfood.jsonl`
+
+Phase B tested whether generic OpenCode permission state could satisfy or
+positively resolve the separate M0 `ui.dialog.confirm` boundary. A harmless
+read-only command, `git status --short`, was used as the permission-governed
+action.
+
+### Permission observations
+
+| Permission mode | Permission behavior | M0 confirmation behavior | Experiment |
+| --- | --- | --- | --- |
+| Explicit `allow` rule for `git status*` | `git status --short` ran without a permission prompt | `/m0-intent` remained pending until explicit Escape dismissal; result `undefined` | `d5bae5e8-8584-4313-a4f4-5c12a4d69c97` |
+| Saved `always` | First `git status --short` prompted; after selecting Always allow, the same command ran again without another prompt | `/m0-intent` remained pending until explicit Escape dismissal; result `undefined` | `6642ef0b-d5a6-47eb-a086-c8eeaabda87a` |
+| `--auto` with bash otherwise configured to `ask` | `git status --short` ran without a permission prompt | `/m0-intent` remained pending until explicit Escape dismissal; result `undefined` | `487933a9-62d5-4bc4-9ac0-c7d6be3e876e` |
+
+No tested generic permission mode caused the pending confirmation to return
+`true` or otherwise complete positively.
+
+The optional direct `session.permission.reply` route was not exercised as a
+separate Phase B test. The core milestone requirement is nevertheless covered
+for explicit `allow`, saved `always`, and automatic permission behavior.
+If a direct permission-reply route becomes naturally available during Phase C,
+it may be checked there without adding new harness infrastructure.
+
+### Phase B assessment
+
+Phase B supports the required separation between generic OpenCode permission
+state and Coding Authority approval:
+
+- a permission rule may allow a tool action without approving the M0 candidate;
+- a saved `always` rule may suppress later permission prompts without
+  approving the M0 candidate;
+- `--auto` may automatically satisfy ordinary permission requests without
+  approving the M0 candidate.
+
+In every tested case, the M0 confirmation remained a separate pending UI
+decision and did not become positive without the trusted Confirm action.
 
 ## Environment and source identity
 
@@ -167,7 +213,7 @@ presented as an end-to-end UI experiment.
 | Seam | Existing observation | Revised classification |
 | --- | --- | --- |
 | TUI plugin `ui.dialog.confirm` | A TUI plugin supplies `title` and `message`; `createDialogApi` maps confirm/cancel/close to `true`/`false`/`undefined`. The result has no candidate/digest, input-origin, session, agent, message, or call fields. The dialog component invokes its confirm callback from Return or mouse-up. | **HOST CONTRACT** for the API shape and result mapping. Missing candidate identity, durable receipts, and physical-input provenance are not host gaps. Real display and result behavior remain **PENDING MANUAL DOGFOOD**. [Contract](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/plugin/src/tui/context.ts), [adapter](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/tui/src/plugin/api.tsx), [component](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/tui/src/ui/dialog-confirm.tsx) |
-| Native permissions | `allow` skips a prompt; a saved `always` rule can make later requests `allow`; the API accepts `once`, `always`, or `reject`. `session.permission.create` accepts caller-supplied action, resources, metadata, source, agent, and optional request ID; `session.permission.reply` is an API operation. | **HOST CONTRACT** that permission success/replies are distinct from the dialog API. The kernel must not treat them as confirmation. Runtime independence from a pending dialog remains **PENDING MANUAL DOGFOOD**. [Core evaluation and reply](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/core/src/permission.ts), [HTTP handlers](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/server/src/handlers/permission.ts), [schema](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/schema/src/permission.ts) |
+| Native permissions | `allow` skips a prompt; a saved `always` rule can make later requests `allow`; the API accepts `once`, `always`, or `reject`. `session.permission.create` accepts caller-supplied action, resources, metadata, source, agent, and optional request ID; `session.permission.reply` is an API operation. | **HOST CONTRACT + PROVEN BY RUNTIME** that generic permission success is distinct from the dialog result. Phase B exercised explicit `allow`, saved `always`, and `--auto`; in each case the permission-governed command proceeded without a prompt while the pending M0 confirmation remained independent and later dismissed to `undefined`. [Core evaluation and reply](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/core/src/permission.ts), [HTTP handlers](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/server/src/handlers/permission.ts), [schema](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/schema/src/permission.ts) |
 | Server commands and TUI keymaps | A server command gets session ID, prompt, and delivery, with no human-origin field; `session.command` invokes it through the API. Named TUI keymap commands are explicitly dispatchable with `keymap.dispatch(id)`, and their `run` callback receives a keyboard event on keyboard dispatch. The built-in confirm uses an anonymous inline Return binding, so `dispatch(id)` cannot directly name that binding. | **HOST CONTRACT** for these command and dispatch paths. A command/keymap may open the dialog; that is **ALLOWED** and is not approval. The source trace does not establish whether any supported route can positively resolve a pending dialog; that remains **PENDING MANUAL DOGFOOD**. [Command contract](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/plugin/src/promise/command.ts), [server handler](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/server/src/handlers/session.ts), [keymap contract](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/plugin/src/tui/context.ts), [dispatch implementation](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/tui/src/context/keymap.tsx) |
 | Session input and events | `session.prompt` is a public client/API operation and accepts caller-supplied text, files, metadata, delivery, and optional ID. The `session.prompt` plugin hook receives these values and host message/session IDs, but no user-origin attestation. `session.synthetic` is separately available; a `user` record versus a `synthetic` record does not establish who supplied the `user` payload. | **HOST CONTRACT** for the available inputs. Session text and role labels cannot substitute for the trusted UI result; the kernel must keep them separate. Their ability to resolve a pending confirmation positively is part of the manual bypass check. [Prompt hook](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/plugin/src/promise/session.ts), [server handlers](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/server/src/handlers/session.ts), [inbox schema](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/schema/src/session-inbox.ts) |
 | Native forms / questions | The form core enforces a pending-to-answered/cancelled transition by ID in an in-memory cache, but `reply` accepts an answer through an API route. Forms do not return human-origin proof; pending forms are cancelled on service close. | **HOST CONTRACT** for the form API and lifecycle. A form reply is not the trusted confirmation result. Test only whether a supported path can positively resolve the pending confirmation; no form ID or answer is a host attestation. [Form core](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/core/src/form.ts), [TUI plugin client surface](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/plugin/src/tui/context.ts) |
@@ -231,8 +277,8 @@ returns no route or caller context. [Session schema](https://github.com/anomalyc
    itself a positive confirmation. Whether any supported path can resolve a
    pending confirmation positively was not tested.
 
-No one-byte mutation, replay, restart, permission-independence, or
-model/non-interactive bypass scenario was exercised end-to-end. No source observation below is
+No one-byte mutation, replay, restart, or model/non-interactive bypass
+scenario was exercised end-to-end. No source observation below is
 promoted into such a test result.
 
 ## Kernel and durable-store responsibility boundary
@@ -323,10 +369,9 @@ freshness checks, durable recording, single consumption, replay prevention,
 and restart behavior. These are required system properties, not host
 attestations. Production persistence is not part of the UI dogfood.
 
-**Still unproven:** independence from generic permission `allow`, saved
-`always`, and automatic behavior; and whether any supported
-model-accessible/non-interactive path can positively resolve an already
-pending confirmation without the trusted UI Confirm action.
+**Still unproven:** whether any supported model-accessible/non-interactive
+path can positively resolve an already-pending confirmation without the
+trusted UI Confirm action.
 
 **Not a V1 assumption to prove:** physical-human provenance, resistance to
 synthetic physical input, and hostile code already running within the trusted
