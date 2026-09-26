@@ -1,5 +1,7 @@
 # Pre-M1 Documentation Readiness Review
 
+**Status:** Non-normative review artifact. CAP and V1 orchestration remain normative; see [Coding Authority Protocol](coding-authority-protocol.md) and [V1 Orchestration](v1-orchestration.md).
+
 ## 1. Executive Status
 
 **NOT READY FOR M1 if the slice activates durable CAP authority.** CAP and orchestration are internally coherent, and the M0 **PASS** remains supported. But the documents do not establish that agent tools cannot modify the active authority kernel or its durable grant store. Without that boundary, replay protection could be bypassed through filesystem changes rather than authorization text. Two intent-side contracts also need clarification while defining M1: exact scope membership and what repository/worktree state the baseline and freshness checks bind.
@@ -12,16 +14,16 @@ The working tree was clean on main...origin/main before review. git ls-files fou
 
 | Artifact | Role and current relevance | Authority relationship |
 |---|---|---|
-| [AGENTS.md](/Users/mike/projects/opencode-agents/AGENTS.md:1) | Project boundaries and source-of-truth guidance. Current. | Governs repository work; not protocol semantics. |
-| [README.md](/Users/mike/projects/opencode-agents/README.md) | Empty, tracked placeholder. | No architecture authority. |
-| [docs/charter.md](/Users/mike/projects/opencode-agents/docs/charter.md:1) | High-level purpose, constraints, trust boundary, and exclusions. Relevant, but its final paragraph still describes M0 as upcoming. | CAP is authoritative for authorization; orchestration is authoritative for role sequencing. |
-| [docs/coding-authority-protocol.md](/Users/mike/projects/opencode-agents/docs/coding-authority-protocol.md:1) | Normative V1 authority and effect contract. Current and central. | Normative source for CAP semantics. |
-| [docs/v1-orchestration.md](/Users/mike/projects/opencode-agents/docs/v1-orchestration.md:1) | Normative V1 sequencing, roles, handoffs, and ephemeral coordination. Current. | Subordinate to CAP on authority semantics. |
-| [docs/milestone-0-human-authorization.md](/Users/mike/projects/opencode-agents/docs/milestone-0-human-authorization.md:1) | M0 objective, evidence standard, and outcome criteria; status records PASS. Relevant as historical M0 contract. | CAP §12 and the investigation record the completed outcome; this document does not define production CAP behavior. |
-| [docs/milestone-0-investigation.md](/Users/mike/projects/opencode-agents/docs/milestone-0-investigation.md:1) | Detailed M0 source research and runtime evidence. Current as evidence. | Evidentiary, not normative for kernel implementation. |
-| [docs/milestone-0-dogfood-harness.md](/Users/mike/projects/opencode-agents/docs/milestone-0-dogfood-harness.md:1) | Completed experimental procedure and observations. Relevant as M0 evidence. | Describes a fixture harness, not production authorization. |
-| [docs/legacy-reference.md](/Users/mike/projects/opencode-agents/docs/legacy-reference.md:1) | Explicit predecessor-reference boundaries. Current. | Historical/reference-only; not an architecture template. |
-| [.opencode/plugins/m0-dogfood/tui.js](/Users/mike/projects/opencode-agents/.opencode/plugins/m0-dogfood/tui.js:1) | The only tracked implementation artifact: an experimental TUI probe. Current only as M0 evidence. | Not a production kernel, authority store, or orchestration implementation. |
+| [AGENTS.md](../AGENTS.md) | Project boundaries and source-of-truth guidance. Current. | Governs repository work; not protocol semantics. |
+| [README.md](../README.md) | Empty, tracked placeholder. | No architecture authority. |
+| [docs/charter.md](charter.md) | High-level purpose, constraints, trust boundary, and exclusions. Relevant, but its final paragraph still describes M0 as upcoming. | CAP is authoritative for authorization; orchestration is authoritative for role sequencing. |
+| [docs/coding-authority-protocol.md](coding-authority-protocol.md) | Normative V1 authority and effect contract. Current and central. | Normative source for CAP semantics. |
+| [docs/v1-orchestration.md](v1-orchestration.md) | Normative V1 sequencing, roles, handoffs, and ephemeral coordination. Current. | Subordinate to CAP on authority semantics. |
+| [docs/milestone-0-human-authorization.md](milestone-0-human-authorization.md) | M0 objective, evidence standard, and outcome criteria; status records PASS. Relevant as historical M0 contract. | CAP §12 and the investigation record the completed outcome; this document does not define production CAP behavior. |
+| [docs/milestone-0-investigation.md](milestone-0-investigation.md) | Detailed M0 source research and runtime evidence. Current as evidence. | Evidentiary, not normative for kernel implementation. |
+| [docs/milestone-0-dogfood-harness.md](milestone-0-dogfood-harness.md) | Completed experimental procedure and observations. Relevant as M0 evidence. | Describes a fixture harness, not production authorization. |
+| [docs/legacy-reference.md](legacy-reference.md) | Explicit predecessor-reference boundaries. Current. | Historical/reference-only; not an architecture template. |
+| [.opencode/plugins/m0-dogfood/tui.js](../.opencode/plugins/m0-dogfood/tui.js) | The only tracked implementation artifact: an experimental TUI probe. Current only as M0 evidence. | Not a production kernel, authority store, or orchestration implementation. |
 
 LICENSE is a legal artifact, not an architecture source.
 
@@ -44,11 +46,11 @@ The incomplete contracts below do not contradict that structure, but leave diffe
 
 **B1 — The trusted kernel/store is named but not protected from agent-directed writes.**
 
-**Files/sections:** CAP §§3–4, 8–9; orchestration §§2–3; [M0 harness source](/Users/mike/projects/opencode-agents/.opencode/plugins/m0-dogfood/tui.js:1).
+**Files/sections:** CAP §§3–4, 8–9; orchestration §§2–3; [M0 harness source](../.opencode/plugins/m0-dogfood/tui.js).
 
 CAP makes the installed plugin, kernel, and durable store part of the TCB, and makes the store the source of truth for grant consumption. At the same time, CAP and orchestration permit normal OpenCode editing and shell capabilities. The documents do not state that model-controlled tools cannot modify the active kernel or grant database, or cause unreviewed kernel code to be loaded on a later run.
 
-The local OpenCode source supports the concern: the write tool accepts a model-supplied path and relies on ordinary permissions ([write.ts](/Users/mike/projects/opencode/packages/core/src/tool/plugin/write.ts:60)); shell commands run through OpenCode’s process spawner ([shell.ts](/Users/mike/projects/opencode/packages/core/src/tool/plugin/shell.ts:113), [core shell.ts](/Users/mike/projects/opencode/packages/core/src/shell.ts:299)). Those paths do not establish a CAP-specific isolation guarantee. M0 also demonstrates loading a local TUI plugin from the checkout, though that harness is explicitly not production CAP.
+The local OpenCode source supports the concern: the write tool accepts a model-supplied path and relies on ordinary permissions (sibling source: ../opencode/packages/core/src/tool/plugin/write.ts:60); shell commands run through OpenCode’s process spawner (sibling sources: ../opencode/packages/core/src/tool/plugin/shell.ts:113 and ../opencode/packages/core/src/shell.ts:299). Those paths do not establish a CAP-specific isolation guarantee. M0 also demonstrates loading a local TUI plugin from the checkout, though that harness is explicitly not production CAP.
 
 If agent tools can alter a live grant record or replace the code that checks it, durable single-use consumption and replay prevention cease to be authoritative. Generic permission approval does not grant CAP authority, but it can still permit a filesystem effect that corrupts CAP state.
 
@@ -92,9 +94,9 @@ The charter also calls dismissal an “explicit” decision, while CAP correctly
 
 The local ../opencode checkout is at commit 00738c5b…; package metadata identifies it as 2.0.17. I inspected only the relevant TUI, sub-agent, tool-hook, write, and shell paths. OpenCode was not run.
 
-- **Trusted confirmation result:** M0 runtime evidence covers dialog behavior on 2.0.16 and relevant bypass checks on 2.0.16/2.0.18. The local 2.0.17 source still types ui.dialog.confirm as Promise<boolean | undefined> ([TUI context.ts](/Users/mike/projects/opencode/packages/plugin/src/tui/context.ts:379)); its adapter settles Confirm/Cancel/close as true/false/undefined ([api.tsx](/Users/mike/projects/opencode/packages/tui/src/plugin/api.tsx:322)). This supports the current API assumption; it does not reopen M0. No additional M1 blocker was found here.
+- **Trusted confirmation result:** M0 runtime evidence covers dialog behavior on 2.0.16 and relevant bypass checks on 2.0.16/2.0.18. The local 2.0.17 source still types ui.dialog.confirm as Promise<boolean | undefined> (sibling source: ../opencode/packages/plugin/src/tui/context.ts:379); its adapter settles Confirm/Cancel/close as true/false/undefined (sibling source: ../opencode/packages/tui/src/plugin/api.tsx:322). This supports the current API assumption; it does not reopen M0. No additional M1 blocker was found here.
 
-- **Fresh sub-agent invocation and reference:** 2.0.17’s subagent tool creates a child session when no sessionID is supplied, documents fresh context, and returns a sessionID ([subagent.ts](/Users/mike/projects/opencode/packages/core/src/tool/plugin/subagent.ts:29)). Its optional sessionID input can continue an existing child, so a trusted role caller must enforce fresh invocation. Plugin tool hooks expose the call/session context and completed result ([tool.ts](/Users/mike/projects/opencode/packages/plugin/src/promise/tool.ts:39)). This supports the orchestration requirement at source level. If M1 includes role handoffs, verify in the chosen integration that the plugin captures and binds the fresh child ID/result and rejects continuation; it does not block a kernel/store-only M1.
+- **Fresh sub-agent invocation and reference:** 2.0.17’s subagent tool creates a child session when no sessionID is supplied, documents fresh context, and returns a sessionID (sibling source: ../opencode/packages/core/src/tool/plugin/subagent.ts:29). Its optional sessionID input can continue an existing child, so a trusted role caller must enforce fresh invocation. Plugin tool hooks expose the call/session context and completed result (sibling source: ../opencode/packages/plugin/src/promise/tool.ts:39). This supports the orchestration requirement at source level. If M1 includes role handoffs, verify in the chosen integration that the plugin captures and binds the fresh child ID/result and rejects continuation; it does not block a kernel/store-only M1.
 
 - **Agent access to TCB state:** OpenCode’s current tool paths use ordinary edit/path permissions and spawn shell commands through the host environment; they do not establish the CAP store/code exclusion required by B1. This blocks an M1 that enables durable authority until the selected access boundary is specified and verified.
 
