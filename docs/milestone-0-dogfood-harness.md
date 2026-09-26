@@ -199,7 +199,7 @@ to create another permission transport.
 
 See `docs/milestone-0-investigation.md` for the Phase B evidence assessment.
 
-Phase C remains pending.
+Phase C is complete; M0 outcome is PASS.
 
 ## Phase C — model and non-interactive falsification
 
@@ -207,8 +207,7 @@ The narrow source-backed paths worth trying are ordinary model/tool
 invocation and session input/command. Keep one confirmation pending and do
 not select Confirm. The harness intentionally adds no model-facing approval
 tool and no bridge from a server plugin to TUI state; the two openers are TUI
-keymap commands added to prompt slash completion. The investigated server
-a session-command route, if the running host exposes one, would be separate
+keymap commands added to prompt slash completion. A session-command route, if the running host exposes one, would be separate
 from those TUI commands. Use only routes actually exposed by the running
 OpenCode host. The relevant pinned contracts
 are the [v2.0.16 TUI plugin context](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/plugin/src/tui/context.ts)
