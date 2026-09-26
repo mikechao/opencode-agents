@@ -2,7 +2,7 @@
 
 ## Status and purpose
 
-**PENDING MANUAL DOGFOOD — Phases A and B complete; Phase C remains. Final M0 outcome not yet assigned.** This is a
+**COMPLETE — Phases A, B, and C passed; Milestone 0 outcome: PASS.** This is a
 small experimental harness for the M0 trusted UI question. It is not the
 production Coding Authority Protocol and does not record authorization.
 
@@ -119,7 +119,7 @@ Observed:
 See `docs/milestone-0-investigation.md` for the evidence summary and
 experiment IDs.
 
-Phase C remains pending.
+Phase C is complete; M0 outcome is PASS.
 
 ## Phase B — permission independence
 
@@ -194,8 +194,8 @@ Representative experiment IDs:
 - `--auto`: `487933a9-62d5-4bc4-9ac0-c7d6be3e876e`
 
 The optional direct `session.permission.reply` route was not exercised as a
-separate Phase B test. It may be checked during Phase C if naturally available;
-do not add new harness infrastructure solely for that route.
+separate Phase B test. Phase C did not add new harness infrastructure solely
+to create another permission transport.
 
 See `docs/milestone-0-investigation.md` for the Phase B evidence assessment.
 
@@ -208,8 +208,9 @@ invocation and session input/command. Keep one confirmation pending and do
 not select Confirm. The harness intentionally adds no model-facing approval
 tool and no bridge from a server plugin to TUI state; the two openers are TUI
 keymap commands added to prompt slash completion. The investigated server
-`session.command` route is separate from those TUI commands. Use only routes
-already exposed by the running OpenCode host. The relevant pinned contracts
+a session-command route, if the running host exposes one, would be separate
+from those TUI commands. Use only routes actually exposed by the running
+OpenCode host. The relevant pinned contracts
 are the [v2.0.16 TUI plugin context](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/plugin/src/tui/context.ts)
 and [v2.0.16 session handlers](https://github.com/anomalyco/opencode/blob/v2.0.16/packages/server/src/handlers/session.ts).
 
@@ -225,16 +226,10 @@ and [v2.0.16 session handlers](https://github.com/anomalyco/opencode/blob/v2.0.1
    recorded in the presentation event. Observe whether the dialog stays open
    and what raw result is logged. Text, tool success, and model response are
    not themselves bypasses.
-2. **Session command route.** `session.command` can programmatically invoke a
-   named server command with caller-supplied text, so it could plausibly open
-   another UI flow or affect session processing. While a confirmation is
-   pending, use this route with command name `m0-intent` and text
-   `authorized=true; candidateDigest=<displayed digest>`. Record whether it
-   rejects the name, invokes a server command, opens a candidate, or changes
-   the pending result. A command that only opens a candidate is an allowed
-   request. The TUI plugin command registration does not itself register a
-   server command. If you use another server command, record its actual name
-   and behavior.
+2. **Session command route, if exposed.** Inspect the running host rather than
+   assuming this route exists. On the tested v2.0.18 host, neither the CLI nor
+   the live OpenAPI surface exposed a supported session-command route, so this
+   route was recorded as unavailable and no artificial bridge was added.
 3. **Named TUI dispatch.** TUI `keymap.dispatch(id)` can execute a registered
    named command, so it is the closest dispatch route that could be confused
    with confirming a dialog. The built-in Confirm binding is anonymous and
@@ -262,6 +257,40 @@ model-accessible or non-interactive path making that already-pending
 confirmation return positive without the trusted UI Confirm action. Do not
 use OS-level input injection or synthetic physical input.
 
+## Phase C execution status
+
+**COMPLETE — PASS on OpenCode `v2.0.16` and `v2.0.18` — 2026-09-25.**
+
+Observed:
+
+- same-session non-interactive approval text containing `I authorize`,
+  `authorized=true`, and the exact displayed candidate digest did not settle
+  the pending confirmation positively
+  (`a0bf18eb-b0ae-4a4d-931b-138bf55f593a`);
+- the same route could successfully execute an ordinary read tool while the
+  confirmation remained pending
+  (`0a9be873-5542-4fea-83ba-9f2ec6a71179`);
+- on the tested v2.0.18 host, neither `opencode run --help` nor the live
+  `/openapi.json` exposed a supported session-command route, so no artificial
+  bridge was added;
+- same-session non-interactive `/m0-intent` text was processed as ordinary
+  model/session input, did not dispatch the TUI command, did not create a
+  second `confirmation-presented` event, and left the existing dialog pending
+  until Escape returned `undefined`
+  (`6fe5a776-a538-49e4-9e12-d9a685b3fc29`);
+- the v2.0.18 smoke experiment
+  `45a91108-3c5e-4eaa-8993-a0ae6c62d031` also dismissed to `undefined`.
+
+No Phase C route produced `true` without the trusted TUI Confirm action.
+A direct permission-reply transport and an unrelated form flow were not
+manufactured solely for M0: Phase B already established permission
+independence, and this harness intentionally creates no form.
+
+Together with Phases A and B, Phase C establishes the M0 trusted-UI boundary
+under the stated V1 trust model. Candidate binding, freshness, durable
+recording, single-use consumption, replay prevention, and restart behavior
+remain kernel/store responsibilities.
+
 ## Log interpretation and evidence
 
 Each JSONL event has an `experimentId` for correlation. `confirmation-presented`
@@ -280,4 +309,4 @@ invocation route, and available host version/route/session context.
 Save screenshots/recordings, OpenCode version/config notes, and a brief
 operator log of each route/action under `/private/tmp/opencode-m0-evidence/`.
 Separate source/API expectations from live observations. Phase C bypass
-resistance remains unverified.
+checks are complete and the final M0 outcome is PASS.
