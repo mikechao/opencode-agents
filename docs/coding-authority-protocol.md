@@ -150,10 +150,12 @@ For either grant kind, V1 follows this sequence:
 6. **Record and consume.** The durable kernel/store boundary records the
    grant and permits exactly one consumption for its bound purpose. No
    effect may rely on an unrecorded or unconsumed grant.
-7. **Perform bounded effect and verify.** The kernel invokes only the effect
-   covered by the consumed grant, through the bounded Git or validation
-   operation, and verifies the resulting repository state from trusted
-   observations.
+7. **Perform the authorized operation and verify.** For intent authorization,
+   implementation may use normal OpenCode editing and shell capabilities; CAP
+   constrains which resulting target may advance to review as specified in
+   Section 9. For reviewed-target commit authorization, the kernel invokes
+   only the bounded Git effect covered by the consumed grant. Trusted code
+   verifies the relevant resulting repository state.
 
 If a check, binding, persistence operation, or effect cannot complete with an
 unambiguous result, the kernel fails closed. A changed or stale candidate
@@ -199,11 +201,18 @@ authority server.
 
 ## 9. Bounded effects and verification
 
-Intent authorization bounds one attempt to the approved intent, exact scope,
-canonical worktree, and baseline. It does not grant a general workflow
-capability, mutable scope, or permission to commit. The kernel and effect
-adapters MUST prevent operations outside that bound and MUST derive the
-resulting target from trusted repository observations.
+Intent authorization bounds which resulting repository target from one
+attempt may advance to review. Implementation may use normal OpenCode editing
+and shell capabilities, subject to ordinary OpenCode permissions and host/tool
+controls as defense in depth; CAP does not mediate or individually authorize
+each transient filesystem mutation. Before the target may enter review,
+trusted code MUST derive the complete resulting Git delta from the bound
+baseline and canonical worktree. Every changed path in that delta MUST be
+within the exact authorized intent scope. If any resulting change is out of
+scope, the attempt MUST NOT advance to review, and no out-of-scope resulting
+change may become part of the reviewed target or a later commit authorization
+candidate. This authorization does not grant a general workflow capability,
+mutable scope, or permission to commit.
 
 The reviewed-target commit grant is separate and bounds one prepared Git
 effect to the exact reviewed target, exact commit paths, and relevant current
@@ -247,7 +256,8 @@ workflow protocol, physical-human attestation requirement, multi-host
 portability, or defense against hostile code already inside the TCB. It does
 not add changed-HEAD recovery, finding adjudication, or compatibility with the
 predecessor project's Workflow MCP. OpenCode permissions remain defense in
-depth and are not CAP grants.
+depth and are not CAP grants. Preventing transient out-of-scope filesystem
+mutations during implementation is not a CAP V1 guarantee.
 
 ## 12. Relationship to Milestone 0
 
