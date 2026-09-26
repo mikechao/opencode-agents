@@ -1,6 +1,6 @@
 # B1 Boundary Feasibility Investigation
 
-**Status:** Non-normative investigation artifact. This report explores implementation consequences of the current B1 formulation. Its Docker-backed recommendation has not been adopted; B1's minimum required authority property remains under architecture reassessment. `docs/coding-authority-protocol.md` remains authoritative for CAP semantics.
+**Status:** Historical, non-normative investigation artifact preserving the feasibility analysis and its Docker-backed conclusion under the earlier, stronger filesystem-isolation formulation. The current normative CAP adopts a narrower authority-integrity invariant; Docker and general filesystem isolation are not V1 requirements. See `docs/coding-authority-protocol.md` for the adopted resolution.
 
 ## 1. Executive Conclusion
 

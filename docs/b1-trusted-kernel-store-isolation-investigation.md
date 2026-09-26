@@ -1,6 +1,6 @@
 # B1 Trusted Kernel/Store Isolation Investigation
 
-**Status:** Non-normative investigation artifact. Findings inform resolution of B1; `docs/coding-authority-protocol.md` remains authoritative for CAP semantics.
+**Status:** Historical, non-normative investigation artifact preserving the earlier kernel/store isolation analysis. The current normative CAP adopts process-scoped authority, optional non-authorizing durable records, and the trusted OpenCode role/effect boundary; see `docs/coding-authority-protocol.md`.
 
 ## 1. Executive Conclusion
 

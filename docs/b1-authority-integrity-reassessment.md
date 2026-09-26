@@ -1,6 +1,6 @@
 # B1 Authority-Integrity Reassessment
 
-**Status:** Non-normative reassessment artifact. This report established the case for process-scoped authority and narrowing B1 away from general filesystem isolation. Subsequent architecture discussion additionally treats the installed OpenCode runtime and installed `opencode-agents` integration as trusted V1 TCB components, and uses trusted OpenCode role/tool enforcement for CAP-reserved effects. The report's stronger requirement for a separately protected runtime-selection verifier has therefore not been adopted. `docs/coding-authority-protocol.md` remains authoritative.
+**Status:** Historical, non-normative reassessment artifact. The current normative CAP adopts process-scoped authority, trusts the installed OpenCode and `opencode-agents` components, and relies on trusted OpenCode role/tool enforcement for the reserved commit effect. This report's stronger runtime-verifier requirement was not adopted; its reasoning remains historical. See `docs/coding-authority-protocol.md` for the current resolution.
 
 ## 1. Executive Conclusion
 

@@ -1,6 +1,6 @@
 # Pre-M1 Documentation Readiness Review
 
-**Status:** Non-normative review artifact. CAP and V1 orchestration remain normative; see [Coding Authority Protocol](coding-authority-protocol.md) and [V1 Orchestration](v1-orchestration.md).
+**Status:** Historical, non-normative review snapshot. Its findings preserve the pre-decision readiness assessment and do not describe current V1 requirements or readiness. [Coding Authority Protocol](coding-authority-protocol.md) and [V1 Orchestration](v1-orchestration.md) contain the current normative architecture.
 
 ## 1. Executive Status
 
