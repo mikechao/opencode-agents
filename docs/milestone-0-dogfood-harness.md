@@ -2,7 +2,7 @@
 
 ## Status and purpose
 
-**PENDING MANUAL DOGFOOD — final M0 outcome not yet assigned.** This is a
+**PENDING MANUAL DOGFOOD — Phases A and B complete; Phase C remains. Final M0 outcome not yet assigned.** This is a
 small experimental harness for the M0 trusted UI question. It is not the
 production Coding Authority Protocol and does not record authorization.
 
@@ -119,7 +119,7 @@ Observed:
 See `docs/milestone-0-investigation.md` for the evidence summary and
 experiment IDs.
 
-Phases B and C remain pending.
+Phase C remains pending.
 
 ## Phase B — permission independence
 
@@ -160,6 +160,46 @@ If the pending modal prevents a second request from being submitted, record
 that the route could not be exercised in that UI state. Do not count the
 permission action's success as confirmation. A positive result without the
 trusted Confirm action would falsify the M0 boundary.
+
+
+
+## Phase B execution status
+
+**COMPLETE on OpenCode `v2.0.16` — 2026-09-25.**
+
+A harmless read-only command, `git status --short`, was used to verify that
+ordinary OpenCode permission success remains separate from the M0 confirmation
+boundary.
+
+Observed:
+
+- with an explicit `git status*` permission rule set to `allow`, the command
+  ran without a permission prompt; `/m0-intent` still remained pending and
+  Escape returned `undefined`;
+- with bash configured to `ask`, the first `git status --short` prompted;
+  after selecting **Always allow**, the same command ran again without another
+  permission prompt; `/m0-intent` still remained pending and Escape returned
+  `undefined`;
+- with bash otherwise configured to `ask` and OpenCode started with
+  `--auto`, `git status --short` ran without a permission prompt;
+  `/m0-intent` still remained pending and Escape returned `undefined`.
+
+No tested permission mode caused the M0 confirmation to return `true` or
+otherwise complete positively.
+
+Representative experiment IDs:
+
+- explicit `allow`: `d5bae5e8-8584-4313-a4f4-5c12a4d69c97`
+- saved `always`: `6642ef0b-d5a6-47eb-a086-c8eeaabda87a`
+- `--auto`: `487933a9-62d5-4bc4-9ac0-c7d6be3e876e`
+
+The optional direct `session.permission.reply` route was not exercised as a
+separate Phase B test. It may be checked during Phase C if naturally available;
+do not add new harness infrastructure solely for that route.
+
+See `docs/milestone-0-investigation.md` for the Phase B evidence assessment.
+
+Phase C remains pending.
 
 ## Phase C — model and non-interactive falsification
 
@@ -239,5 +279,5 @@ invocation route, and available host version/route/session context.
 
 Save screenshots/recordings, OpenCode version/config notes, and a brief
 operator log of each route/action under `/private/tmp/opencode-m0-evidence/`.
-Separate source/API expectations from live observations. Permission
-independence and Phase C bypass resistance remain unverified.
+Separate source/API expectations from live observations. Phase C bypass
+resistance remains unverified.
