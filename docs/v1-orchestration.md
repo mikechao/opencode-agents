@@ -52,17 +52,26 @@ the Implementer and Reviewer MAY use the same underlying model or model family.
 ### Planner
 
 The Planner runs in its own fresh sub-agent context and receives the user
-request. It proposes the requested intent and exact repository scope as an
-explicit handoff artifact. Its proposal grants no authority.
+request. It decides and proposes the requested intent and a finite set of
+exact repository-relative file paths as an explicit handoff artifact. V1 does
+not support directory, subtree, glob, wildcard, or other pattern-based scope
+entries. Its proposal grants no authority. CAP validates and canonicalizes
+the proposed paths, then freezes that exact set in the intent candidate; CAP
+does not silently add, expand, infer, or substitute scope for the Planner.
 
 ### Implementer
 
 The Implementer runs in a new sub-agent context separate from the Planner and
-Orchestrator contexts. After CAP grants intent authorization, it receives the
-approved intent, exact scope, bound worktree and baseline, and any explicit
-plan artifact intentionally included in the handoff. It does not inherit the
-Planner's conversational or reasoning context. This is one bounded attempt.
-Implementation does not authorize review or commit. Trusted OpenCode
+Orchestrator contexts. After trusted UI confirmation and immediately before
+admitting the attempt, the trusted boundary verifies the same
+repository/worktree, the same `HEAD`, and continued worktree cleanliness. If
+any check fails, the attempt ends and the UI result is not recovered or
+rebound. On success, CAP consumes the intent authorization and the Implementer
+receives the approved intent, frozen exact scope, bound repository/worktree
+identity, and clean-worktree and `HEAD` baseline facts, plus any explicit plan
+artifact intentionally included in the handoff. The Implementer does not
+inherit the Planner's conversational or reasoning context. This is one bounded
+attempt. Implementation does not authorize review or commit. Trusted OpenCode
 role/tool configuration prevents the Implementer from invoking the final
 CAP-governed commit effect, which is performed only through the separately
 authorized trusted CAP path.
@@ -95,7 +104,11 @@ Planner (fresh sub-agent context)
     v
 CAP intent authorization
     |
-    | trusted UI + process-scoped CAP authorization
+    | trusted UI result + exact-candidate binding
+    v
+Trusted pre-implementation freshness check
+    |
+    | same repository/worktree + same HEAD + still clean; consume intent grant
     v
 Implementer (fresh sub-agent context)
     |
@@ -126,16 +139,30 @@ later named by commit authorization.
 
 ## 5. Trusted handoff boundaries
 
-1. **Intent to implementation.** The Planner's proposed intent and scope go
-   to CAP. Only CAP's trusted UI decision for the exact frozen candidate,
-   candidate binding, freshness checks, and process-local single-use
-   authorization admit the attempt. Intent authorization does not authorize
-   commit.
-2. **Implementation to review.** Trusted code derives the complete Git delta
-   from the run's bound baseline and canonical worktree. It checks every
-   resulting changed path against the exact authorized scope. An out-of-scope
-   resulting change blocks advancement to review. Agent summaries do not
-   replace the delta or scope check.
+1. **Intent to implementation.** The Planner's proposed intent and finite
+   exact-file scope go to CAP. Candidate construction establishes the trusted
+   repository/worktree identity, observes `HEAD` as the baseline, and verifies
+   the canonical worktree is clean (no staged changes, unstaged tracked-file
+   changes, or untracked files; ignored files are excluded). Only CAP's
+   trusted UI decision for the candidate, candidate binding, and
+   process-local single-use authorization can admit the attempt. Immediately
+   before admitting the Implementer, the trusted boundary verifies the same
+   repository/worktree, the same `HEAD`, and continued cleanliness. Failure
+   ends the attempt; the UI result is not recovered or rebound. Intent
+   authorization does not authorize commit.
+2. **Implementation to review.** Trusted code verifies that `HEAD` remains
+   the bound baseline and derives the complete resulting Git delta against
+   that `HEAD` from the canonical worktree, including staged and unstaged
+   tracked changes and untracked files; ignored files are excluded. Resulting
+   path membership uses exact path equality: a modified file's path, an added
+   or untracked file's path, and a deleted file's old path must each be in the
+   authorized set. A rename must have both its old and new paths in the set,
+   including when Git represents it as delete plus add. No edit attribution is
+   required; all concurrent or otherwise unattributed changes are included in
+   the complete delta and checked the same way. A changed `HEAD` or any
+   out-of-scope path terminates the attempt and prevents review. Scope is not
+   amended or expanded in place, and there is no changed-`HEAD` recovery.
+   Agent summaries do not replace the delta or scope check.
 3. **Review to commit authorization.** Trusted orchestration/plugin context
    verifies that the Reviewer is a fresh sub-agent invocation distinct from
    the Implementer, and binds its review and reviewer-owned validation
@@ -155,13 +182,16 @@ later named by commit authorization.
 
 ## 6. Failure and termination semantics
 
-An ordinary failure terminates the run. This includes a failing review or
-validation, missing or ambiguous review/validation evidence, inability to
-establish the required fresh Reviewer context or invocation identity, and a
-target mismatch. No automatic repair, retry, continuation, or reauthorization
-follows. A later run starts from current repository reality, binds a current
-baseline, and requires fresh authority; it inherits no approval, validation,
-review, or repair lineage.
+An ordinary failure terminates the run. This includes a failed
+pre-implementation repository/worktree, `HEAD`, or cleanliness check; a
+changed `HEAD` during implementation; any out-of-scope resulting path; a
+failing review or validation; missing or ambiguous review/validation evidence;
+inability to establish the required fresh Reviewer context or invocation
+identity; and a target mismatch. No automatic repair, scope amendment, retry,
+continuation, or reauthorization follows. Stop, derive current repository
+reality, and ask again in a later run with a fresh Planner proposal and fresh
+authority. The later run inherits no approval, validation, review, or repair
+lineage.
 
 An ambiguous completion of `git commit` permits only read-only reconciliation
 while the trusted CAP process remains alive. The effect is not retried under
@@ -174,8 +204,8 @@ requires fresh authorization for any further effect.
 For the current run only, the Orchestrator may retain these coordination
 references as needed:
 
-* approved intent and exact scope;
-* bound repository, worktree, and baseline;
+* approved intent and frozen exact-file scope;
+* bound repository, worktree, clean-start condition, and `HEAD` baseline;
 * Planner invocation/reference;
 * Implementer invocation/reference;
 * derived target identity or digest;
@@ -220,18 +250,24 @@ scope semantics, or commit verification.
    CAP capabilities held only in the current trusted runtime.
 5. No step advances based only on successful agent completion or agent prose
    where a trusted authorization, observation, or effect result is required.
-6. The exact-scope check applies to the complete trusted-derived Git delta
-   before review; only a PASS independent review and successful
-   reviewer-owned validation advance to commit authorization.
-7. Trusted OpenCode role/tool configuration prevents Planner, Implementer, and
+6. The intent attempt starts from a clean canonical worktree and a
+   trusted-observed `HEAD`; immediately before implementation the trusted
+   boundary verifies the same repository/worktree and `HEAD` and continued
+   cleanliness.
+7. The exact-scope check applies to the complete trusted-derived delta against
+   the bound `HEAD` before review, with exact-path membership and both paths
+   required for renames; changed `HEAD` or any out-of-scope path terminates
+   the attempt. Only a PASS independent review and successful reviewer-owned
+   validation advance to commit authorization.
+8. Trusted OpenCode role/tool configuration prevents Planner, Implementer, and
    Reviewer from invoking the final CAP-governed commit effect; the trusted
    CAP path performs the separately authorized bounded commit, and trusted
    code verifies its outcome.
-8. Generic OpenCode permission approval controls tool capability only and is
+9. Generic OpenCode permission approval controls tool capability only and is
    never CAP authorization.
-9. Ordinary failure ends the run. Ambiguous commit completion permits
+10. Ordinary failure ends the run. Ambiguous commit completion permits
    read-only reconciliation only while the trusted CAP process remains alive.
-10. Later processes start with zero CAP authority, derive current repository
+11. Later processes start with zero CAP authority, derive current repository
     reality, and require fresh authorization for any further effect.
 
 ## 10. Non-goals

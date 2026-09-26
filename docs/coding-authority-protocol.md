@@ -116,16 +116,29 @@ the frozen authority-bearing contents.
 An intent candidate MUST identify, at minimum:
 
 * the requested intent;
-* the exact repository scope, including the authorized paths;
+* the finite set of exact authorized repository-relative file paths;
 * the canonical repository and worktree identity; and
-* the repository baseline to which the approval is bound.
+* the trusted-observed `HEAD` commit to which the approval is bound.
 
-The kernel MUST derive repository identity, scope interpretation, and baseline
-facts from trusted observations. A model may request intent and provide
-proposed values, but those values do not become trusted facts merely because
-they appear in a tool call or candidate display. An approved intent is limited
-to one attempt in the bound worktree and baseline; it does not grant commit
-authority.
+For each requested implementation attempt, the Planner decides and proposes
+the intent and its exact file set. A proposal grants no authority. V1 scope
+entries MUST be exact repository-relative file paths; directory, subtree,
+glob, wildcard, and other pattern-based entries are not supported. The scope
+is immutable for the attempt. CAP MUST validate and canonicalize the proposed
+paths and freeze that exact set in the intent candidate. CAP MUST NOT silently
+add, expand, infer, or substitute scope for the Planner.
+
+At candidate construction, trusted code MUST establish the canonical
+repository and worktree identity, observe the current `HEAD` commit, and
+establish that the canonical worktree is clean. For this purpose, clean means
+there are no staged changes, no unstaged tracked-file changes, and no
+untracked files. Ignored files do not participate in CAP's repository-delta
+model. This trusted-observed `HEAD` is the intent baseline. The kernel MUST
+derive repository/worktree identity, the clean-worktree condition, and baseline
+facts from trusted observations; model or Planner claims do not establish
+them. Intent authorization binds to this repository identity, worktree
+identity, `HEAD`, and exact file set. An approved intent is limited to one
+attempt in those bounds; it does not grant commit authority.
 
 ### 5.2 Reviewed-target commit candidate
 
@@ -165,7 +178,12 @@ For either grant kind, V1 follows this sequence:
 5. **Check and interpret.** Only a result equal to `true` is eligible to
    authorize. The kernel rechecks candidate integrity and all relevant
    repository, review, validation, and target freshness conditions, then
-   determines the grant from the candidate kind and contents.
+   determines the grant from the candidate kind and contents. For intent,
+   after the trusted UI confirmation and immediately before admitting the
+   Implementer, the trusted boundary MUST verify the same repository and
+   worktree, the same bound `HEAD`, and that the canonical worktree is still
+   clean. If any check fails, the authorization attempt fails closed; the old
+   UI result MUST NOT be recovered or rebound.
 6. **Create and consume process-local authority.** After the trusted UI result
    and freshness checks succeed, the kernel creates a capability in the
    current trusted runtime, bound to the exact candidate and purpose. Trusted
@@ -251,15 +269,27 @@ role/tool configuration MUST prevent Planner, Implementer, and Reviewer from
 invoking the final CAP-governed commit effect directly. The Implementer
 retains ordinary capabilities needed for implementation but cannot bypass
 that commit gate. Generic OpenCode permission approval MAY control whether a
-role can invoke a tool, but it is never CAP authorization. Before the target
-may enter review,
-trusted code MUST derive the complete resulting Git delta from the bound
-baseline and canonical worktree. Every changed path in that delta MUST be
-within the exact authorized intent scope. If any resulting change is out of
-scope, the attempt MUST NOT advance to review, and no out-of-scope resulting
-change may become part of the reviewed target or a later commit authorization
-candidate. This authorization does not grant a general workflow capability,
-mutable scope, or permission to commit.
+role can invoke a tool, but it is never CAP authorization. Once implementation
+begins, the worktree is expected to become dirty and `HEAD` MUST remain the
+bound baseline commit through target derivation. Before the target may enter
+review, trusted code MUST derive the complete resulting Git delta against that
+bound `HEAD` and canonical worktree, including staged and unstaged tracked
+changes and untracked files; ignored files do not participate. Resulting-delta
+membership uses exact path equality: a modified file's path MUST be
+authorized; an added or untracked file's path MUST be authorized; a deleted
+file's old path MUST be authorized; and a rename MUST have both its old and
+new paths authorized. The same old/new rule applies if Git represents a rename
+as a delete plus an add. Unattributed or concurrent edits need no per-edit
+attribution: they are part of the complete resulting delta and are subject to
+the same exact-path check.
+
+If `HEAD` changes or any resulting pathname falls outside the authorized set,
+the attempt MUST end and MUST NOT advance to review. CAP MUST NOT expand or
+amend the scope in place, recover against a changed `HEAD`, or let an
+out-of-scope change enter the reviewed target or a later commit authorization
+candidate. A later run may start from current repository reality with a fresh
+Planner proposal and fresh intent authorization. This authorization does not
+grant a general workflow capability, mutable scope, or permission to commit.
 
 The reviewed-target commit authorization is separate and bounds one prepared
 Git effect to the exact reviewed target, exact commit paths, and relevant
@@ -347,13 +377,14 @@ its PASS.
 
 The next milestone should implement and validate the process-scoped kernel
 and effect obligations without reopening M0's established host-boundary
-conclusion. It should settle the following implementation questions:
+conclusion or the settled intent-scope and intent-freshness semantics above.
+The following implementation details remain:
 
 * What canonical encoding and digest inputs represent each candidate kind,
-  exact repository/worktree identity, path scope, baseline, reviewed target,
-  and validation evidence?
-* Which Git observations establish candidate freshness and the exact prepared
-  effect, and at what points must the kernel repeat them?
+  the trusted-derived repository/worktree identity, the exact proposed path
+  set, the bound `HEAD`, reviewed target, and validation evidence?
+* Which concrete trusted observations and Git commands implement the required
+  clean-worktree, `HEAD`, complete-delta, and exact prepared-effect checks?
 * How does the plugin pass the frozen candidate to the TUI clearly while the
   kernel retains an unambiguous association between that invocation, result,
   and candidate?
@@ -365,7 +396,9 @@ conclusion. It should settle the following implementation questions:
   process-local single consumption, zero authority after restart, reserved
   commit execution, bounded Git effect, and verified outcome?
 
-These questions concern candidate representation, trusted observations,
-process-local kernel behavior, role/effect boundaries, and bounded Git
-effects. They do not require durable reusable grants, a broader workflow
-protocol, or a new host authorization primitive.
+These questions concern implementation of settled candidate, scope, and
+freshness semantics, process-local kernel behavior, role/effect boundaries,
+and bounded Git effects. The trusted evidence for reviewer-owned validation
+remains deferred to the Review → Commit milestone. None of these questions
+requires durable reusable grants, a broader workflow protocol, or a new host
+authorization primitive.

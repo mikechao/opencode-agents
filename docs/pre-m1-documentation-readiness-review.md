@@ -2,6 +2,8 @@
 
 **Status:** Historical, non-normative review snapshot. Its findings preserve the pre-decision readiness assessment and do not describe current V1 requirements or readiness. [Coding Authority Protocol](coding-authority-protocol.md) and [V1 Orchestration](v1-orchestration.md) contain the current normative architecture.
 
+**Subsequent decisions:** B1 is settled by the simplified authority-integrity and process-scoped model; I1 is settled by exact-file Planner scope; I2 is settled by the clean-worktree and bound-`HEAD` baseline. I3 remains deferred until the Review → Commit milestone. The historical findings below are retained as written.
+
 ## 1. Executive Status
 
 **NOT READY FOR M1 if the slice activates durable CAP authority.** CAP and orchestration are internally coherent, and the M0 **PASS** remains supported. But the documents do not establish that agent tools cannot modify the active authority kernel or its durable grant store. Without that boundary, replay protection could be bypassed through filesystem changes rather than authorization text. Two intent-side contracts also need clarification while defining M1: exact scope membership and what repository/worktree state the baseline and freshness checks bind.
