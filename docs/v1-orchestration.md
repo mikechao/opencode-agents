@@ -33,6 +33,14 @@ editing, testing, and development shell capabilities but cannot invoke the
 final CAP-governed commit effect. Generic OpenCode permission approval is not
 CAP authorization.
 
+For local V1, the active installed opencode-agents TUI plugin generation owns
+CAP authority in ordinary activation-private state. OpenCode client/session
+traffic may carry role inputs, artifacts, and results, but it does not carry
+CAP authority. Server-side role/session work may outlive a TUI generation;
+that work inherits no authority, and no lifecycle coupling is required. Any
+resulting repository changes are current repository reality for a later run,
+which follows the existing stop, derive current reality, and ask again rule.
+
 ## 3. V1 roles and context boundaries
 
 Planner, Implementer, and Reviewer each MUST run as separate OpenCode
@@ -199,6 +207,12 @@ the consumed capability. If that process dies, the run is over. A later run
 starts with zero CAP authority, inspects current repository reality, and
 requires fresh authorization for any further effect.
 
+When the TUI plugin generation reloads or deactivates, cleanup synchronously
+revokes its CAP authority. A late continuation from that generation must check
+revocation after awaiting host or role operations and before any
+authority-bearing action. OpenCode server/session activity can continue, but
+cannot inherit or restore that authority.
+
 ## 7. Ephemeral coordination state
 
 For the current run only, the Orchestrator may retain these coordination
@@ -289,4 +303,5 @@ cryptographic attestation.
 * Which trusted observations establish successful reviewer-owned validation?
 * Which trusted OpenCode role/tool configuration reserves the final commit
   effect while retaining the Implementer's ordinary development capabilities?
-  The exact configuration is an implementation detail to verify.
+  This remains an M1 implementation obligation; the exact configuration is
+  an implementation detail to verify.

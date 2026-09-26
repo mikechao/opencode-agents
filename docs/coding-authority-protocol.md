@@ -29,6 +29,18 @@ The resulting process-local capability is bound to its exact purpose and is
 single-use. Trusted process state consumes it; no durable record is required
 to create, use, or consume it.
 
+For local V1, the current trusted CAP runtime is the active installed
+opencode-agents TUI plugin generation in the local OpenCode TUI process.
+Candidate/result binding and every process-local capability MUST remain in
+that generation's ordinary activation-private state. The plugin cleanup MUST
+synchronously mark the generation revoked before other cleanup or awaited
+work. Every authority-bearing continuation MUST check that generation-local
+revocation after each await and immediately before creating, consuming, or
+using a capability or performing a CAP-governed effect. An old async
+continuation may resume, but it cannot cross that guard. A replacement
+generation starts with zero CAP authority. In this topology, the generation
+also owns trusted local Git observations and the bounded CAP effect.
+
 The following MUST NOT grant or enlarge CAP authority on their own: model
 output, agent prose, prompts or session text, tool arguments, candidate IDs or
 digests supplied by a model, generic OpenCode permissions, successful tool
@@ -68,6 +80,14 @@ candidate, handle the UI result, maintain process-local authority state,
 enforce role capabilities, and perform the checks and effects assigned to
 them. V1 does not defend these installed components against deliberate
 modification by a same-user actor.
+
+The supported V1 topology is ordinary local OpenCode. The local TUI/Git
+validation established local addressability and correspondence between the
+host-reported worktree and direct local Git observations in that
+configuration. The TUI plugin API does not expose reliable general
+local-versus-remote or same-machine identity, so CAP does not claim general
+topology attestation. Remote/multi-host operation is outside V1; no
+attestation or separate authority service is added for it.
 
 Milestone 0 established `ui.dialog.confirm` as the V1 trusted UI decision
 boundary. A programmatic or model-triggered request may open the dialog. Opening
@@ -230,11 +250,11 @@ process state. A live capability cannot be reused or reactivated after
 consumption.
 
 All CAP authority ends when that trusted runtime ends, reloads, crashes, or
-restarts. A later process MUST start with zero authority: it MUST NOT recover
-an approval, grant, consumed bit, candidate identity, or capability from a
-durable record, prior process output, or repository state. It derives current
-repository reality and requires fresh trusted UI authorization for any new
-effect. Prefer losing authority over recovering it.
+restarts. A later plugin generation or process MUST start with zero authority.
+It MUST NOT recover an approval, grant, consumed bit, candidate identity, or
+capability from a durable record, prior process output, or repository state.
+It derives current repository reality and requires fresh trusted UI
+authorization for any new effect. Prefer losing authority over recovering it.
 
 Durable storage is optional. SQLite or another local store MAY retain audit
 records, diagnostics, or non-authorizing reconciliation hints, but its
@@ -242,7 +262,9 @@ contents MUST NOT create a grant, restore a grant, mark a grant usable,
 reactivate a consumed grant, substitute for a current trusted UI result, or
 substitute for fresh trusted Git/repository observations. A fake or corrupted
 row MUST be incapable of producing authority. If a V1 slice needs no durable
-records, it MUST be permitted to have no durable store.
+records, it MUST be permitted to have no durable store. OpenCode's
+storage.memory(), storage.store(), server state, session state, and MCP state
+are likewise non-authorizing and MUST NOT carry or restore CAP authority.
 
 For intent authorization, a crash or restart ends the attempt. Worktree
 changes may remain as ordinary repository reality and inherit no authority;

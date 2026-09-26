@@ -2,13 +2,11 @@
 
 ## 1. Executive Conclusion
 
-The smallest viable V1 fit is **Candidate A: a TUI plugin owns the CAP kernel in the TUI process**. It is the only candidate with the established `ui.dialog.confirm` API and its result in the same trusted component that can retain the exact frozen candidate. The plugin can also use OpenCode's client APIs to create and observe fresh role sessions, and it can invoke Git directly in the local worktree under the TUI process's OS identity.
+Pre-M1 CAP hosting validation is complete: both local TUI-to-worktree/Git hosting and plugin-generation revocation passed. **Candidate A is accepted for local V1:** the active installed `opencode-agents` TUI plugin generation in the local OpenCode TUI process is the CAP runtime. It owns candidate/result binding, process-local authority, trusted local Git observations, and eventually the bounded CAP effect.
 
-This conclusion applies to the ordinary local setup where the TUI and the OpenCode location share the same machine and filesystem. OpenCode also supports connecting the TUI to a separately hosted server. In that mode, a Git subprocess started by the TUI would not necessarily observe the server's worktree. V1 currently excludes multi-host portability, so the TUI kernel should fail closed unless it can establish that the location is local and addressable from the TUI process.
+The supported V1 topology is ordinary local OpenCode. Experiment 1 established that the TUI-provided location is locally addressable, that direct local Git and OpenCode identify the same worktree root, and that branch and status observations agree. The TUI plugin API does not expose a reliable general local-versus-remote or same-machine identity. These checks validate the supported configuration but are not general topology attestation. Remote/multi-host operation is out of scope; the lack of attestation is not a V1 blocker and requires no new transport or proof mechanism.
 
-The kernel's usable state should live only in ordinary private state for the active TUI plugin generation. OpenCode's `storage.memory()` intentionally survives plugin hot reload, and `storage.store()` survives TUI restarts; neither is suitable for CAP authority. Plugin cleanup must revoke a generation before awaiting cleanup so an in-flight confirmation or operation from the old generation cannot create or use a grant after reload/deactivation.
-
-OpenCode has generic server plugin RPC and event mechanisms, but no TUI-specific trusted caller identity or built-in result-binding channel. A server or MCP component could receive a request from the TUI through ordinary APIs, but that would not prove that a `true` value came from the exact `ui.dialog.confirm` invocation. Keeping the kernel and final effect in the TUI avoids that transport protocol. MCP is unnecessary for V1.
+Usable authority lives only in ordinary activation-private state for the active TUI plugin generation. OpenCode `storage.memory()` survives plugin hot reload and `storage.store()` survives TUI restarts; neither may hold CAP authority. Experiment 2 confirmed that cleanup synchronously revokes an old generation before replacement activation and that its late affirmative dialog result is blocked. Server/session work may outlive the TUI generation, but it carries no CAP authority. No server-side or MCP-owned authority is required.
 
 ## 2. Current Required Kernel Responsibilities
 
@@ -49,13 +47,13 @@ The public `session.create` HTTP payload has no `parentID`. The internal session
 
 The TUI plugin can also register a keymap/slash command; the command API can pass raw slash-command arguments to its handler (`packages/plugin/src/tui/context.ts`, `KeymapCommand`, `Keymap.layer`). That gives a TUI-only integration a direct user request entrypoint. A request initiated as a model-callable tool would require a server-side request tool or other model-facing transport, which can remain request-only.
 
-**Inference.** V1's fresh role contexts can be driven from the TUI through separate role sessions; their session ID, prompt ID, and configured agent ID provide invocation references. Dogfood should confirm that using a configured `mode: "subagent"` agent through public `session.create` produces the intended role behavior. If V1 requires native parent-child relationships specifically, the public API does not currently offer that directly to TUI plugin code.
+**Inference.** V1's fresh role contexts can be driven from the TUI through separate role sessions; their session ID, prompt ID, and configured agent ID provide invocation references. Fresh subagent-context semantics are settled by prior OpenCode work and are not being reopened or treated as a pre-M1 hosting blocker here. The public API's lack of a parentID remains a host API detail, not a change to the settled V1 role boundary.
 
 ### Filesystem, process, and Git access
 
 **Source facts.** The TUI plugin SDK has no dedicated filesystem, child-process, Git-status, or Git-commit service. Its client can call the location-scoped VCS APIs, which expose info, base, status, branch-list, and diff routes but no commit effect (`packages/protocol/src/groups/vcs.ts`, `VcsGroup`; `packages/server/src/handlers/vcs.ts`, `VcsHandler`). The plugin module is loaded by dynamic `Host.load()` into the TUI plugin runtime (`packages/plugin/src/host.ts`, `load`; `packages/tui/src/plugin/context.tsx`, `resolvePlugin`). The TUI itself uses Node filesystem APIs, and OpenCode's plugin loaders support Node/Bun runtimes (`packages/tui/src/plugin/context.tsx`; `packages/plugin/src/source.node.ts`; `packages/plugin/src/source.bun.ts`).
 
-**Inference.** An installed TUI plugin can import the runtime's ordinary `node:fs` and `node:child_process` APIs (or the supported Bun equivalent) and run Git as trusted code in the TUI process. This is available because plugin code runs in the host runtime and V1 trusts the installed integration; it is not a sandboxed or first-class Git API. The plugin must use the OpenCode location's canonical directory, confirm that it is addressable locally, and refuse a remote location rather than run Git against an unrelated local path. The VCS HTTP APIs are useful observations, but direct local Git is the simpler source for the exact clean-worktree, `HEAD`, complete delta, prepared effect, and result checks.
+**Inference.** An installed TUI plugin can import the runtime's ordinary `node:fs` and `node:child_process` APIs (or the supported Bun equivalent) and run Git as trusted code in the TUI process. This is available because plugin code runs in the host runtime and V1 trusts the installed integration; it is not a sandboxed or first-class Git API. In the supported ordinary local launch, the plugin checks that the OpenCode location is locally addressable and that its Git top-level corresponds to OpenCode's reported worktree root. The API cannot establish same-machine identity for an arbitrary remote connection, so remote/multi-host configurations are outside V1 rather than a case that receives new detection machinery. The VCS HTTP APIs are useful observations, but direct local Git is the simpler source for the exact clean-worktree, `HEAD`, complete delta, prepared effect, and result checks.
 
 ### Server plugins, lifecycle, and cross-runtime APIs
 
@@ -83,9 +81,9 @@ OpenCode also supports MCP server-initiated elicitation. The MCP client converts
 
 **Capabilities.** The TUI plugin API supplies the trusted confirm invocation/result and OpenCode client access. It can create fresh role sessions, send bounded inputs, wait for completion, and associate outputs with exact session and message identities. It can own candidate objects, freshness results, and single-use capabilities in activation-private memory. The same plugin process can run direct Git subprocesses against a locally addressable canonical worktree.
 
-**Missing pieces and constraints.** There is no TUI SDK Git/process service; raw runtime subprocess use is required. The public session API creates fresh agent-selected sessions but omits `parentID`. The plugin must not use host `storage.memory()` or durable `storage.store()` for authority. TUI `Context.client` can reach a remote server, so local Git must be gated on a same-host worktree. Plugin cleanup does not, by itself, prove that every asynchronous confirmation/API continuation has ceased; revoke the activation synchronously and reject any stale continuation.
+**Constraints.** There is no TUI SDK Git/process service; trusted plugin code uses ordinary runtime APIs for local Git observations. The plugin must not use host `storage.memory()` or durable `storage.store()` for authority. TUI `Context.client` can reach a remote server, but remote/multi-host operation is outside V1. Experiment 1's path/addressability and worktree-correspondence checks support the ordinary local topology without claiming general same-machine attestation. Experiment 2 confirms synchronous cleanup revocation and rejection of a stale continuation after a late affirmative result.
 
-**Effect enforcement.** The plugin should not register a model-callable CAP commit tool. Its private code can run the bounded Git effect after consuming the capability. OpenCode's trusted role/session tool permissions must still deny Planner, Implementer, and Reviewer direct `git commit` through ordinary shell access. The ordinary shell permission details remain an existing implementation obligation; hosting the kernel in the TUI does not remove it.
+**Effect enforcement.** The plugin should not register a model-callable CAP commit tool. Its private code can run the bounded Git effect after consuming the capability. OpenCode's trusted role/session tool permissions must still deny Planner, Implementer, and Reviewer direct `git commit` through ordinary shell access. Implementing that role/effect denial remains an M1 obligation; hosting the kernel in the TUI does not remove it.
 
 **Cost.** One host plugin generation owns the candidate, exact confirmation result, capability, observations, orchestration, and effect. Session work crosses the existing OpenCode client API, but no authority or result receipt crosses to the server.
 
@@ -127,8 +125,8 @@ If the split instead puts Git observations/effects or capabilities in the server
 | --- | --- | --- | --- | --- |
 | Candidate/result binding | Direct dialog promise and frozen candidate can stay in one activation closure | No UI API; generic RPC does not identify the TUI invocation | No direct TUI confirm callback; MCP tool call is model-facing | TUI binds locally; server can send only an untrusted request |
 | Process-local state | Yes; private activation state, with explicit revoke on cleanup | Yes, in server activation/process | Yes, in service process | Yes, authority remains only in TUI activation |
-| Lifecycle fit | Strong for TUI reload/deactivation/exit if stale continuations are revoked | Server may outlive TUI exit/reload | MCP process may outlive TUI exit while server remains | Strong for authority; server state is configuration/request only |
-| Git access | Direct local subprocess possible; same-host location required | Server VCS observations and local server process; host execution plane for remote locations | Direct subprocess in service execution plane | Same as A for the effect; server may supply roles/config only |
+| Lifecycle fit | **Validated PASS:** cleanup revokes before replacement activation; a late affirmative continuation is blocked | Server may outlive TUI exit/reload | MCP process may outlive TUI exit while server remains | Strong for authority; server state is configuration/request only |
+| Git access | Validated for the ordinary local launch; no general remote/multi-host support | Server VCS observations and local server process; host execution plane for remote locations | Direct subprocess in service execution plane | Same as A for the effect; server may supply roles/config only |
 | Agent orchestration | OpenCode client session create/prompt/wait and event APIs | Server session API; internal subagent service available to server code | No natural host-session orchestration API | TUI drives sessions with existing client APIs |
 | Bounded effect support | Direct private Git effect; role shell permissions still block bypass | Can perform effect directly but needs trusted UI result | Can perform effect, but result/control path is missing | Effect stays in TUI; no model-facing commit operation |
 | New trusted transport required | None for authority | Yes, to bind TUI result to server grant | Yes, to bind TUI result to service grant | None for authority; optional request event is non-authorizing |
@@ -141,7 +139,7 @@ Use an installed `opencode-agents` TUI plugin as the CAP runtime for local V1:
 
 1. **Authority owner:** the current TUI plugin activation in the TUI process. The active generation owns immutable candidates, the pending confirmation invocation, current capabilities, consumption state, and any commit reconciliation needed while it remains live.
 2. **UI binding:** the generation freezes a candidate, calls `context.ui.dialog.confirm()` directly, retains the candidate in that same invocation, and accepts only the promise result from that invocation. A synchronous revocation flag invalidates the generation on deactivation/reload before any cleanup wait.
-3. **Repository facts/effects:** use the OpenCode location directory only after verifying it is the same locally addressable worktree; run Git directly from the trusted TUI plugin code. The OpenCode VCS API can help locate/status the worktree but does not perform the CAP commit.
+3. **Repository facts/effects:** in the supported ordinary local setup, verify that the OpenCode location is locally addressable and that its Git top-level corresponds to OpenCode's reported worktree root, then run Git directly from trusted TUI plugin code. This path check is not general same-machine attestation. The OpenCode VCS API can help locate/status the worktree but does not perform the CAP commit.
 4. **Orchestration:** use OpenCode client session APIs for fresh role sessions. Bind each prompt/completion to the session and prompt IDs plus the intended configured agent. Treat every output as untrusted until trusted code derives or verifies the repository/review/validation facts.
 5. **Cross-process data:** session create/prompt/result traffic already crosses the OpenCode TUI-to-server API. It carries role inputs and artifacts, not the UI confirmation result, capability, or consumed bit. If a server plugin exposes a request tool, its event payload remains an untrusted request only.
 6. **Reload/deactivation/TUI exit:** cleanup revokes local authority and makes any late result from an old generation unusable. TUI process exit removes its private memory. OpenCode's server may remain alive and an admitted session may continue; OpenCode may also resume its own durable background session work after server restart. Such work has no CAP authority and must remain unable to invoke the final commit effect. A later TUI activation starts with zero CAP authority and derives current repository reality. Server plugin in-memory state ends with that server plugin generation/process; OpenCode's session records and job lifecycle remain separate host state.
@@ -149,28 +147,68 @@ Use an installed `opencode-agents` TUI plugin as the CAP runtime for local V1:
 
 Planner, Implementer, and Reviewer must still be unable to call `git commit` through their normal shell permissions. The TUI plugin's private effect is not registered as an agent tool. Session/agent permission rules that block direct shell commit remain part of the settled role/effect obligation, not a reason to move authority to the server.
 
-## 10. Unknowns Requiring Dogfood
+## 10. Completed Pre-M1 Hosting Validation
 
-These are focused runtime checks, not reasons to add architecture:
+Both hosting experiments passed.
 
-- Confirm the supported local TUI launch exposes the OpenCode location as a path that the TUI process can use for direct Git observations/effects. Remote-server mode should be rejected for this V1 arrangement.
-- Confirm that deactivation/reload cleanup can synchronously revoke a pending dialog operation and that a late `true` from its old promise cannot create or use a capability. Source exposes cleanup, but it does not automatically cancel arbitrary plugin promises.
-- Confirm that fresh role sessions created through the public client API with configured `mode: "subagent"` agents provide the intended isolated context and observable session/prompt identities. The public API does not create parent-linked child sessions.
-- Confirm lifecycle behavior for admitted server-side role sessions when the TUI exits or crashes. The source says prompt admission schedules server-side work and the default server is managed separately; the effect path must remain unavailable to those roles after the TUI kernel is gone.
-- Confirm the trusted role/session configuration blocks direct `git commit` through ordinary shell forms while preserving the Implementer's required development shell access. This is the existing role/effect enforcement check, not a CAP authorization redesign.
+### Experiment 1 — Local TUI to worktree/Git
 
-M0's dialog outcome behavior does not require another investigation here.
+The committed dogfood on 2026-09-26 passed in the ordinary local OpenCode
+launch. The TUI plugin obtained the target location from trusted plugin
+context; the location was locally addressable; and OpenCode's reported
+worktree root matched direct local Git's top-level. The plugin read the
+current HEAD, branch, and status directly from Git without a model-supplied
+path or authority value. Direct Git and OpenCode VCS branch/status
+observations agreed.
 
-## 11. Documentation Consequence
+This does not prove that a separately hosted server with a coincidentally
+matching path is on the same machine. The TUI API exposes no reliable general
+local-versus-remote identity. Local addressability and worktree correspondence
+are checked in the supported ordinary local configuration; no general
+same-machine/topology attestation is claimed or required. Remote/multi-host
+operation is outside V1.
 
-No normative documents were changed in this task. When the hosting choice is accepted, the smallest future edits are:
+### Experiment 2 — Plugin-generation revocation
 
-- `docs/charter.md`: name the TUI plugin activation in the local TUI process as the concrete CAP runtime; state the same-host worktree boundary and distinguish the server process, which may continue after TUI exit.
-- `docs/coding-authority-protocol.md`: assign candidate/result binding, capability memory, Git observations, and bounded effect to that TUI activation; require synchronous generation revocation and prohibit host `storage.memory()`/durable storage as authority sources; clarify that server API and MCP messages cannot supply confirmation evidence.
-- `docs/v1-orchestration.md`: specify that the TUI plugin drives fresh role sessions through OpenCode client APIs and records their session/prompt identities; state that role artifacts cross the normal session API while approval results/capabilities do not; preserve the existing direct-commit denial requirement.
+Manual dogfood on 2026-09-26 passed the stronger late-affirmative case.
+Generation A activated and started a pending confirmation, then cleanup
+recorded revocation. Replacement generation B activated afterward. The
+original A dialog remained usable; selecting its affirmative action after B
+was active resumed A's old continuation. A observed its revoked flag and
+recorded that the continuation was blocked. It recorded no subsequent
+would-grant or would-use event.
 
-If dogfood shows that the public fresh-session API does not meet the settled fresh-sub-agent requirement, the orchestration document should name the exact supported invocation mechanism before implementation. That would not change the TUI ownership conclusion unless the host also lacks a usable trusted Git execution path in the supported local launch.
+This validates the generation-local revocation guard. CAP authority belongs
+in ordinary activation-private state for the active TUI plugin generation;
+later generations start with zero authority. OpenCode storage, server state,
+session state, MCP state, and diagnostic records do not carry or restore it.
 
-## 12. Next Decision
+## 11. M1 Boundary
 
-Decide that **the V1 CAP runtime is the active `opencode-agents` TUI plugin generation in the local TUI process**, with no server-side or MCP-owned authority; then resolve the five focused dogfood items before implementing the kernel.
+The hosting decision is settled; the remaining items are M1 implementation
+work, not additional pre-M1 blockers:
+
+- Fresh subagent-context semantics are settled by prior OpenCode work and are
+  not reopened here.
+- Implementing CAP candidates, binding, freshness checks, process-local
+  single-use capabilities, trusted Git observations, and the bounded effect
+  belongs to M1.
+- Preventing Planner, Implementer, and Reviewer from invoking the final
+  CAP-governed commit effect through ordinary tools remains an M1
+  implementation obligation.
+- OpenCode server-side role/session work may outlive the TUI generation. It
+  has no CAP authority; no lifecycle coupling is required, provided the
+  reserved CAP commit effect remains unavailable to those roles.
+
+## 12. Conclusion
+
+This work does not reopen M0, B1, I1, or I2. The settled status is:
+
+- M0: **PASS / settled**
+- B1: **settled**
+- I1: **settled**
+- I2: **settled**
+- Pre-M1 local TUI/Git hosting: **PASS**
+- Pre-M1 plugin-generation revocation: **PASS**
+
+**Pre-M1 CAP hosting validation is complete. The next step is M1.**
