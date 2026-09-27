@@ -1,5 +1,9 @@
 # M1 Git target derivation reassessment
 
+**Status:** This report's proposed temporary-index M1 design was subsequently
+superseded by the simpler M1 changed-path scope boundary. The normative
+documents define the current architecture.
+
 ## 1. What M1 needs at the Git boundary
 
 M1 needs the set of repository paths that could enter the resulting target, compared with the exact authorized path set. That set is the union of changes in the real index against bound `HEAD` and changes in a Git-staged view of the worktree against the same `HEAD`. A rename contributes both names; M1 does not need rename detection. M1 also needs the same canonical root and `HEAD` at the freshness and final gates ([M1 contract](milestone-1-intent-implementation.md)).

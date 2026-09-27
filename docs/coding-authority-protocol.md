@@ -112,7 +112,7 @@ TCB. V1 does not require physical-human attestation.
 | OpenCode trusted UI | Display the meaningful candidate and collect and return the UI decision. It does not construct authority, bind a result to a candidate, or check repository freshness. |
 | Authority kernel | Derive trusted facts; construct, canonicalize, digest, and freeze candidates; associate the UI result with the exact presented candidate; recheck candidate and repository freshness; and create, bind, and consume process-local capabilities. |
 | Optional durable local store | Keep audit records, diagnostics, or non-authorizing reconciliation hints. SQLite is an acceptable optional implementation. Its contents MUST NOT create, restore, mark usable, reactivate, or substitute for a capability or trusted observation. V1 permits no durable store. |
-| OpenCode role/tool configuration | Give Planner, Implementer, and Reviewer instructions prohibiting intentional reserved final commit/history effects. Permissions may deny obvious direct commit commands as defense in depth; they do not enforce a complete effect boundary for agents with ordinary development shell access. Generic OpenCode permission approval is never CAP authorization. |
+| OpenCode role/tool configuration | Require role instructions to prohibit intentional reserved final commit/history effects. Implementer instructions also require exact authorized-path scope and prohibit intentional Git/configuration or shell-state manipulation to evade M1 observation. Permissions SHOULD deny obvious direct reserved Git/shell operations as defense in depth while preserving normal development ability. These behavioral constraints do not contain an Implementer with ordinary shell access. Generic OpenCode permission approval is never CAP authorization. |
 | Git and validation components | Supply trusted repository observations and perform only narrowly bounded effects authorized by the kernel. They do not grant authority. |
 | OpenCode agents and models | Orchestrate work and request candidate presentation. Their claims, arguments, and output are not authorization or trusted observations. |
 
@@ -153,27 +153,21 @@ intact in the intent candidate. CAP MUST NOT silently add, expand, infer, or
 substitute any proposal field for the Planner.
 
 At candidate construction, trusted code MUST establish the canonical local
-worktree root, observe the current `HEAD` commit, and establish the M1
-clean-target condition. The **real staged target** is the set of paths changed
-in the real Git index relative to bound `HEAD`. A **Git-staged worktree
-target** is the set of paths changed in a fresh Git-staged view of the current
-worktree relative to the same `HEAD`, derived with an isolated temporary
-index seeded from `HEAD` and Git's ordinary staging semantics. The M1
-clean-target condition means both sets are empty. Two independently derived
-Git-staged worktree target trees MUST agree. At candidate construction,
-immediately before admission, and after implementation, trusted code MUST
-verify that the real index's Git-observed entry state is stable across each
-derivation and recheck the canonical root and bound `HEAD` before returning a
-target. The real index MUST NOT be modified. Ignored untracked files are
-outside the target under ordinary Git ignore semantics. This
-trusted-observed `HEAD` is the intent baseline. The kernel MUST derive the
-canonical worktree root, clean-target condition, and baseline facts from
-trusted observations; model or Planner claims do not establish them. CAP MUST
-show the complete frozen proposal to the human. The human
-authorizes one implementation attempt of the exact frozen intent, plan, and
-file set in that worktree at that `HEAD`. The frozen proposal remains available
-for later Review; the single-use intent capability is what
-admission consumes. Intent authorization does not grant commit authority.
+worktree root, observe the current `HEAD` commit, and require ordinary Git
+observation to report a clean baseline: no staged changed paths, no unstaged
+tracked changed paths, and no ordinary untracked paths. Ignored untracked
+files remain outside this M1 observation. The observation MUST be read-only
+with respect to repository content and Git history. Its implementation
+mechanism is not normative; M1 does not prescribe Git tree construction,
+index parsing, content hashing, filesystem snapshots, or similar machinery.
+This trusted-observed `HEAD` is the intent baseline. The kernel MUST derive
+the canonical worktree root, cleanliness, and baseline facts from trusted
+observations; model or Planner claims do not establish them. CAP MUST show the
+complete frozen proposal to the human. The human authorizes one implementation
+attempt of the exact frozen intent, plan, and file set in that worktree at
+that `HEAD`. The frozen proposal remains available for later Review; the
+single-use intent capability is what admission consumes. Intent authorization
+does not grant commit authority.
 
 ### 5.2 Reviewed-target commit candidate
 
@@ -216,8 +210,8 @@ For either grant kind, V1 follows this sequence:
    determines the grant from the candidate kind and contents. For intent,
    after the trusted UI confirmation and immediately before admitting the
    Implementer, the trusted boundary MUST verify the same canonical worktree
-   root, the same bound `HEAD`, and continued satisfaction of the M1
-   clean-target condition. If any check fails, the authorization attempt
+   root, the same bound `HEAD`, and continued ordinary Git-observed
+   cleanliness. If any check fails, the authorization attempt
    fails closed; the old UI result MUST NOT be recovered or rebound.
 6. **Create and consume process-local authority.** After the trusted UI result
    and freshness checks succeed, the kernel creates a capability in the
@@ -227,11 +221,12 @@ For either grant kind, V1 follows this sequence:
    authorization immediately before its bounded Git commit effect. Durable
    records are optional and cannot create or change this authority.
 7. **Perform the authorized operation and verify.** For intent authorization,
-   implementation may use normal OpenCode editing and shell capabilities; CAP
-   constrains which resulting target may advance to review as specified in
-   Section 9. For reviewed-target commit authorization, the kernel invokes
-   only the bounded Git effect covered by the consumed grant. Trusted code
-   verifies the relevant resulting repository state.
+   implementation may use normal OpenCode editing and shell capabilities; M1
+   applies the ordinary changed-path scope gate in Section 9 and stops before
+   Review. A later milestone constructs and binds the exact reviewed target.
+   For reviewed-target commit authorization, the kernel invokes only the
+   bounded Git effect covered by the consumed grant. Trusted code verifies
+   the relevant resulting repository state.
 
 If a check, binding, process-local consumption, or effect cannot complete with
 an unambiguous result, the kernel fails closed. A changed or stale candidate
@@ -298,63 +293,60 @@ atomic cross-restart grant consumption, or a separate authority server.
 
 ## 9. Bounded effects and verification
 
-Intent authorization bounds which resulting Git target path set from one
-attempt may advance to review. Implementation may use normal OpenCode editing,
-testing, and development shell capabilities; CAP does not mediate or
-individually authorize each transient filesystem mutation. Planner,
-Implementer, and Reviewer role instructions MUST prohibit intentionally
-performing reserved final commit/history effects. OpenCode permissions MAY
-deny obvious direct commit commands as defense in depth, but MUST NOT be
-described as a complete commit-effect boundary: an allowed development shell
-command can cause the effect through a child process. Agent compliance with
-role instructions is not trusted evidence. Generic OpenCode permission
-approval MAY control whether a role can invoke a tool, but it is never CAP
-authorization. Once implementation begins, `HEAD` MUST remain the bound
-baseline commit through target derivation. Before the target may enter review,
-trusted code MUST derive the target path set as the union of paths changed in
-the real staged target and paths changed in a fresh Git-staged worktree target,
-each compared with the same bound `HEAD`. The worktree target MUST be derived
-twice with independently created temporary indexes seeded from bound `HEAD`
-and populated using Git's ordinary staging semantics; the resulting Git trees
-MUST agree. The real index MUST NOT be modified, and its Git-observed entry
-state MUST be stable across derivation. Trusted code MUST require bound
-`HEAD` to remain unchanged and recheck the canonical root and `HEAD` before
-returning the target. This is a bounded consistency observation, not an atomic
-filesystem snapshot; M1 does not claim to detect transient away-and-back
-mutations that leave the same final Git target.
+Intent authorization permits one bounded Plan → Implement attempt. M1 checks
+scope after that attempt with trusted ordinary Git observations; it does not
+construct, materialize, certify, or bind an exact review target. Implementation
+may use normal OpenCode editing, testing, and development shell capabilities;
+CAP does not mediate or individually authorize each transient filesystem
+mutation. Once implementation begins, `HEAD` MUST remain the bound baseline
+commit. After the Implementer finishes, trusted code MUST verify the same
+canonical worktree root and bound `HEAD`, then independently derive the
+ordinary Git-observed set of changed repository paths. Conceptually, that set
+includes staged changed paths, unstaged tracked changes, and ordinary
+untracked paths; ignored untracked files remain outside the observation. The
+observation MUST be read-only with respect to repository content and Git
+history, but its implementation mechanism is not normative.
 
-Every pathname appearing in either target difference MUST belong to the exact
-authorized file set. Rename detection is unnecessary: a rename represented as
-a deletion and an addition naturally requires both the old and new paths to
-be authorized. Ignored untracked files are excluded by ordinary Git ignore
-semantics; a path already present in the real index remains part of the real
-staged target. Physical-only differences that Git would not materialize into
-either target are outside M1's advancement target. M1 does not claim to detect,
-prohibit, or attest to every physical filesystem mutation, and does not
-require a custom index parser or filesystem snapshot engine to reproduce
-Git's pathname case, executable mode, symlink, stat-cache, or other
-configuration semantics. Concurrent or unattributed changes that appear in
-either target are subject to the same exact-path check.
+Every observed path MUST belong by exact path equality to the authorized file
+set. Rename handling need only preserve exact-file scope semantics: when both
+old and new paths are observable as part of the change, both must be
+authorized. Concurrent or unattributed observed changes receive the same
+scope check. After this gate, M1 stops before Review and Commit. Passing the
+gate does not establish semantic satisfaction, complete physical mutation
+detection, an exact review target, or commit readiness. Exact reviewed-target
+construction and binding belong to the later review/commit boundary.
 
-Trusted derivation MUST fail closed on unsupported or ambiguous repository
-states, including unmerged index entries, sparse or skip-worktree state,
-intent-to-add entries, gitlinks/submodules, unsupported index or target states,
-unsupported target file types or modes, Git command failures, disagreement
-between independent worktree target trees, or an unstable real index. It MUST
-NOT add generalized Git machinery or custom filesystem snapshotting to support
-those states.
+Planner, Implementer, and Reviewer role instructions MUST prohibit
+intentionally performing reserved final commit/history effects. The
+Implementer's system instructions MUST also require it to modify only the
+exact authorized repository paths and prohibit intentionally manipulating
+Git configuration, index metadata, ignore rules, repository metadata, or
+other shell-accessible state to conceal changes or evade M1 observation.
+OpenCode permissions SHOULD deny obvious direct reserved Git/shell operations
+as defense in depth while preserving normal development ability. These are
+behavioral constraints, not CAP authorization or an adversarial containment
+boundary. Agent compliance is not trusted evidence. Generic OpenCode
+permission approval MAY control whether a role can invoke a tool, but it is
+never CAP authorization.
 
-The attempt MUST end and MUST NOT advance to review if `HEAD` changes for any
-reason, trusted derivation cannot establish the required bounded consistency,
-an unsupported or ambiguous state is found, or any resulting pathname falls
+M1 does not claim to detect or prevent every deliberately concealed repository
+or filesystem mutation available to an Implementer with ordinary development
+shell access. It is not required to defend against deliberate use of Git
+configuration, index flags, child processes, filesystem tricks, or equivalent
+means to evade ordinary Git observation. V1 adds no sandbox, alternate OS
+user, custom filesystem snapshot engine, hardened Git execution environment,
+or exhaustive Git-feature sanitizer. These restrictions do not change the
+separate trusted CAP authority for the eventual reviewed-target commit.
+
+The attempt MUST end without M1 PASS if `HEAD` changes, the canonical root or
+ordinary Git observation cannot be established, or any observed path falls
 outside the authorized set. A changed-`HEAD` check detects the effect after
 it occurs; V1 makes no claim that ordinary development shell access physically
 prevents an unauthorized Git-history effect. CAP MUST NOT expand or amend the
-scope in place, recover against a changed `HEAD`, or let an out-of-scope change
-enter the reviewed target or a later commit authorization candidate. A later
-run may start from current repository reality with a fresh Planner proposal
-and fresh intent authorization. This authorization does not
-grant a general workflow capability, mutable scope, or permission to commit.
+scope in place or recover against a changed `HEAD`. A later run may start from
+current repository reality with a fresh Planner proposal and fresh intent
+authorization. This authorization does not grant a general workflow
+capability, mutable scope, or permission to commit.
 
 The reviewed-target commit authorization is separate and bounds one prepared
 Git effect to the exact reviewed target, exact commit paths, and relevant
@@ -392,16 +384,28 @@ a later run starts without authority and derives current Git reality.
    with zero CAP authority.
 8. Git and validation outputs are trusted only as observations or bounded
    effects; they never create authority.
-9. Planner, Implementer, and Reviewer instructions prohibit intentional
-   reserved final commit/history effects. Direct-command permission denials
-   are optional defense in depth, not a complete effect boundary. Agent
-   compliance is not trusted evidence; generic permission approval is not
-   CAP authorization. Only the trusted CAP path is authorized to perform the
-   reviewed-target commit effect.
-10. CAP performs a commit only for a fresh, reviewed target under distinct,
+9. At candidate construction, M1 establishes the canonical root, bound `HEAD`,
+   and ordinary Git-observed cleanliness (no staged, unstaged tracked, or
+   ordinary untracked changed paths; ignored untracked files are excluded).
+   Immediately before Implementer admission, trusted code rechecks the same
+   root, bound `HEAD`, and cleanliness. After implementation, it verifies the
+   same root and bound `HEAD`, independently observes ordinary changed paths, and
+   requires every observed path to equal an authorized file path. M1 then
+   stops before Review or Commit; it does not construct an exact target.
+10. Implementer system instructions MUST require exact authorized-path scope,
+    prohibit intentionally performing reserved commit/history effects, and
+    prohibit intentional manipulation of Git configuration, index metadata,
+    ignore rules, repository metadata, or other shell-accessible state to
+    conceal changes or evade ordinary M1 observation. OpenCode permissions
+    SHOULD deny obvious direct reserved Git/shell operations as defense in
+    depth while preserving normal development ability. These are behavioral
+    constraints, not CAP authorization or an adversarial containment boundary;
+    agent compliance is not trusted evidence. M1 does not guarantee detection
+    of deliberate concealment by an Implementer with ordinary shell access.
+11. CAP performs a commit only for a fresh, reviewed target under distinct,
     consumed commit authority, and trusted code independently verifies its
     outcome.
-11. Durable records are optional and non-authorizing; mutable inputs,
+12. Durable records are optional and non-authorizing; mutable inputs,
     repository-controlled state, and records cannot create, enlarge, restore,
     replay, reuse, or substitute CAP authority. CAP-related files need not be
     physically unwritable for authority correctness. Tampering that only
@@ -419,9 +423,10 @@ require Docker, a general sandbox, a separate OS user, runtime attestation,
 general filesystem isolation, or changed-HEAD recovery. It does not add
 finding adjudication or compatibility with the predecessor project's
 Workflow MCP. OpenCode permissions govern role/tool capability and are not
-CAP authorization. M1 checks the Git target path set at its trusted
-derivation gates; it does not claim to prevent, detect, or attest to physical
-filesystem mutations that do not appear in either Git target.
+CAP authorization. M1 checks ordinary Git-observed cleanliness and changed
+paths at its trusted gates. It does not claim to detect or prevent every
+physical or deliberately concealed repository mutation available to an
+Implementer with ordinary development shell access.
 
 ## 12. Relationship to Milestone 0
 
@@ -458,9 +463,13 @@ The following implementation details remain:
 * How does the plugin pass the frozen candidate to the TUI clearly while the
   kernel retains an unambiguous association between that invocation, result,
   and candidate?
+* How will the later Reviewer milestone construct and bind an exact reviewed
+  target to independent review, reviewer-owned validation, and subsequent
+  commit authorization?
 * How will role instructions prohibit intentional reserved commit/history
-  effects, and which direct-command permission denials, if any, should provide
-  defense in depth while retaining ordinary development shell access?
+  effects and intentional attempts to evade ordinary M1 observation, and which
+  direct permission denials should provide defense in depth while retaining
+  ordinary development shell access?
 * Which focused implementation checks demonstrate stale-candidate handling,
   process-local single consumption, zero authority after restart, reserved
   commit execution, bounded Git effect, and verified outcome?

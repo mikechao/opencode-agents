@@ -4,24 +4,32 @@
 
 Its purpose is to determine whether the useful safety guarantees learned from `codex-agents` can be preserved without a general workflow engine, repair/recovery lifecycle, or large model-facing state protocol.
 
-The protocol protects six facts: the exact Planner proposal (intent, plan, and repository file scope) approved by the human; the exact resulting target; an independent review and its reviewer-owned validation; a fresh human authorization of the reviewed commit; the exact prepared Git effect; and the verified Git outcome.
+The protocol protects six facts: the exact Planner proposal (intent, plan, and repository file scope) approved by the human; the exact reviewed target established after M1; an independent review and its reviewer-owned validation; a fresh human authorization of the reviewed commit; the exact prepared Git effect; and the verified Git outcome.
 
 Authority is mechanical, not conversational. Model output, agent prose, prompts, session transcripts, previous runs, generic OpenCode permission state, and model-supplied tool arguments do not constitute authorization. Facts that can be independently observed by trusted code are recomputed rather than accepted from an agent.
 
-For M1, the advancement target is the exact Git target path set: the union of
-paths changed in the real staged target and paths changed in a fresh
-Git-staged worktree target, each relative to the bound `HEAD`. A fresh
-worktree target is derived with an isolated temporary index seeded from that
-`HEAD` and Git's ordinary staging semantics. The real index is never modified,
-resulting Git trees from two independent worktree derivations must agree, and
-every path in either difference must belong to the exact authorized file set.
-M1 starts only when both targets have no changed paths. Ignored untracked files
-follow ordinary Git ignore semantics. These observations provide bounded
-consistency for Git-materializable targets; they do not claim to detect,
-prohibit, or attest to every physical filesystem mutation or transient
-away-and-back change. Physical-only differences outside both Git targets are
-outside M1's advancement target, and M1 does not require custom filesystem
-machinery to reproduce Git configuration behavior.
+M1 is one authorized Plan → Implement attempt followed by an ordinary
+Git-observed changed-path scope gate. Before authorization, trusted code
+establishes the canonical repository/worktree root, binds the attempt to
+current `HEAD`, and requires ordinary Git observation to report no staged
+changed paths, no unstaged tracked changes, and no ordinary untracked paths.
+Ignored untracked files remain outside this observation. Immediately before
+Implementer admission, trusted code rechecks the same root, bound `HEAD`, and
+cleanliness. After the Implementer finishes, trusted code verifies the same
+canonical root and bound `HEAD`, independently derives ordinary Git-observed
+changed paths, and requires every observed path to belong by exact path
+equality to the authorized file set. Rename handling preserves exact-file
+scope when both old and new paths are observable. These observations are read-only with
+respect to repository content and Git history; their implementation
+mechanism is not normative. M1 PASS means only that the ordinary observed
+changes are within authorized scope, and M1 stops before Review or Commit.
+M1 does not construct or bind an exact review target.
+
+After M1, the later Reviewer milestone defines how an exact reviewed target
+is constructed and bound to independent review and reviewer-owned validation,
+then bound to reviewed-target commit authorization. This preserves V1's goal
+of protecting an exact reviewed target and the resulting Git effect without
+claiming that M1 has established that target.
 
 A run is one attempt to advance one approved intent, in one canonical worktree and against one bound repository baseline, toward one reviewed and explicitly authorized commit. Ordinary failures terminate the run. A later run starts from current repository reality with fresh authority; it inherits no approval, validation, review, or repair lineage.
 
@@ -33,7 +41,27 @@ For local V1, the current trusted CAP runtime is the active installed opencode-a
 
 The supported V1 topology is ordinary local OpenCode. The hosting checks establish local addressability and correspondence between OpenCode's reported worktree and direct local Git observations in that configuration; the TUI API does not provide general same-machine or local-versus-remote attestation. Remote/multi-host operation is outside V1, and this lack of attestation is not a blocker within that scope. CAP authority does not move to a server plugin, MCP service, OpenCode session state, or durable storage. Repository contents, worktree state, model output, tool arguments, agent prose, and durable records do not create authority merely because they exist. V1 does not defend installed trusted components against deliberate same-user modification, and does not require Docker, general sandboxing, filesystem isolation, a separate OS user, runtime attestation, or a separate authority service.
 
-Planner, Implementer, and Reviewer role instructions MUST prohibit intentionally performing reserved final commit/history effects. The Implementer retains ordinary editing, testing, and development shell capabilities. OpenCode permissions MAY deny obvious direct commit commands as defense in depth, but they cannot prevent an allowed shell command from causing a Git-history effect through a child process. Agent compliance is not trusted evidence. Trusted code independently verifies Git invariants: for M1, the bound `HEAD` MUST remain unchanged through implementation and final target derivation, and any change ends the attempt without PASS or advancement. This check detects a violation after its effect; M1 does not claim physical prevention. Generic OpenCode permission approval controls tool capability only and is never CAP authorization. Only the trusted CAP path is authorized to perform the eventual reviewed-target commit effect.
+Planner, Implementer, and Reviewer role instructions MUST prohibit
+intentionally performing reserved final commit/history effects. The
+Implementer's system instructions MUST also require modification only within
+the exact authorized repository paths and prohibit intentional manipulation
+of Git configuration, index metadata, ignore rules, repository metadata, or
+other shell-accessible state to conceal changes or evade ordinary M1
+observation. The Implementer retains ordinary editing, testing, and
+development shell capabilities. OpenCode permissions SHOULD deny obvious
+direct reserved Git/shell operations as defense in depth while preserving
+normal development ability. These role restrictions are behavioral
+constraints, not CAP authorization or an adversarial containment boundary.
+Agent compliance is not trusted evidence. M1 does not guarantee detection or
+prevention of every deliberately concealed repository or filesystem mutation
+available to an Implementer with ordinary development shell access; V1 adds
+no sandbox, alternate OS user, custom filesystem snapshot engine, hardened
+Git environment, or exhaustive Git-feature sanitizer. Trusted code
+independently checks that `HEAD` remains bound through implementation and the
+ordinary changed-path gate; a changed `HEAD` ends the attempt without PASS.
+Generic OpenCode permission approval controls tool capability only and is
+never CAP authorization. Only the trusted CAP path is authorized to perform
+the eventual reviewed-target commit effect.
 
 Ambiguous completion of `git commit` permits read-only Git reconciliation only while the trusted process remains alive. The consumed capability is never replayed. If the trusted process dies, the run ends; a later run inspects current Git reality and requires fresh authority for any further effect.
 
