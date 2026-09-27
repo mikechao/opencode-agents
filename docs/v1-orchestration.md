@@ -21,8 +21,9 @@ authority.
 
 The orchestrator requests work from the roles below and advances only when
 the required trusted handoff has completed. It may request CAP operations,
-but cannot create, infer, enlarge, reuse, or revive authority. A successful
-agent response, tool call, or task completion is not proof that a required
+but cannot modify the Planner proposal or create, infer, enlarge, reuse, or
+revive authority. A successful agent response, tool call, or task completion
+is not proof that a required
 authorization or trusted observation exists.
 
 Trusted code, rather than agent prose, derives repository and Git facts,
@@ -60,36 +61,37 @@ the Implementer and Reviewer MAY use the same underlying model or model family.
 ### Planner
 
 The Planner runs in its own fresh sub-agent context and receives the user
-request. It decides and proposes the requested intent and a finite set of
-exact repository-relative file paths as an explicit handoff artifact. V1 does
-not support directory, subtree, glob, wildcard, or other pattern-based scope
-entries. Its proposal grants no authority. CAP validates and canonicalizes
-the proposed paths, then freezes that exact set in the intent candidate; CAP
-does not silently add, expand, infer, or substitute scope for the Planner.
+request. It proposes the requested intent, plan text, and a finite set of exact
+repository-relative file paths as one explicit immutable artifact. V1 does not
+support directory, subtree, glob, wildcard, or other pattern-based scope
+entries. Its proposal grants no authority. CAP validates the proposed paths
+and freezes the complete proposal intact in the intent candidate; CAP does not
+silently add, expand, infer, or substitute any proposal field for the Planner.
 
 ### Implementer
 
 The Implementer runs in a new sub-agent context separate from the Planner and
 Orchestrator contexts. After trusted UI confirmation and immediately before
-admitting the attempt, the trusted boundary verifies the same
-repository/worktree, the same `HEAD`, and continued worktree cleanliness. If
+admitting the attempt, the trusted boundary verifies the same canonical
+worktree root, the same `HEAD`, and continued worktree cleanliness. If
 any check fails, the attempt ends and the UI result is not recovered or
-rebound. On success, CAP consumes the intent authorization and the Implementer
-receives the approved intent, frozen exact scope, bound repository/worktree
-identity, and clean-worktree and `HEAD` baseline facts, plus any explicit plan
-artifact intentionally included in the handoff. The Implementer does not
-inherit the Planner's conversational or reasoning context. This is one bounded
-attempt. Implementation does not authorize review or commit. Trusted OpenCode
-role/tool configuration prevents the Implementer from invoking the final
+rebound. On success, CAP consumes the single-use intent capability and the
+Implementer receives the exact frozen authorized intent, plan, and file set,
+plus the canonical worktree root and clean-worktree and `HEAD` baseline facts.
+The Implementer does not inherit the Planner's conversational or reasoning
+context. This is one bounded attempt. Implementation does not authorize review
+or commit. Trusted OpenCode role/tool configuration prevents the Implementer
+from invoking the final
 CAP-governed commit effect, which is performed only through the separately
 authorized trusted CAP path.
 
 ### Reviewer
 
 The Reviewer runs in a new sub-agent context separate from the Implementer and
-Orchestrator contexts. It receives the exact trusted-derived target admitted
-to review and the bounded review inputs it needs. It does not inherit the
-Implementer's conversational or reasoning context. The Reviewer independently
+Orchestrator contexts. It receives the same frozen authorized Planner proposal,
+the exact trusted-derived target admitted to review, and the bounded review
+inputs it needs. It does not inherit the Implementer's conversational or
+reasoning context. The Reviewer independently
 reviews that target and owns the validation performed for the review. Its
 claims alone do not establish trusted review or validation facts.
 
@@ -108,7 +110,7 @@ User request
     v
 Planner (fresh sub-agent context)
     |
-    | proposed intent + exact scope
+    | proposed intent + plan + exact scope
     v
 CAP intent authorization
     |
@@ -116,7 +118,7 @@ CAP intent authorization
     v
 Trusted pre-implementation freshness check
     |
-    | same repository/worktree + same HEAD + still clean; consume intent grant
+    | same canonical worktree root + same HEAD + still clean; consume intent grant
     v
 Implementer (fresh sub-agent context)
     |
@@ -142,20 +144,21 @@ Verified Git outcome
 ```
 
 The sequence advances only on trusted results at the handoffs described
-below. The target admitted to review is the target that must be reviewed and
-later named by commit authorization.
+below. M1 stops after trusted delta derivation and exact-scope checking;
+Reviewer and commit are later V1 stages. The target admitted to review is the
+target that must be reviewed and later named by commit authorization.
 
 ## 5. Trusted handoff boundaries
 
-1. **Intent to implementation.** The Planner's proposed intent and finite
-   exact-file scope go to CAP. Candidate construction establishes the trusted
-   repository/worktree identity, observes `HEAD` as the baseline, and verifies
-   the canonical worktree is clean (no staged changes, unstaged tracked-file
-   changes, or untracked files; ignored files are excluded). Only CAP's
-   trusted UI decision for the candidate, candidate binding, and
+1. **Intent to implementation.** The Planner's proposed intent, plan text,
+   and finite exact-file scope go to CAP. Candidate construction establishes
+   the trusted canonical local worktree root, observes `HEAD` as the baseline,
+   and verifies the canonical worktree is clean (no staged changes, unstaged
+   tracked-file changes, or untracked files; ignored files are excluded). Only
+   CAP's trusted UI decision for the candidate, candidate binding, and
    process-local single-use authorization can admit the attempt. Immediately
    before admitting the Implementer, the trusted boundary verifies the same
-   repository/worktree, the same `HEAD`, and continued cleanliness. Failure
+   canonical worktree root, the same `HEAD`, and continued cleanliness. Failure
    ends the attempt; the UI result is not recovered or rebound. Intent
    authorization does not authorize commit.
 2. **Implementation to review.** Trusted code verifies that `HEAD` remains
@@ -191,7 +194,7 @@ later named by commit authorization.
 ## 6. Failure and termination semantics
 
 An ordinary failure terminates the run. This includes a failed
-pre-implementation repository/worktree, `HEAD`, or cleanliness check; a
+pre-implementation worktree-root, `HEAD`, or cleanliness check; a
 changed `HEAD` during implementation; any out-of-scope resulting path; a
 failing review or validation; missing or ambiguous review/validation evidence;
 inability to establish the required fresh Reviewer context or invocation
@@ -218,8 +221,8 @@ cannot inherit or restore that authority.
 For the current run only, the Orchestrator may retain these coordination
 references as needed:
 
-* approved intent and frozen exact-file scope;
-* bound repository, worktree, clean-start condition, and `HEAD` baseline;
+* frozen authorized Planner proposal (intent, plan, and exact-file scope);
+* bound canonical worktree root, clean-start condition, and `HEAD` baseline;
 * Planner invocation/reference;
 * Implementer invocation/reference;
 * derived target identity or digest;
@@ -227,11 +230,13 @@ references as needed:
 * review result/reference; and
 * reviewer-owned validation result/reference.
 
-These are run-local coordination references only. They are not durable
-workflow state and do not confer authority. The current trusted CAP runtime's
-process-local state is the source of usable authorization and its consumption.
-Optional durable records may support audit or diagnostics but cannot create or
-restore authority.
+These are run-local coordination references and artifacts only. The frozen
+proposal remains available through the run and later Review; admission
+consumes the process-local intent capability, not the proposal. These
+references are not durable workflow state and do not confer authority. The
+current trusted CAP runtime's process-local state is the source of usable
+authorization and its consumption. Optional durable records may support audit
+or diagnostics but cannot create or restore authority.
 
 V1 does not persist workflow phases, worker-attempt state, retry counters,
 continuation state, repair lineage, or reviewer-adjudication state. Such
@@ -266,7 +271,7 @@ scope semantics, or commit verification.
    where a trusted authorization, observation, or effect result is required.
 6. The intent attempt starts from a clean canonical worktree and a
    trusted-observed `HEAD`; immediately before implementation the trusted
-   boundary verifies the same repository/worktree and `HEAD` and continued
+   boundary verifies the same canonical worktree root and `HEAD` and continued
    cleanliness.
 7. The exact-scope check applies to the complete trusted-derived delta against
    the bound `HEAD` before review, with exact-path membership and both paths

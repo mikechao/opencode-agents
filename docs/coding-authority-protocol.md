@@ -50,8 +50,9 @@ an agent.
 
 V1 has two distinct grant kinds:
 
-1. **Intent authorization** grants one bounded attempt to advance one exact
-   approved intent in one bound repository/worktree from one bound baseline.
+1. **Intent authorization** grants one bounded attempt to implement one exact
+   approved intent and plan within exact file scope in one bound worktree from
+   one bound baseline.
 2. **Reviewed-target commit authorization** grants one bounded Git commit
    effect for one exact reviewed target and its prepared paths, subject to a
    fresh check immediately before use.
@@ -133,32 +134,37 @@ the frozen authority-bearing contents.
 
 ### 5.1 Intent candidate
 
-An intent candidate MUST identify, at minimum:
+An intent candidate MUST contain the frozen Planner proposal and trusted
+binding:
 
 * the requested intent;
+* the Planner's plan text;
 * the finite set of exact authorized repository-relative file paths;
-* the canonical repository and worktree identity; and
+* the canonical local worktree root; and
 * the trusted-observed `HEAD` commit to which the approval is bound.
 
 For each requested implementation attempt, the Planner decides and proposes
-the intent and its exact file set. A proposal grants no authority. V1 scope
-entries MUST be exact repository-relative file paths; directory, subtree,
-glob, wildcard, and other pattern-based entries are not supported. The scope
-is immutable for the attempt. CAP MUST validate and canonicalize the proposed
-paths and freeze that exact set in the intent candidate. CAP MUST NOT silently
-add, expand, infer, or substitute scope for the Planner.
+the intent, plan text, and exact file set. The proposal is an immutable attempt
+artifact and grants no authority. V1 scope entries MUST be exact
+repository-relative file paths; directory, subtree, glob, wildcard, and other
+pattern-based entries are not supported. The scope is immutable for the
+attempt. CAP MUST validate the proposed paths and freeze the complete proposal
+intact in the intent candidate. CAP MUST NOT silently add, expand, infer, or
+substitute any proposal field for the Planner.
 
-At candidate construction, trusted code MUST establish the canonical
-repository and worktree identity, observe the current `HEAD` commit, and
-establish that the canonical worktree is clean. For this purpose, clean means
-there are no staged changes, no unstaged tracked-file changes, and no
+At candidate construction, trusted code MUST establish the canonical local
+worktree root, observe the current `HEAD` commit, and establish that the
+canonical worktree is clean. For this purpose, clean means there are no staged
+changes, no unstaged tracked-file changes, and no
 untracked files. Ignored files do not participate in CAP's repository-delta
 model. This trusted-observed `HEAD` is the intent baseline. The kernel MUST
-derive repository/worktree identity, the clean-worktree condition, and baseline
+derive the canonical worktree root, the clean-worktree condition, and baseline
 facts from trusted observations; model or Planner claims do not establish
-them. Intent authorization binds to this repository identity, worktree
-identity, `HEAD`, and exact file set. An approved intent is limited to one
-attempt in those bounds; it does not grant commit authority.
+them. CAP MUST show the complete frozen proposal to the human. The human
+authorizes one implementation attempt of the exact frozen intent, plan, and
+file set in that worktree at that `HEAD`. The frozen proposal remains available
+for later Review; the single-use intent capability is what
+admission consumes. Intent authorization does not grant commit authority.
 
 ### 5.2 Reviewed-target commit candidate
 
@@ -200,10 +206,10 @@ For either grant kind, V1 follows this sequence:
    repository, review, validation, and target freshness conditions, then
    determines the grant from the candidate kind and contents. For intent,
    after the trusted UI confirmation and immediately before admitting the
-   Implementer, the trusted boundary MUST verify the same repository and
-   worktree, the same bound `HEAD`, and that the canonical worktree is still
-   clean. If any check fails, the authorization attempt fails closed; the old
-   UI result MUST NOT be recovered or rebound.
+   Implementer, the trusted boundary MUST verify the same canonical worktree
+   root, the same bound `HEAD`, and that the worktree is still clean. If any
+   check fails, the authorization attempt fails closed; the old UI result MUST
+   NOT be recovered or rebound.
 6. **Create and consume process-local authority.** After the trusted UI result
    and freshness checks succeed, the kernel creates a capability in the
    current trusted runtime, bound to the exact candidate and purpose. Trusted
@@ -403,8 +409,8 @@ conclusion or the settled intent-scope and intent-freshness semantics above.
 The following implementation details remain:
 
 * What canonical encoding and digest inputs represent each candidate kind,
-  the trusted-derived repository/worktree identity, the exact proposed path
-  set, the bound `HEAD`, reviewed target, and validation evidence?
+  the trusted-derived canonical worktree root, the exact proposed intent,
+  plan, and path set, the bound `HEAD`, reviewed target, and validation evidence?
 * Which concrete trusted observations and Git commands implement the required
   clean-worktree, `HEAD`, complete-delta, and exact prepared-effect checks?
 * How does the plugin pass the frozen candidate to the TUI clearly while the
