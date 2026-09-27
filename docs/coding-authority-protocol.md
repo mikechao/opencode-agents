@@ -23,12 +23,12 @@ properties. M0 is complete and its **PASS** remains settled.
 
 M1 is complete and live-dogfooded with **PASS**; the `/m1` harness stops after
 its trusted ordinary Git changed-path scope gate and before Review or Commit.
-M2 investigates a user-selectable OpenCode Orchestrator that receives an
-ordinary request and delegates fresh native Planner and Implementer child
+M2 investigates a user-selectable OpenCode-native Orchestrator that receives
+an ordinary request and delegates fresh native Planner and Implementer child
 subagents where supported. M2 is an invocation and operator-observability
-change, not a CAP change: it introduces no authority kind and does not relax
-M1's exact candidate confirmation, freshness, exact-file scope, or
-fresh-context requirements. Session navigation, exposed role reasoning or
+change, not a CAP change: it introduces no authority kind and must preserve
+M1 authorization, freshness, exact-file scope, fresh-context separation, and
+fail-closed behavior. Session navigation, exposed role reasoning or
 thoughts, tool activity, and output are observability only; private hidden
 chain-of-thought is not required. Exact reviewed-target construction and
 Reviewer behavior remain deferred until after M2. Commit authorization and
@@ -463,12 +463,13 @@ not establish physical-user provenance or protection against hostile code
 inside the TCB. M0 is complete; these implementation questions do not reopen
 its PASS.
 
-## 13. Open questions for the next implementation milestone
+## 13. Open questions deferred until after M2
 
-The next milestone should implement and validate the process-scoped kernel
-and effect obligations without reopening M0's established host-boundary
-conclusion or the settled intent-scope and intent-freshness semantics above.
-The following implementation details remain:
+M2 is the OpenCode-native Orchestrator and native fresh Planner/Implementer
+delegation milestone described above; it adds no CAP authority semantics.
+The following implementation details remain open for work after M2, without
+reopening M0's established host-boundary conclusion or the settled
+intent-scope and intent-freshness semantics above:
 
 * What canonical encoding and digest inputs represent each candidate kind,
   the trusted-derived canonical worktree root, the exact proposed intent,
@@ -491,7 +492,9 @@ The following implementation details remain:
 
 These questions concern implementation of settled candidate, scope, and
 freshness semantics, process-local kernel behavior, role/effect boundaries,
-and bounded Git effects. The trusted evidence for reviewer-owned validation
-remains deferred to the Review → Commit milestone. None of these questions
+and bounded Git effects. Exact reviewed-target construction,
+reviewer-owned validation, commit authorization, bounded commit effects, and
+commit verification remain deferred until after M2 and belong to the later
+Review → Commit milestone. None of these questions
 requires durable reusable grants, a broader workflow protocol, or a new host
 authorization primitive.
