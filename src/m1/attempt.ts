@@ -125,6 +125,13 @@ export async function runM1(context: Context, generation: Generation, rawRequest
   if (generation.busy) throw new Error("An M1 attempt is already running in this TUI generation")
   generation.busy = true
   try {
+    const selectedModel = context.ui.model.current()
+    if (!selectedModel) throw new Error("M1 requires a selected TUI model")
+    const model = {
+      providerID: selectedModel.providerID,
+      id: selectedModel.modelID,
+      ...(selectedModel.variant === undefined ? {} : { variant: selectedModel.variant }),
+    }
     const location = context.location ?? context.data.location.default()
     if (!location.directory) throw new Error("OpenCode did not provide a worktree directory")
     const baseline = observeGit(location.directory)
@@ -132,7 +139,7 @@ export async function runM1(context: Context, generation: Generation, rawRequest
     if (baseline.paths.length) throw new Error("M1 requires a clean initial worktree")
 
     const planner = await after(generation, context.client.session.create({
-      agent: "general", location, title: "M1 Planner", permissions: [
+      agent: "general", model, location, title: "M1 Planner", permissions: [
         { action: "edit", resource: "*", effect: "deny" },
         ...noDirectCommit,
       ],
@@ -168,7 +175,7 @@ export async function runM1(context: Context, generation: Generation, rawRequest
     const grant = grantIntent(candidate, confirmed, generation)
 
     const implementer = await after(generation, context.client.session.create({
-      agent: "general", location, title: "M1 Implementer", permissions: noDirectCommit,
+      agent: "general", model, location, title: "M1 Implementer", permissions: noDirectCommit,
     }))
     const implementerID = implementer.id
     if (implementerID === plannerID) throw new Error("Implementer did not receive a distinct fresh session")
