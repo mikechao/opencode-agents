@@ -153,14 +153,23 @@ intact in the intent candidate. CAP MUST NOT silently add, expand, infer, or
 substitute any proposal field for the Planner.
 
 At candidate construction, trusted code MUST establish the canonical local
-worktree root, observe the current `HEAD` commit, and establish that the
-canonical worktree is clean. For this purpose, clean means there are no staged
-changes, no unstaged tracked-file changes, and no
-untracked files. Ignored files do not participate in CAP's repository-delta
-model. This trusted-observed `HEAD` is the intent baseline. The kernel MUST
-derive the canonical worktree root, the clean-worktree condition, and baseline
-facts from trusted observations; model or Planner claims do not establish
-them. CAP MUST show the complete frozen proposal to the human. The human
+worktree root, observe the current `HEAD` commit, and establish the M1
+clean-target condition. The **real staged target** is the set of paths changed
+in the real Git index relative to bound `HEAD`. A **Git-staged worktree
+target** is the set of paths changed in a fresh Git-staged view of the current
+worktree relative to the same `HEAD`, derived with an isolated temporary
+index seeded from `HEAD` and Git's ordinary staging semantics. The M1
+clean-target condition means both sets are empty. Two independently derived
+Git-staged worktree target trees MUST agree. At candidate construction,
+immediately before admission, and after implementation, trusted code MUST
+verify that the real index's Git-observed entry state is stable across each
+derivation and recheck the canonical root and bound `HEAD` before returning a
+target. The real index MUST NOT be modified. Ignored untracked files are
+outside the target under ordinary Git ignore semantics. This
+trusted-observed `HEAD` is the intent baseline. The kernel MUST derive the
+canonical worktree root, clean-target condition, and baseline facts from
+trusted observations; model or Planner claims do not establish them. CAP MUST
+show the complete frozen proposal to the human. The human
 authorizes one implementation attempt of the exact frozen intent, plan, and
 file set in that worktree at that `HEAD`. The frozen proposal remains available
 for later Review; the single-use intent capability is what
@@ -207,9 +216,9 @@ For either grant kind, V1 follows this sequence:
    determines the grant from the candidate kind and contents. For intent,
    after the trusted UI confirmation and immediately before admitting the
    Implementer, the trusted boundary MUST verify the same canonical worktree
-   root, the same bound `HEAD`, and that the worktree is still clean. If any
-   check fails, the authorization attempt fails closed; the old UI result MUST
-   NOT be recovered or rebound.
+   root, the same bound `HEAD`, and continued satisfaction of the M1
+   clean-target condition. If any check fails, the authorization attempt
+   fails closed; the old UI result MUST NOT be recovered or rebound.
 6. **Create and consume process-local authority.** After the trusted UI result
    and freshness checks succeed, the kernel creates a capability in the
    current trusted runtime, bound to the exact candidate and purpose. Trusted
@@ -289,7 +298,7 @@ atomic cross-restart grant consumption, or a separate authority server.
 
 ## 9. Bounded effects and verification
 
-Intent authorization bounds which resulting repository target from one
+Intent authorization bounds which resulting Git target path set from one
 attempt may advance to review. Implementation may use normal OpenCode editing,
 testing, and development shell capabilities; CAP does not mediate or
 individually authorize each transient filesystem mutation. Planner,
@@ -300,30 +309,51 @@ described as a complete commit-effect boundary: an allowed development shell
 command can cause the effect through a child process. Agent compliance with
 role instructions is not trusted evidence. Generic OpenCode permission
 approval MAY control whether a role can invoke a tool, but it is never CAP
-authorization. Once implementation begins, the worktree is expected to become
-dirty and `HEAD` MUST remain the bound baseline commit through target
-derivation. Before the target may enter review, trusted code MUST verify
-`HEAD`, derive the complete resulting Git delta against that bound `HEAD` in
-the canonical worktree, and recheck `HEAD` after derivation. The delta includes
-staged and unstaged tracked changes and untracked files; ignored files do not
-participate. Resulting-delta membership uses exact path equality: a modified
-file's path MUST be authorized; an added or untracked file's path MUST be
-authorized; a deleted file's old path MUST be authorized; and a rename MUST
-have both its old and
-new paths authorized. The same old/new rule applies if Git represents a rename
-as a delete plus an add. Unattributed or concurrent edits need no per-edit
-attribution: they are part of the complete resulting delta and are subject to
-the same exact-path check.
+authorization. Once implementation begins, `HEAD` MUST remain the bound
+baseline commit through target derivation. Before the target may enter review,
+trusted code MUST derive the target path set as the union of paths changed in
+the real staged target and paths changed in a fresh Git-staged worktree target,
+each compared with the same bound `HEAD`. The worktree target MUST be derived
+twice with independently created temporary indexes seeded from bound `HEAD`
+and populated using Git's ordinary staging semantics; the resulting Git trees
+MUST agree. The real index MUST NOT be modified, and its Git-observed entry
+state MUST be stable across derivation. Trusted code MUST require bound
+`HEAD` to remain unchanged and recheck the canonical root and `HEAD` before
+returning the target. This is a bounded consistency observation, not an atomic
+filesystem snapshot; M1 does not claim to detect transient away-and-back
+mutations that leave the same final Git target.
 
-If `HEAD` changes for any reason or any resulting pathname falls outside the
-authorized set, the attempt MUST end and MUST NOT advance to review. A
-changed-`HEAD` check detects the effect after it occurs; V1 makes no claim
-that ordinary development shell access physically prevents an unauthorized
-Git-history effect. CAP MUST NOT expand or amend the scope in place, recover
-against a changed `HEAD`, or let an out-of-scope change enter the reviewed
-target or a later commit authorization candidate. A later run may start from
-current repository reality with a fresh
-Planner proposal and fresh intent authorization. This authorization does not
+Every pathname appearing in either target difference MUST belong to the exact
+authorized file set. Rename detection is unnecessary: a rename represented as
+a deletion and an addition naturally requires both the old and new paths to
+be authorized. Ignored untracked files are excluded by ordinary Git ignore
+semantics; a path already present in the real index remains part of the real
+staged target. Physical-only differences that Git would not materialize into
+either target are outside M1's advancement target. M1 does not claim to detect,
+prohibit, or attest to every physical filesystem mutation, and does not
+require a custom index parser or filesystem snapshot engine to reproduce
+Git's pathname case, executable mode, symlink, stat-cache, or other
+configuration semantics. Concurrent or unattributed changes that appear in
+either target are subject to the same exact-path check.
+
+Trusted derivation MUST fail closed on unsupported or ambiguous repository
+states, including unmerged index entries, sparse or skip-worktree state,
+intent-to-add entries, gitlinks/submodules, unsupported index or target states,
+unsupported target file types or modes, Git command failures, disagreement
+between independent worktree target trees, or an unstable real index. It MUST
+NOT add generalized Git machinery or custom filesystem snapshotting to support
+those states.
+
+The attempt MUST end and MUST NOT advance to review if `HEAD` changes for any
+reason, trusted derivation cannot establish the required bounded consistency,
+an unsupported or ambiguous state is found, or any resulting pathname falls
+outside the authorized set. A changed-`HEAD` check detects the effect after
+it occurs; V1 makes no claim that ordinary development shell access physically
+prevents an unauthorized Git-history effect. CAP MUST NOT expand or amend the
+scope in place, recover against a changed `HEAD`, or let an out-of-scope change
+enter the reviewed target or a later commit authorization candidate. A later
+run may start from current repository reality with a fresh Planner proposal
+and fresh intent authorization. This authorization does not
 grant a general workflow capability, mutable scope, or permission to commit.
 
 The reviewed-target commit authorization is separate and bounds one prepared
@@ -389,8 +419,9 @@ require Docker, a general sandbox, a separate OS user, runtime attestation,
 general filesystem isolation, or changed-HEAD recovery. It does not add
 finding adjudication or compatibility with the predecessor project's
 Workflow MCP. OpenCode permissions govern role/tool capability and are not
-CAP authorization. Preventing transient out-of-scope filesystem mutations
-during implementation is not a CAP V1 guarantee.
+CAP authorization. M1 checks the Git target path set at its trusted
+derivation gates; it does not claim to prevent, detect, or attest to physical
+filesystem mutations that do not appear in either Git target.
 
 ## 12. Relationship to Milestone 0
 
@@ -422,8 +453,8 @@ The following implementation details remain:
 * What canonical encoding and digest inputs represent each candidate kind,
   the trusted-derived canonical worktree root, the exact proposed intent,
   plan, and path set, the bound `HEAD`, reviewed target, and validation evidence?
-* Which concrete trusted observations and Git commands implement the required
-  clean-worktree, `HEAD`, complete-delta, and exact prepared-effect checks?
+* Which concrete trusted observations implement the exact prepared-effect
+  checks for reviewed-target commit authorization?
 * How does the plugin pass the frozen candidate to the TUI clearly while the
   kernel retains an unambiguous association between that invocation, result,
   and candidate?

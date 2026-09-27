@@ -76,11 +76,12 @@ silently add, expand, infer, or substitute any proposal field for the Planner.
 The Implementer runs in a new sub-agent context separate from the Planner and
 Orchestrator contexts. After trusted UI confirmation and immediately before
 admitting the attempt, the trusted boundary verifies the same canonical
-worktree root, the same `HEAD`, and continued worktree cleanliness. If
-any check fails, the attempt ends and the UI result is not recovered or
-rebound. On success, CAP consumes the single-use intent capability and the
-Implementer receives the exact frozen authorized intent, plan, and file set,
-plus the canonical worktree root and clean-worktree and `HEAD` baseline facts.
+worktree root, the same `HEAD`, and continued satisfaction of the M1
+clean-target condition defined by CAP. If any check fails, the attempt ends
+and the UI result is not recovered or rebound. On success, CAP consumes the
+single-use intent capability and the Implementer receives the exact frozen
+authorized intent, plan, and file set, plus the canonical worktree root and
+clean-target and `HEAD` baseline facts.
 The Implementer does not inherit the Planner's conversational or reasoning
 context. This is one bounded attempt. Implementation does not authorize review
 or commit. Its role instructions prohibit intentionally performing reserved
@@ -120,14 +121,14 @@ CAP intent authorization
     v
 Trusted pre-implementation freshness check
     |
-    | same canonical worktree root + same HEAD + still clean; consume intent grant
+    | same canonical worktree root + same HEAD + clean-target condition; consume intent grant
     v
 Implementer (fresh sub-agent context)
     |
     v
 Trusted target derivation
     |
-    | complete Git delta
+    | union of real staged target and Git-staged worktree target path sets
     | exact-scope check
     v
 Reviewer (fresh sub-agent context)
@@ -146,7 +147,7 @@ Verified Git outcome
 ```
 
 The sequence advances only on trusted results at the handoffs described
-below. M1 stops after trusted delta derivation and exact-scope checking;
+below. M1 stops after trusted Git target derivation and exact-scope checking;
 Reviewer and commit are later V1 stages. The target admitted to review is the
 target that must be reviewed and later named by commit authorization.
 
@@ -155,29 +156,46 @@ target that must be reviewed and later named by commit authorization.
 1. **Intent to implementation.** The Planner's proposed intent, plan text,
    and finite exact-file scope go to CAP. Candidate construction establishes
    the trusted canonical local worktree root, observes `HEAD` as the baseline,
-   and verifies the canonical worktree is clean (no staged changes, unstaged
-   tracked-file changes, or untracked files; ignored files are excluded). Only
-   CAP's trusted UI decision for the candidate, candidate binding, and
-   process-local single-use authorization can admit the attempt. Immediately
-   before admitting the Implementer, the trusted boundary verifies the same
-   canonical worktree root, the same `HEAD`, and continued cleanliness. Failure
-   ends the attempt; the UI result is not recovered or rebound. Intent
-   authorization does not authorize commit.
+   and verifies the M1 clean-target condition: the real staged target and a
+   fresh Git-staged worktree target both have no paths changed from bound
+   `HEAD`. The Git-staged worktree target uses isolated temporary indexes and
+   Git's ordinary staging semantics, and the resulting Git trees from two
+   independent derivations MUST agree. Ignored untracked files are excluded
+   under ordinary Git ignore semantics. Only CAP's trusted UI decision for
+   the candidate, candidate binding, and process-local single-use authorization
+   can admit the attempt.
+   Immediately before admitting the Implementer, the trusted boundary
+   verifies the same canonical worktree root, the same `HEAD`, and continued
+   satisfaction of the clean-target condition. Failure ends the attempt; the
+   UI result is not recovered or rebound. Intent authorization does not
+   authorize commit.
 2. **Implementation to review.** Trusted code verifies that `HEAD` remains
-   the bound baseline, derives the complete resulting Git delta against
-   that `HEAD` from the canonical worktree, and rechecks `HEAD` after
-   derivation. The delta includes staged and unstaged tracked changes and
-   untracked files; ignored files are excluded. Resulting path membership
-   uses exact path equality: a modified file's path, an added or untracked
-   file's path, and a deleted file's old path must each be in the
-   authorized set. A rename must have both its old and new paths in the set,
-   including when Git represents it as delete plus add. No edit attribution is
-   required; all concurrent or otherwise unattributed changes are included in
-   the complete delta and checked the same way. A changed `HEAD` or any
+   the bound baseline and derives the Git target path set as the union of
+   paths changed in the real staged target and paths changed in a fresh
+   Git-staged worktree target, each relative to the same bound `HEAD`. The
+   worktree target is derived twice using independent temporary indexes; the
+   resulting Git trees MUST agree. Trusted code verifies the real index's
+   Git-observed entry state is stable across derivation, never modifies the
+   real index, and rechecks the canonical root and `HEAD` before returning the
+   target. Every pathname in either target difference must be in the
+   authorized set by exact path equality. Rename detection is unnecessary:
+   when represented as deletion plus addition, both old and new paths are
+   checked. Ignored
+   untracked files are excluded under ordinary Git ignore semantics, while a
+   path already staged in the real index remains in the real staged target.
+   Concurrent or otherwise unattributed paths present in either target are
+   checked the same way. Derivation fails closed on unsupported or ambiguous
+   states, including unmerged entries, sparse or skip-worktree state,
+   intent-to-add entries, gitlinks/submodules, and unsupported index/target
+   states. This bounded consistency observation is not an atomic filesystem
+   snapshot and does not detect transient away-and-back mutations that leave
+   the same final Git target. Physical-only differences that Git would not
+   materialize into either target are outside M1's advancement target; M1 does
+   not attest to every physical filesystem mutation. A changed `HEAD` or any
    out-of-scope path terminates the attempt and prevents review. Scope is not
    amended or expanded in place, and there is no changed-`HEAD` recovery.
-   Agent summaries or compliance claims do not replace the trusted `HEAD`,
-   delta, or scope checks. The bound `HEAD` MUST remain unchanged through
+   Agent summaries or compliance claims do not replace trusted Git target,
+   `HEAD`, or scope checks. The bound `HEAD` MUST remain unchanged through
    implementation and final target derivation. A changed `HEAD` cannot PASS
    or advance; this check detects a violation after the effect occurs.
 3. **Review to commit authorization.** Trusted orchestration/plugin context
@@ -201,7 +219,7 @@ target that must be reviewed and later named by commit authorization.
 ## 6. Failure and termination semantics
 
 An ordinary failure terminates the run. This includes a failed
-pre-implementation worktree-root, `HEAD`, or cleanliness check; a
+pre-implementation worktree-root, `HEAD`, or clean-target check; a
 changed `HEAD` during implementation; any out-of-scope resulting path; a
 failing review or validation; missing or ambiguous review/validation evidence;
 inability to establish the required fresh Reviewer context or invocation
@@ -229,7 +247,7 @@ For the current run only, the Orchestrator may retain these coordination
 references as needed:
 
 * frozen authorized Planner proposal (intent, plan, and exact-file scope);
-* bound canonical worktree root, clean-start condition, and `HEAD` baseline;
+* bound canonical worktree root, clean-target condition, and `HEAD` baseline;
 * Planner invocation/reference;
 * Implementer invocation/reference;
 * derived target identity or digest;
@@ -276,15 +294,19 @@ scope semantics, or commit verification.
    CAP capabilities held only in the current trusted runtime.
 5. No step advances based only on successful agent completion or agent prose
    where a trusted authorization, observation, or effect result is required.
-6. The intent attempt starts from a clean canonical worktree and a
+6. The intent attempt starts with an M1 clean-target condition and a
    trusted-observed `HEAD`; immediately before implementation the trusted
    boundary verifies the same canonical worktree root and `HEAD` and continued
-   cleanliness.
-7. The exact-scope check applies to the complete trusted-derived delta against
-   the bound `HEAD` before review, with exact-path membership and both paths
-   required for renames; changed `HEAD` or any out-of-scope path terminates
-   the attempt. Only a PASS independent review and successful reviewer-owned
-   validation advance to commit authorization.
+   satisfaction of that condition.
+7. The exact-scope check applies to the union of the real staged target and
+   fresh Git-staged worktree target path sets against bound `HEAD`. Two
+   resulting Git trees from independent worktree derivations must agree, the
+   real index must remain stable, and every pathname must be exactly
+   authorized; deletion plus addition naturally requires both rename paths.
+   Unsupported or ambiguous states, changed `HEAD`, or any out-of-scope path
+   terminate the attempt. Only a PASS
+   independent review and successful reviewer-owned validation advance to
+   commit authorization.
 8. Planner, Implementer, and Reviewer instructions prohibit intentional
    reserved final commit/history effects. Optional direct-command permission
    denials are defense in depth, not a complete effect boundary; agent
@@ -311,8 +333,8 @@ cryptographic attestation.
 * How will OpenCode expose invocation references and bounded handoff artifacts
   so trusted orchestration can distinguish roles and bind results to the
   current run and exact target?
-* Which trusted component will derive the complete Git delta and bind the
-  admitted target to review and commit authorization?
+* How will the trusted CAP runtime derive the Git target path set and bind the
+  admitted target to review and later commit authorization?
 * Which trusted observations establish successful reviewer-owned validation?
 * How will role instructions prohibit intentional reserved commit/history
   effects, and which direct-command permission denials, if any, should provide

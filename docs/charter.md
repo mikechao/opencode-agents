@@ -8,6 +8,21 @@ The protocol protects six facts: the exact Planner proposal (intent, plan, and r
 
 Authority is mechanical, not conversational. Model output, agent prose, prompts, session transcripts, previous runs, generic OpenCode permission state, and model-supplied tool arguments do not constitute authorization. Facts that can be independently observed by trusted code are recomputed rather than accepted from an agent.
 
+For M1, the advancement target is the exact Git target path set: the union of
+paths changed in the real staged target and paths changed in a fresh
+Git-staged worktree target, each relative to the bound `HEAD`. A fresh
+worktree target is derived with an isolated temporary index seeded from that
+`HEAD` and Git's ordinary staging semantics. The real index is never modified,
+resulting Git trees from two independent worktree derivations must agree, and
+every path in either difference must belong to the exact authorized file set.
+M1 starts only when both targets have no changed paths. Ignored untracked files
+follow ordinary Git ignore semantics. These observations provide bounded
+consistency for Git-materializable targets; they do not claim to detect,
+prohibit, or attest to every physical filesystem mutation or transient
+away-and-back change. Physical-only differences outside both Git targets are
+outside M1's advancement target, and M1 does not require custom filesystem
+machinery to reproduce Git configuration behavior.
+
 A run is one attempt to advance one approved intent, in one canonical worktree and against one bound repository baseline, toward one reviewed and explicitly authorized commit. Ordinary failures terminate the run. A later run starts from current repository reality with fresh authority; it inherits no approval, validation, review, or repair lineage.
 
 The first version deliberately excludes in-run repair, mutable scope, finding adjudication, inherited authority, general recovery, changed-HEAD recovery, child or parallel workflows, old Workflow MCP compatibility, multi-host portability, and a generic workflow abstraction.
