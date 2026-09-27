@@ -28,11 +28,14 @@ authorization or trusted observation exists.
 
 Trusted code, rather than agent prose, derives repository and Git facts,
 checks scope, establishes review and validation facts, performs the bounded
-commit, and verifies its outcome. Trusted OpenCode configuration enforces
-which role/tool effects agents can invoke. The Implementer retains ordinary
-editing, testing, and development shell capabilities but cannot invoke the
-final CAP-governed commit effect. Generic OpenCode permission approval is not
-CAP authorization.
+commit, and verifies its outcome. Planner, Implementer, and Reviewer role
+instructions MUST prohibit intentionally performing reserved final
+commit/history effects. The Implementer retains ordinary editing, testing,
+and development shell capabilities. OpenCode permissions MAY deny obvious
+direct commit commands as defense in depth, but do not provide a complete
+commit-effect boundary for allowed child processes. Agent compliance is not
+trusted evidence. Generic OpenCode permission approval is not CAP
+authorization.
 
 For local V1, the active installed opencode-agents TUI plugin generation owns
 CAP authority in ordinary activation-private state. OpenCode client/session
@@ -80,10 +83,9 @@ Implementer receives the exact frozen authorized intent, plan, and file set,
 plus the canonical worktree root and clean-worktree and `HEAD` baseline facts.
 The Implementer does not inherit the Planner's conversational or reasoning
 context. This is one bounded attempt. Implementation does not authorize review
-or commit. Trusted OpenCode role/tool configuration prevents the Implementer
-from invoking the final
-CAP-governed commit effect, which is performed only through the separately
-authorized trusted CAP path.
+or commit. Its role instructions prohibit intentionally performing reserved
+final commit/history effects. Only the separately authorized trusted CAP path
+is authorized to perform the eventual reviewed-target commit effect.
 
 ### Reviewer
 
@@ -162,18 +164,22 @@ target that must be reviewed and later named by commit authorization.
    ends the attempt; the UI result is not recovered or rebound. Intent
    authorization does not authorize commit.
 2. **Implementation to review.** Trusted code verifies that `HEAD` remains
-   the bound baseline and derives the complete resulting Git delta against
-   that `HEAD` from the canonical worktree, including staged and unstaged
-   tracked changes and untracked files; ignored files are excluded. Resulting
-   path membership uses exact path equality: a modified file's path, an added
-   or untracked file's path, and a deleted file's old path must each be in the
+   the bound baseline, derives the complete resulting Git delta against
+   that `HEAD` from the canonical worktree, and rechecks `HEAD` after
+   derivation. The delta includes staged and unstaged tracked changes and
+   untracked files; ignored files are excluded. Resulting path membership
+   uses exact path equality: a modified file's path, an added or untracked
+   file's path, and a deleted file's old path must each be in the
    authorized set. A rename must have both its old and new paths in the set,
    including when Git represents it as delete plus add. No edit attribution is
    required; all concurrent or otherwise unattributed changes are included in
    the complete delta and checked the same way. A changed `HEAD` or any
    out-of-scope path terminates the attempt and prevents review. Scope is not
    amended or expanded in place, and there is no changed-`HEAD` recovery.
-   Agent summaries do not replace the delta or scope check.
+   Agent summaries or compliance claims do not replace the trusted `HEAD`,
+   delta, or scope checks. The bound `HEAD` MUST remain unchanged through
+   implementation and final target derivation. A changed `HEAD` cannot PASS
+   or advance; this check detects a violation after the effect occurs.
 3. **Review to commit authorization.** Trusted orchestration/plugin context
    verifies that the Reviewer is a fresh sub-agent invocation distinct from
    the Implementer, and binds its review and reviewer-owned validation
@@ -182,12 +188,13 @@ target that must be reviewed and later named by commit authorization.
    advance to CAP reviewed-target commit authorization. CAP receives the
    trusted review and validation facts bound to the exact target.
 4. **Authorization to Git effect.** CAP separately authorizes the exact
-   reviewed target and prepared paths. Trusted OpenCode role/tool
-   configuration prevents Planner, Implementer, and Reviewer from invoking
-   the final CAP-governed commit effect. The trusted CAP path rechecks the
-   bound facts, consumes the process-local capability immediately before the
-   effect, performs only that bounded Git commit, and verifies the Git
-   outcome. Generic OpenCode permission approval is never CAP authorization.
+   reviewed target and prepared paths. Planner, Implementer, and Reviewer
+   have no CAP commit authority; their ordinary development shell access
+   cannot physically prevent an unauthorized Git-history effect. The trusted
+   CAP path rechecks the bound facts, consumes the process-local capability
+   immediately before the effect, performs only that bounded Git commit, and
+   verifies the Git outcome. Generic OpenCode permission approval is never CAP
+   authorization.
    The orchestrator and agents do not infer success from a command response
    or claim.
 
@@ -278,10 +285,11 @@ scope semantics, or commit verification.
    required for renames; changed `HEAD` or any out-of-scope path terminates
    the attempt. Only a PASS independent review and successful reviewer-owned
    validation advance to commit authorization.
-8. Trusted OpenCode role/tool configuration prevents Planner, Implementer, and
-   Reviewer from invoking the final CAP-governed commit effect; the trusted
-   CAP path performs the separately authorized bounded commit, and trusted
-   code verifies its outcome.
+8. Planner, Implementer, and Reviewer instructions prohibit intentional
+   reserved final commit/history effects. Optional direct-command permission
+   denials are defense in depth, not a complete effect boundary; agent
+   compliance is not trusted evidence. Only the trusted CAP path is authorized
+   to perform the reviewed-target commit, and trusted code verifies its outcome.
 9. Generic OpenCode permission approval controls tool capability only and is
    never CAP authorization.
 10. Ordinary failure ends the run. Ambiguous commit completion permits
@@ -306,7 +314,6 @@ cryptographic attestation.
 * Which trusted component will derive the complete Git delta and bind the
   admitted target to review and commit authorization?
 * Which trusted observations establish successful reviewer-owned validation?
-* Which trusted OpenCode role/tool configuration reserves the final commit
-  effect while retaining the Implementer's ordinary development capabilities?
-  This remains an M1 implementation obligation; the exact configuration is
-  an implementation detail to verify.
+* How will role instructions prohibit intentional reserved commit/history
+  effects, and which direct-command permission denials, if any, should provide
+  defense in depth while retaining ordinary development capabilities?
