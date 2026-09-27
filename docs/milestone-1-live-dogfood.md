@@ -13,6 +13,11 @@ Planner → frozen proposal → trusted human authorization
         → STOP before Review or Commit
 ```
 
+This report records the live-dogfooded `/m1` harness and its M1 trust
+boundary. It does not establish the planned M2 user-selectable Orchestrator,
+native child-session navigation, or role-output visibility; those are subject
+to the separate M2 investigation.
+
 This report separates behavior observed in the live TUI and independent Git
 checks from the invariants enforced by trusted M1 code. It records evidence for
 the implemented M1 boundary; it does not expand that boundary.

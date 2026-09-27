@@ -5,6 +5,11 @@ and performs no privileged effect. The command opens one trusted TUI
 confirmation and records whether an old activation resumes after its cleanup
 has revoked it.
 
+The probe completed and its plugin has been removed from the live plugin
+surface. This page preserves the historical procedure and result; the steps
+below are not runnable from the current checkout. The source remains in
+[Git history](https://github.com/mikechao/opencode-agents/blob/bb739a993be156150482fd471c457386afff8fdc/.opencode/plugins/pre-m1-plugin-generation-revocation-probe/tui.js).
+
 ## Manual dogfood
 
 1. Before starting OpenCode, clear the prior diagnostic log:

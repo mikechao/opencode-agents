@@ -4,6 +4,11 @@ This is a temporary dogfood probe for the hosting assumption in
 `cap-kernel-hosting-investigation.md`. It is not CAP code and adds no workflow,
 authorization, or commit behavior. The plugin only runs read-only Git commands.
 
+The probe completed and its plugin has been removed from the live plugin
+surface. This page preserves the historical procedure and result; the steps
+below are not runnable from the current checkout. The source remains in
+[Git history](https://github.com/mikechao/opencode-agents/blob/dcc9dbe01dfd8d07a77d99a5c2b64a06a269a7b9/.opencode/plugins/pre-m1-git-hosting-probe/tui.js).
+
 ## Run the probe
 
 From this checkout, start the ordinary local OpenCode TUI without `--server`:

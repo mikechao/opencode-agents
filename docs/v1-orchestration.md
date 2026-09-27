@@ -14,6 +14,27 @@ The separation is:
 * **Trusted observations and effects:** what is actually true, and what
   bounded effect may be performed?
 
+### Current milestone boundary
+
+M0 is complete with **PASS**. M1 is complete and live-dogfooded with
+**PASS**. Its `/m1` command remains the known-good harness/reference and
+stops after the trusted ordinary Git changed-path scope gate, before Review
+or Commit. M1's trusted plugin code coordinates fresh role sessions; it did
+not establish a user-selectable OpenCode Orchestrator delegating navigable
+native child subagents.
+
+M2 is an investigation-first milestone for that invocation and operator
+experience, with implementation conditional on the investigation. Its
+intended flow is an ordinary user request to a selected Orchestrator, then a
+fresh native Planner child, existing CAP authorization and freshness checks,
+a distinct fresh native Implementer child, and the existing M1 Git scope gate
+followed by STOP. Native child-session navigation and visibility of normally
+exposed role reasoning or thoughts, tool activity, and output are desired
+where OpenCode supports them. Private hidden chain-of-thought is not
+required. This interaction change creates no CAP authority and must preserve
+M1's explicit confirmation, freshness, exact-file scope, and fresh-context
+guarantees. M1 did not prove this M2 interaction model.
+
 The orchestrator controls sequencing but MUST NOT own or manufacture
 authority.
 
@@ -121,12 +142,19 @@ substitutes its own judgment for a trusted observation or effect.
 ## 4. Happy-path sequence
 
 ```text
-M1
-User request → Planner → intent authorization → fresh Implementer
+M1 (complete; current /m1 harness)
+User request → /m1 harness → fresh Planner → intent authorization
+             → fresh Implementer
              → trusted bound-HEAD + ordinary changed-path observation
              → exact-scope check → M1 STOP
 
-Later V1
+M2 (intended interaction; investigation first)
+Select Orchestrator + ordinary request → fresh native Planner child
+             → existing CAP authorization + freshness checks
+             → fresh native Implementer child
+             → existing trusted M1 Git scope gate → STOP
+
+After M2
 exact reviewed-target construction and binding
              → fresh Reviewer → reviewer-owned validation
              → reviewed-target commit authorization
@@ -135,7 +163,7 @@ exact reviewed-target construction and binding
 
 M1 ends after the trusted changed-path scope gate. It does not construct,
 materialize, certify, or bind an exact target for Review. The later Reviewer
-milestone defines exact reviewed-target construction and binding to
+milestone, after M2, defines exact reviewed-target construction and binding to
 independent review and reviewer-owned validation, followed by binding that
 reviewed target to commit authorization. The Reviewer receives that later
 established exact target, not an M1 target.

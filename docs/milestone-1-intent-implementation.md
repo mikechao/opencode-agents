@@ -1,5 +1,15 @@
 # Milestone 1 — Authorized Plan → Implementation
 
+## Status and interaction boundary
+
+M1 is complete and live-dogfooded with **PASS**. `/m1` remains its known-good
+harness/reference implementation, and M1 stops before Review or Commit. In
+this document, “Orchestrator” names the trusted coordination code in that
+harness; it does not mean a user-selectable OpenCode Orchestrator agent. M1
+did not establish native child-session navigation or role-output visibility.
+M2 investigates that interaction model while preserving the M1 authorization,
+freshness, scope, and fresh-context guarantees.
+
 ## Contract and boundary
 
 M1 proves one local, authorized Plan → Implement attempt. Before authorization,
@@ -14,7 +24,7 @@ stops before Review or Commit; it does not construct or bind an exact review
 target.
 
 ```text
-User request → Orchestrator → fresh Planner → explicit proposal
+User request → /m1 harness → fresh Planner → explicit proposal
              → trusted CAP candidate → human confirmation
              → trusted freshness recheck → one fresh Implementer
              → trusted HEAD + ordinary changed-path observation

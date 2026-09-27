@@ -6,12 +6,18 @@
 small experimental harness for the M0 trusted UI question. It is not the
 production Coding Authority Protocol and does not record authorization.
 
+The harness has been removed from the live plugin surface after M0 completed.
+This page remains a historical procedure and evidence record; its launch and
+command steps are not runnable from the current checkout. The source is
+preserved in [Git history](https://github.com/mikechao/opencode-agents/blob/18b8d0c309d13acf357438127951ead837216abf/.opencode/plugins/m0-dogfood/tui.js).
+
 The plugin freezes two fixed representative candidates, computes small
 SHA-256 fixture digests, logs each candidate before display, calls the same
 `ui.dialog.confirm` boundary for both, and logs the raw returned value. It
 does not turn a result into an `authorized` flag or any durable state.
 
-The plugin is under `.opencode/plugins/m0-dogfood/tui.js`. It follows the
+At the time of the experiment, the plugin was under
+`.opencode/plugins/m0-dogfood/tui.js`. It followed the
 local TUI plugin and command shape already exercised on OpenCode `v2.0.16` and
 the sibling `codex-agents` TUI example. The `@opencode/plugin` package used by
 the sibling's TypeScript plugin is unnecessary here: this harness is plain

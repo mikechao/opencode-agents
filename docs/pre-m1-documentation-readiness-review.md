@@ -25,7 +25,7 @@ The working tree was clean on main...origin/main before review. git ls-files fou
 | [docs/milestone-0-investigation.md](milestone-0-investigation.md) | Detailed M0 source research and runtime evidence. Current as evidence. | Evidentiary, not normative for kernel implementation. |
 | [docs/milestone-0-dogfood-harness.md](milestone-0-dogfood-harness.md) | Completed experimental procedure and observations. Relevant as M0 evidence. | Describes a fixture harness, not production authorization. |
 | [docs/legacy-reference.md](legacy-reference.md) | Explicit predecessor-reference boundaries. Current. | Historical/reference-only; not an architecture template. |
-| [.opencode/plugins/m0-dogfood/tui.js](../.opencode/plugins/m0-dogfood/tui.js) | The only tracked implementation artifact: an experimental TUI probe. Current only as M0 evidence. | Not a production kernel, authority store, or orchestration implementation. |
+| [Historical M0 plugin source](https://github.com/mikechao/opencode-agents/blob/18b8d0c309d13acf357438127951ead837216abf/.opencode/plugins/m0-dogfood/tui.js) | The only tracked implementation artifact at the time: an experimental TUI probe. Current only as M0 evidence. | Not a production kernel, authority store, or orchestration implementation. |
 
 LICENSE is a legal artifact, not an architecture source.
 
@@ -48,7 +48,7 @@ The incomplete contracts below do not contradict that structure, but leave diffe
 
 **B1 — The trusted kernel/store is named but not protected from agent-directed writes.**
 
-**Files/sections:** CAP §§3–4, 8–9; orchestration §§2–3; [M0 harness source](../.opencode/plugins/m0-dogfood/tui.js).
+**Files/sections:** CAP §§3–4, 8–9; orchestration §§2–3; [historical M0 harness source](https://github.com/mikechao/opencode-agents/blob/18b8d0c309d13acf357438127951ead837216abf/.opencode/plugins/m0-dogfood/tui.js).
 
 CAP makes the installed plugin, kernel, and durable store part of the TCB, and makes the store the source of truth for grant consumption. At the same time, CAP and orchestration permit normal OpenCode editing and shell capabilities. The documents do not state that model-controlled tools cannot modify the active kernel or grant database, or cause unreviewed kernel code to be loaded on a later run.
 

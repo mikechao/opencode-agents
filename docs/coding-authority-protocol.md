@@ -19,6 +19,21 @@ prove the protocol kernel, candidate binding, freshness checks, process-local
 single consumption, or bounded effects. Those remain required V1 system
 properties. M0 is complete and its **PASS** remains settled.
 
+### Milestone status and M2 boundary
+
+M1 is complete and live-dogfooded with **PASS**; the `/m1` harness stops after
+its trusted ordinary Git changed-path scope gate and before Review or Commit.
+M2 investigates a user-selectable OpenCode Orchestrator that receives an
+ordinary request and delegates fresh native Planner and Implementer child
+subagents where supported. M2 is an invocation and operator-observability
+change, not a CAP change: it introduces no authority kind and does not relax
+M1's exact candidate confirmation, freshness, exact-file scope, or
+fresh-context requirements. Session navigation, exposed role reasoning or
+thoughts, tool activity, and output are observability only; private hidden
+chain-of-thought is not required. Exact reviewed-target construction and
+Reviewer behavior remain deferred until after M2. Commit authorization and
+trusted commit execution remain later work.
+
 ## 2. Authority model
 
 Authority is mechanical, never conversational. CAP authority exists only in
