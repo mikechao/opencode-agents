@@ -60,9 +60,9 @@ function plannerPrompt(request: string): string {
   ].join("\n")
 }
 
-function implementerPrompt(candidate: IntentCandidate): string {
+export function implementerPrompt(candidate: IntentCandidate, milestone: "Milestone 1" | "Milestone 2" = "Milestone 1"): string {
   return [
-    "You are the Implementer for one authorized Milestone 1 attempt.",
+    `You are the Implementer for one authorized ${milestone} attempt.`,
     "Implement the frozen proposal below. Modify only its exact authorized repository paths; do not add, edit, or delete any other repository path.",
     "Do not intentionally perform Git commit or other history effects reserved for the trusted CAP path.",
     "Do not intentionally manipulate Git configuration, index metadata, ignore rules, repository metadata, or other shell-accessible state to conceal changes or evade ordinary M1 scope observation.",
