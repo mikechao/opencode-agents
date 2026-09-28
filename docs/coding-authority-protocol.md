@@ -23,16 +23,22 @@ properties. M0 is complete and its **PASS** remains settled.
 
 M1 is complete and live-dogfooded with **PASS**; the `/m1` harness stops after
 its trusted ordinary Git changed-path scope gate and before Review or Commit.
-M2 investigates a user-selectable OpenCode-native Orchestrator that receives
-an ordinary request and delegates fresh native Planner and Implementer child
-subagents where supported. M2 is an invocation and operator-observability
-change, not a CAP change: it introduces no authority kind and must preserve
+M2 architecture investigation is complete enough for implementation planning;
+Candidate 1 in the [threat-model reassessment](milestone-2-native-child-threat-model-reassessment.md)
+is selected as CAP-compatible under the existing V1/M1 threat model. M2
+itself is not implemented or passed, and its live dogfood has not happened.
+The intended flow uses a conversational native Orchestrator, a
+fresh native Planner child, and a fresh native read-only `implementer_slot`
+child that trusted TUI code later switches to `authorized_implementer` for
+the admitted implementation turn. Native child creation is an inert/read-only
+bootstrap, not CAP admission. After explicit confirmation and freshness and
+exact-child checks, trusted TUI code switches that same child, consumes the
+one-use intent capability, and submits the exact frozen proposal. M2 changes
+invocation and observability, introduces no CAP authority kind, and preserves
 M1 authorization, freshness, exact-file scope, fresh-context separation, and
-fail-closed behavior. Session navigation, exposed role reasoning or
-thoughts, tool activity, and output are observability only; private hidden
-chain-of-thought is not required. Exact reviewed-target construction and
-Reviewer behavior remain deferred until after M2. Commit authorization and
-trusted commit execution remain later work.
+fail-closed behavior. Exact reviewed-target construction and Reviewer
+behavior remain deferred until after M2. Commit authorization and trusted
+commit execution remain later work.
 
 ## 2. Authority model
 
@@ -62,6 +68,20 @@ digests supplied by a model, generic OpenCode permissions, successful tool
 execution, lack of a denial, prior runs, or prior approvals. Trusted code
 recomputes facts it can independently observe instead of accepting them from
 an agent.
+
+OpenCode role and tool capability is distinct from CAP authority. Agent
+selection, edit or shell permission, session state, transcripts, native child
+relationships, and available tools describe or enable ordinary OpenCode
+execution; none creates, preserves, or restores CAP authority. M2 may establish
+a mechanically read-only native child before authorization. The CAP intent
+capability is consumed only when trusted TUI code admits the implementation
+turn to the verified child after confirmation and freshness checks. After
+that one admission, the child may remain selected as `authorized_implementer`
+with ordinary editing capability, just as M1's root Implementer remains an
+ordinary editing-capable OpenCode session. That persistent session capability
+does not restore the consumed grant. A local human or trusted client manually
+prompting such a session is outside the governed CAP admission, as it is for
+M1. A replacement TUI generation still starts with zero CAP authority.
 
 V1 has two distinct grant kinds:
 
@@ -167,16 +187,20 @@ attempt. CAP MUST validate the proposed paths and freeze the complete proposal
 intact in the intent candidate. CAP MUST NOT silently add, expand, infer, or
 substitute any proposal field for the Planner.
 
-At candidate construction, trusted code MUST establish the canonical local
-worktree root, observe the current `HEAD` commit, and require ordinary Git
-observation to report a clean baseline: no staged changed paths, no unstaged
-tracked changed paths, and no ordinary untracked paths. Ignored untracked
-files remain outside this M1 observation. The observation MUST be read-only
-with respect to repository content and Git history. Its implementation
-mechanism is not normative; M1 does not prescribe Git tree construction,
-index parsing, content hashing, filesystem snapshots, or similar machinery.
-This trusted-observed `HEAD` is the intent baseline. The kernel MUST derive
-the canonical worktree root, cleanliness, and baseline facts from trusted
+Before launching a Planner or an M2 `implementer_slot`, trusted code MUST
+establish the canonical local worktree root, observe the current `HEAD`
+commit, and require ordinary Git observation to report a clean initial
+baseline: no staged changed paths, no unstaged tracked changed paths, and no
+ordinary untracked paths. Ignored untracked files remain outside this M1
+observation. The observation MUST be read-only with respect to repository
+content and Git history. Its implementation mechanism is not normative; M1
+does not prescribe Git tree construction, index parsing, content hashing,
+filesystem snapshots, or similar machinery. Candidate construction binds
+this initial root and `HEAD`; it MUST NOT replace them with later values.
+After role work used to obtain the proposal and before candidate presentation,
+trusted code rechecks the original root, `HEAD`, and cleanliness. This
+trusted-observed `HEAD` is the intent baseline. The kernel MUST derive the
+canonical worktree root, cleanliness, and baseline facts from trusted
 observations; model or Planner claims do not establish them. CAP MUST show the
 complete frozen proposal to the human. The human authorizes one implementation
 attempt of the exact frozen intent, plan, and file set in that worktree at
@@ -224,10 +248,13 @@ For either grant kind, V1 follows this sequence:
    repository, review, validation, and target freshness conditions, then
    determines the grant from the candidate kind and contents. For intent,
    after the trusted UI confirmation and immediately before admitting the
-   Implementer, the trusted boundary MUST verify the same canonical worktree
-   root, the same bound `HEAD`, and continued ordinary Git-observed
-   cleanliness. If any check fails, the authorization attempt
-   fails closed; the old UI result MUST NOT be recovered or rebound.
+   implementation turn, the trusted boundary MUST verify the same canonical
+   worktree root, the same bound `HEAD`, and continued ordinary Git-observed
+   cleanliness. In M2, creating the read-only slot is not admission; trusted
+   code verifies the exact child, switches that child to the authorized role,
+   and performs the final freshness checks immediately before the exact
+   trusted prompt. If any check fails, the authorization attempt fails
+   closed; the old UI result MUST NOT be recovered or rebound.
 6. **Create and consume process-local authority.** After the trusted UI result
    and freshness checks succeed, the kernel creates a capability in the
    current trusted runtime, bound to the exact candidate and purpose. Trusted
@@ -463,14 +490,20 @@ not establish physical-user provenance or protection against hostile code
 inside the TCB. M0 is complete; these implementation questions do not reopen
 its PASS.
 
-## 13. Open questions deferred until after M2
+## 13. Open implementation questions
 
-M2 is the OpenCode-native Orchestrator and native fresh Planner/Implementer
-delegation milestone described above; it adds no CAP authority semantics.
-The following implementation details remain open for work after M2, without
-reopening M0's established host-boundary conclusion or the settled
-intent-scope and intent-freshness semantics above:
+M2 is the OpenCode-native Orchestrator and native Planner plus
+read-only-slot-to-authorized-Implementer path described above; it adds no CAP
+authority semantics. Binding the exact Planner result and slot child to the
+current attempt is an M2 implementation-planning question. The other
+implementation details below remain open for later work; none reopens M0's
+established host-boundary conclusion or the settled intent-scope and
+intent-freshness semantics above:
 
+* Which smallest mechanism supported by current OpenCode APIs will let trusted
+  code bind the exact native Planner result and exact `implementer_slot`
+  child to the current attempt before CAP admission? This architecture does
+  not prescribe one.
 * What canonical encoding and digest inputs represent each candidate kind,
   the trusted-derived canonical worktree root, the exact proposed intent,
   plan, and path set, the bound `HEAD`, reviewed target, and validation evidence?

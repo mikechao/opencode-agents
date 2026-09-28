@@ -1,5 +1,14 @@
 # Milestone 2: CAP-gated native Implementer investigation
 
+> **Current status:** The finding below remains valid: a direct
+> model-originated `subagent("authorized_implementer", ...)` call cannot
+> itself be the CAP admission under the current hooks and permission APIs.
+> Candidate 1 does not require that call to carry CAP authority. The
+> Orchestrator creates only a mechanically read-only `implementer_slot` child;
+> after confirmation and freshness checks, trusted TUI code switches that
+> same child, consumes the process-local grant, and submits the exact frozen
+> proposal. See the [controlling threat-model reassessment](milestone-2-native-child-threat-model-reassessment.md).
+
 ## 1. Executive conclusion
 
 **Classification: SUPPORTED WITH SMALL BOUNDED SEAM, for one fresh native child; not supported directly for one built-in `subagent("implementer", ...)` tool call.** On this OpenCode checkout the model's native `subagent` call is executed in the server. The active TUI plugin generation has no supported pre-execution callback into that call. Neither changing a session permission nor replying to a generic permission request binds the exact frozen proposal and consumes a TUI-private grant. Therefore **CAP cannot safely unlock one exact model-originated native Implementer invocation today**. [Host: `../opencode/packages/core/src/tool/plugin/subagent.ts:Plugin` lines 100–218; `../opencode/packages/plugin/src/effect/tool.ts:ToolHooks` lines 20–51; `../opencode/packages/plugin/src/tui/context.ts:Context` lines 516–532.]

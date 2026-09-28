@@ -23,17 +23,34 @@ or Commit. M1's trusted plugin code coordinates fresh role sessions; it did
 not establish a user-selectable OpenCode Orchestrator delegating navigable
 native child subagents.
 
-M2 is an investigation-first milestone for that invocation and operator
-experience, with implementation conditional on the investigation. Its
-intended flow is an ordinary user request to a selected Orchestrator, then a
-fresh native Planner child, existing CAP authorization and freshness checks,
-a distinct fresh native Implementer child, and the existing M1 Git scope gate
-followed by STOP. Native child-session navigation and visibility of normally
-exposed role reasoning or thoughts, tool activity, and output are desired
-where OpenCode supports them. Private hidden chain-of-thought is not
-required. This interaction change creates no CAP authority and must preserve
-M1's explicit confirmation, freshness, exact-file scope, and fresh-context
-guarantees. M1 did not prove this M2 interaction model.
+M2 architecture investigation is complete enough for implementation
+planning. Candidate 1 in the [threat-model reassessment](milestone-2-native-child-threat-model-reassessment.md)
+is selected as CAP-compatible under the existing V1/M1 threat model; M2
+implementation planning is next. M2 itself has not been implemented or passed,
+and live dogfood has not happened.
+
+The selected flow is an ordinary user request to a conversational Orchestrator,
+a fresh native Planner child, then a fresh native read-only
+`implementer_slot` child. The Orchestrator creates that slot, but the
+slot's creation grants no repository-mutation authority. Trusted code must
+bind the exact Planner result and slot child to the current attempt. Trusted
+TUI code constructs and freezes `{intent, plan, files}` with the canonical
+worktree root and bound `HEAD`, presents the candidate, obtains explicit
+human confirmation, and checks freshness and exact-child identity. It then
+switches that same child to `authorized_implementer`, consumes the
+process-local intent capability, and submits the exact frozen proposal and
+baseline facts to that child. It binds the admitted input and result, runs
+the existing M1 Git scope gate, and stops. The Orchestrator does not authorize
+or directly dispatch an implementation-capable worker.
+
+The native child retains its parent relationship and ordinary transcript.
+The operator can navigate through the original Orchestrator subagent row or
+family view and inspect the child's normally exposed reasoning or thoughts,
+tool activity, and output where OpenCode provides them. Private hidden
+chain-of-thought is not required. This invocation and observability change
+creates no CAP authority and preserves M1's explicit confirmation, freshness,
+exact-file scope, and fresh-context guarantees. M1 did not prove this M2
+interaction model.
 
 The orchestrator controls sequencing but MUST NOT own or manufacture
 authority.
@@ -72,12 +89,17 @@ which follows the existing stop, derive current reality, and ask again rule.
 
 ## 3. V1 roles and context boundaries
 
-Planner, Implementer, and Reviewer each MUST run as separate OpenCode
-sub-agent invocations, each with a fresh context distinct from the other role
-invocations and the Orchestrator context. The Orchestrator MUST NOT pass one
-role's conversational or reasoning context into another role. Cross-role
-handoffs use only explicit artifacts, trusted references, and bounded inputs
-required by this contract.
+Each role MUST have a context distinct from the other role contexts and the
+Orchestrator context. The Orchestrator MUST NOT pass one role's conversational
+or reasoning context into another role. Cross-role handoffs use only explicit
+artifacts, trusted references, and bounded inputs required by this contract.
+For M1, Planner and Implementer are separate fresh role sessions. For M2,
+Planner is a fresh native child, while the Implementer context is the fresh
+native `implementer_slot` child established before authorization and later
+switched for the authorized turn. It is the same session across those two
+turns, not a second child invocation. The authorized turn receives no Planner
+conversation context; trusted code supplies the frozen proposal directly.
+The later Reviewer remains a separate fresh sub-agent invocation.
 
 Role names alone are not trusted evidence. Trusted orchestration/plugin
 context MUST distinguish the relevant role invocations and bind their results
@@ -98,17 +120,28 @@ silently add, expand, infer, or substitute any proposal field for the Planner.
 
 ### Implementer
 
-The Implementer runs in a new sub-agent context separate from the Planner and
-Orchestrator contexts. After trusted UI confirmation and immediately before
-admitting the attempt, the trusted boundary verifies the same canonical
-worktree root, bound `HEAD`, and ordinary Git-observed cleanliness: no staged
-changed paths, no unstaged tracked changed paths, and no ordinary untracked
-paths. Ignored untracked files remain outside this observation. If any check
-fails, the attempt ends and the UI result is not recovered or rebound. On
-success, CAP consumes the single-use intent capability and the Implementer
-receives the exact frozen authorized intent, plan, and file set, plus the
-canonical worktree root and bound `HEAD` baseline facts. The Implementer does
-not inherit the Planner's conversational or reasoning context.
+For M2, the Orchestrator MUST establish one fresh native `implementer_slot`
+child for this role. Its effective permissions MUST make it mechanically
+read-only: deny edit, shell, `execute`, subagent delegation,
+session-control tools, custom mutation tools, MCP routes, and equivalent
+model-callable mutation paths. This bootstrap receives no CAP authority and
+the Orchestrator MUST NOT create an `authorized_implementer` child. The child
+is the same session that will later run the authorized turn.
+
+After explicit trusted UI confirmation, trusted code verifies the same
+canonical worktree root, bound `HEAD`, and ordinary Git-observed cleanliness:
+no staged changed paths, no unstaged tracked changed paths, and no ordinary
+untracked paths. Ignored untracked files remain outside this observation. It
+also binds and verifies the exact Planner result and exact slot child for the
+current attempt. If any check fails, the attempt ends and the UI result is not
+recovered or rebound. Trusted TUI code switches that exact child to
+`authorized_implementer`; after the awaited switch it rechecks the child and
+freshness immediately before admission. CAP consumes the single-use intent
+capability and trusted TUI code submits the exact frozen authorized intent,
+plan, and file set, plus canonical worktree root and bound `HEAD`, to that
+same child. Creating the child and switching its role are not themselves CAP
+admission. The Implementer receives no Planner conversational or reasoning
+context.
 
 The Implementer's system instructions MUST require it to modify only the exact
 authorized repository paths; not intentionally perform commit/history effects
@@ -121,6 +154,28 @@ operations as defense in depth while preserving normal development ability.
 These role restrictions are behavioral constraints, not CAP authorization or
 an adversarial containment boundary. Implementation is one bounded attempt;
 it does not itself authorize review or commit.
+
+### M2 permission boundary
+
+The `authorized_implementer` role MUST deny native subagent delegation,
+`execute`, ordinary session-control routes, and any equivalent exposed tool
+that could admit another model-controlled turn or switch roles. The
+Orchestrator's effective permissions MUST allow `subagent:planner` and
+`subagent:implementer_slot`, deny `subagent:authorized_implementer`, and deny
+other subagents unless later explicitly required. They MUST also deny
+Orchestrator mutation paths, including edit, shell, `execute`,
+session-control tools, custom mutation tools, MCP routes, and equivalent
+model-callable paths. A native continuation naming the denied
+`authorized_implementer` target is denied before child lookup; a permitted
+continuation naming `implementer_slot` switches the existing child to that
+read-only role before prompting it. Effective inherited permissions must keep
+that continuation read-only. These controls block native model-controlled
+reuse routes but do not create a shell sandbox. The accepted M1 limitations
+for ordinary development shell access remain. After one trusted CAP admission,
+the child may remain selected as `authorized_implementer`; that persistent
+OpenCode capability does not restore the consumed process-local grant. A
+local human or trusted client manually prompting the session later is outside
+the governed CAP admission, as it is for the M1 root Implementer.
 
 ### Reviewer
 
@@ -139,6 +194,17 @@ and passes only the current run's explicit handoff artifacts and references
 to the next step. It neither decides that CAP authority exists nor
 substitutes its own judgment for a trusted observation or effect.
 
+For M2, the Orchestrator's native subagent target permissions allow only
+`planner` and `implementer_slot`. The Planner invocation and the slot
+bootstrap for an attempt MUST be fresh. The Orchestrator MUST NOT name or
+continue `authorized_implementer`, invoke another subagent role, or expose
+another model-callable mutation or session-control route. A permitted
+continuation naming `implementer_slot` switches that child back to its
+read-only role before prompting it. The Orchestrator's proposal prose or
+paraphrase is never the authoritative Planner-to-Implementer transport;
+trusted code freezes the exact Planner proposal and supplies it directly to
+the verified child after CAP admission.
+
 ## 4. Happy-path sequence
 
 ```text
@@ -148,11 +214,21 @@ User request → /m1 harness → fresh Planner → intent authorization
              → trusted bound-HEAD + ordinary changed-path observation
              → exact-scope check → M1 STOP
 
-M2 (intended interaction; investigation first)
-Select Orchestrator + ordinary request → fresh native Planner child
-             → existing CAP authorization + freshness checks
-             → fresh native Implementer child
-             → existing trusted M1 Git scope gate → STOP
+M2 (selected Candidate 1; implementation planning next)
+Select Orchestrator + ordinary request → trusted initial root/HEAD/clean check
+             → fresh native Planner child
+             → fresh native read-only implementer_slot child
+             → bind exact Planner result/child and slot child to current attempt
+             → recheck initial root, HEAD, and clean baseline
+             → freeze {intent, plan, files} with trusted root and HEAD
+             → present candidate → explicit human confirmation
+             → trusted freshness and exact-child checks
+             → trusted TUI switches the same child to authorized_implementer
+             → recheck liveness, exact child/role, root, HEAD, cleanliness
+             → consume one process-local intent capability
+             → submit exact frozen proposal and baseline to that child
+             → bind exact input/result → existing trusted M1 Git scope gate
+             → STOP
 
 After M2
 exact reviewed-target construction and binding
@@ -160,6 +236,11 @@ exact reviewed-target construction and binding
              → reviewed-target commit authorization
              → bounded commit → verified Git outcome
 ```
+
+The Orchestrator's original subagent row for `implementer_slot` represents
+only the harmless bootstrap invocation. It is not rewritten to report the
+later trusted implementation result. That later turn appears in the same
+child transcript. This is a presentation detail and carries no authority.
 
 M1 ends after the trusted changed-path scope gate. It does not construct,
 materialize, certify, or bind an exact target for Review. The later Reviewer
@@ -170,20 +251,26 @@ established exact target, not an M1 target.
 
 ## 5. Trusted handoff boundaries
 
-1. **Intent to implementation.** The Planner's proposed intent, plan text,
-   and finite exact-file scope go to CAP. Before authorization, candidate
-   construction establishes the trusted canonical local worktree root,
-   observes `HEAD` as the baseline, and requires ordinary Git observation to
-   report no staged changed paths, no unstaged tracked changed paths, and no
-   ordinary untracked paths. Ignored untracked files remain outside this
-   observation. The observation is read-only with respect to repository
-   content and Git history; its implementation mechanism is not normative.
-   Only CAP's trusted UI decision for the candidate, candidate binding, and
-   process-local single-use authorization can admit the attempt. Immediately
-   before Implementer admission, trusted code rechecks the same canonical
-   root, bound `HEAD`, and ordinary cleanliness. Failure ends the attempt; the
-   UI result is not recovered or rebound. Intent authorization does not
-   authorize commit.
+1. **Intent to implementation.** At attempt start, before either native child
+   is launched, trusted code establishes the canonical local worktree root,
+   bound `HEAD`, and ordinary Git-observed cleanliness: no staged changed
+   paths, no unstaged tracked changed paths, and no ordinary untracked paths.
+   Ignored untracked files remain outside this observation. The observation is
+   read-only with respect to repository content and Git history; its
+   implementation mechanism is not normative. The Orchestrator then launches
+   a fresh native Planner child and creates a fresh native `implementer_slot`
+   child whose effective permissions deny all mutation routes. This child
+   creation grants no authority. Trusted code binds the exact Planner result
+   and Planner child, plus the exact slot child, to the current attempt. After
+   Planner and slot work, trusted code rechecks the original root, bound
+   `HEAD`, and clean baseline, then freezes the exact proposal and trusted
+   baseline in the candidate. CAP presents that candidate for explicit human
+   confirmation. After confirmation, trusted code verifies freshness and
+   child identity, switches that same child to `authorized_implementer`, then
+   rechecks liveness, child identity, and freshness immediately before
+   consuming the process-local intent capability and submitting the exact
+   frozen proposal. Failure ends the attempt; the UI result is not recovered
+   or rebound. Intent authorization does not authorize commit.
 2. **Implementation to M1 STOP.** After the Implementer completes, trusted
    code verifies the same canonical root and that `HEAD` remains bound, then
    independently derives the ordinary Git-observed changed-path set. It
@@ -253,8 +340,10 @@ references as needed:
 
 * frozen authorized Planner proposal (intent, plan, and exact-file scope);
 * bound canonical worktree root, ordinary cleanliness, and `HEAD` baseline;
-* Planner invocation/reference;
-* Implementer invocation/reference;
+* M2 Planner invocation/reference and exact result binding;
+* M2 `implementer_slot` child and bootstrap invocation/result reference;
+* Implementer invocation/reference (the same child after its trusted role
+  switch in M2);
 * later reviewed-target identity or digest, once that target is constructed;
 * Reviewer invocation/reference;
 * review result/reference; and
@@ -291,10 +380,14 @@ scope semantics, or commit verification.
 
 1. Orchestration selects the next step; it never supplies authorization.
 2. Planner, Implementer, Reviewer, and Orchestrator are not authority sources.
-3. Each Planner, Implementer, and Reviewer invocation starts in its own fresh
-   sub-agent context. Cross-role information is passed only through explicit
-   handoff artifacts or trusted references and bounded inputs required by
-   this contract.
+3. Each role receives a context distinct from the other roles and the
+   Orchestrator. In M2, a fresh native Planner child and a fresh native
+   `implementer_slot` child are created; trusted TUI code later switches that
+   same slot child for the authorized implementation turn. The Implementer
+   receives the frozen Planner artifact directly and no Planner conversation
+   context. Cross-role information is passed only through explicit handoff
+   artifacts or trusted references and bounded inputs required by this
+   contract.
 4. Intent and reviewed-target commit authorizations are distinct, single-use
    CAP capabilities held only in the current trusted runtime.
 5. No step advances based only on successful agent completion or agent prose
@@ -336,6 +429,9 @@ cryptographic attestation.
 
 ## 11. Open implementation questions
 
+* Which smallest mechanism supported by current OpenCode APIs will let
+  trusted code bind the exact native Planner result and exact
+  `implementer_slot` child to the current attempt before CAP admission?
 * How will OpenCode expose invocation references and bounded handoff artifacts
   so trusted orchestration can distinguish roles and bind results to the
   current run and exact target?

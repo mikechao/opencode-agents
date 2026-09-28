@@ -1,5 +1,13 @@
 # Milestone 2 Implementer root-session UX investigation
 
+> **Current status:** The root Implementer path below is a validated
+> source-level fallback/exploration path, not the selected M2 architecture.
+> Its root-session navigation and transcript findings remain useful fallback
+> evidence; the bounded live navigation dogfood proposed here was not run.
+> Candidate 1 instead uses the same native child for the read-only bootstrap
+> and later trusted implementation turn. See the [controlling threat-model
+> reassessment](milestone-2-native-child-threat-model-reassessment.md).
+
 ## 1. Executive conclusion
 
 **SUPPORTED CLEANLY, subject to one bounded interactive dogfood before M2 implementation planning is finalized.** The trusted TUI plugin can navigate to the exact root Implementer ID returned by `session.create` using the **public** `context.ui.router.navigate({ type: "session", sessionID })`. The ordinary OpenCode session picker also includes root sessions, so the operator can return to the Orchestrator through `/sessions` (or the configured session-list keybinding). Where session tabs are enabled, the public `ui.tabs.open/focus` operations and normal tab switching offer another route. No custom activity dashboard, synthetic parent, upstream API change, or dedicated navigation command is needed. The simplest proposed sequence is: retain the Orchestrator ID; after CAP creates and verifies the fresh Implementer, navigate to that ID; consume the grant and submit the frozen prompt; wait and perform the M1 result/Git checks; publish an informational PASS/STOP toast linked to the stored Orchestrator ID. Navigation is presentation only. [Host: `../opencode/packages/plugin/src/tui/context.ts:Route,UI` lines 142–152, 462–501; `../opencode/packages/tui/src/plugin/api.tsx:createPluginContext` lines 182–201, 217–237; `../opencode/packages/tui/src/app.tsx:session.list` lines 707–715; `../opencode/packages/tui/src/component/dialog-session-list.tsx:DialogSessionList` lines 63–76, 142–190, 242–245.]

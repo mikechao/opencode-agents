@@ -1,5 +1,16 @@
 # Milestone 2 native Orchestrator investigation
 
+> **Current status:** The material host-gap conclusion below was an important
+> intermediate result: the current TUI API cannot itself create and bind a
+> native child, and a model-originated implementation-capable call is not a
+> CAP admission. Later evidence established Candidate 1 using a native
+> read-only `implementer_slot` bootstrap followed by trusted TUI switching and
+> exact prompt admission of that same child. M2 no longer requires the TUI to
+> initiate child creation or the Orchestrator to invoke
+> `authorized_implementer` directly. See the [CAP-gated Implementer
+> investigation](milestone-2-cap-gated-native-implementer-investigation.md)
+> and the controlling [threat-model reassessment](milestone-2-native-child-threat-model-reassessment.md).
+
 ## 1. Executive conclusion
 
 **MATERIAL HOST GAP for the full M2 flow on the selected OpenCode 2.x checkout.** Native primary agents, fresh child subagents, and navigable child sessions are supported. The missing supported operation is a TUI plugin generation initiating and binding a native child invocation from its private CAP control flow. The public `session.create` endpoint has no `parentID`; native child creation occurs inside the server's `subagent` tool or command implementation. The model can invoke that tool, but its invocation is model controlled and takes place outside the TUI CAP generation. The TUI generation cannot supply an unforgeable, one-use admission to that tool through the current public API. [Host: `packages/core/src/tool/plugin/subagent.ts:Plugin` (lines 100–264); `packages/core/src/session.ts:CreateInput` (82–91); `packages/server/src/handlers/session.ts:session.create` (124–138); `packages/client/src/effect/api/api.ts:SessionCreateInput` (199–209).]

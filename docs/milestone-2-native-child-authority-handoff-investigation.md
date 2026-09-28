@@ -1,5 +1,14 @@
 # Milestone 2 native-child authority handoff investigation
 
+> **Current status:** The final **NOT COMPATIBLE** conclusion below was
+> subsequently reassessed because it required a switched child to lose
+> persistent OpenCode role capability after its admitted turn, a stronger
+> requirement than accepted M1 applies to its editing-capable root Implementer.
+> The findings about durable role switching and unsafe permission unlocking
+> remain useful. See the [controlling threat-model reassessment](milestone-2-native-child-threat-model-reassessment.md),
+> which finds Candidate 1 CAP-compatible under the existing V1/M1 threat
+> model.
+
 ## 1. Executive conclusion
 
 **Classification: NOT COMPATIBLE WITH CURRENT CAP BOUNDARY.** Current OpenCode can create a native, clickable, initially read-only child and the trusted TUI plugin can later prompt that exact child. It can also switch the child's agent. The missing primitive is an **atomic, one-turn agent/permission selection**: `session.prompt` has no executing-agent override, while `session.switchAgent` and `session.update({permissions})` change durable session state. A child switched or unlocked for implementation remains independently promptable if the TUI generation disappears. Restoring the role or permissions afterward cannot close the crash window and may alter an in-flight turn. A server-side getter can avoid putting the proposal in the launch prompt only by moving authority across the TUI/server boundary. None of these is a small current-API composition satisfying all twelve required properties. [Host: `../opencode/packages/client/src/effect/api/api.ts:SessionPromptInput,SessionSwitchAgentInput,SessionUpdateInput` lines 238–279; `../opencode/packages/core/src/session/session.ts:switchAgent,setPermissions,prompt` lines 83–96, 145–177; `../opencode/packages/core/src/session/projector.ts:AgentSelected,Permissions` lines 546–589; project: `docs/charter.md:Authority` lines 36, 63–69.]

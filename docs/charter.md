@@ -12,24 +12,35 @@ harness and reference implementation; it ends after the trusted ordinary Git
 changed-path scope gate, before Review or Commit. M1 did not prove the
 long-term invocation or operator experience described below.
 
-Milestone 2 begins with an investigation of an OpenCode-native interaction
-model and may implement it only if that investigation supports the approach.
-The intended experience is that the user selects an `opencode-agents`
-Orchestrator and gives it an ordinary natural-language request. The
-Orchestrator delegates to a fresh native Planner child subagent, then, after
-the existing CAP authorization and freshness checks, to a distinct fresh
-native Implementer child subagent. Where OpenCode supports it, the operator
-should be able to navigate into those child sessions and see their normally
-exposed reasoning or thoughts, tool activity, and output. Private hidden
-chain-of-thought is not required.
+The M2 architecture investigation is complete enough to begin implementation
+planning. Candidate 1, the native-child design in the
+[threat-model reassessment](milestone-2-native-child-threat-model-reassessment.md),
+is selected as CAP-compatible under the existing V1/M1 threat model. M2 itself
+has not been implemented, live-dogfooded, or passed; implementation planning
+is next.
 
-M2 changes invocation and role observability only. It adds no CAP authority
-kind and must preserve M1's explicit human authorization, candidate binding,
-freshness checks, exact-file scope, and fresh-context separation. Native
-session visibility and role output do not grant authority. The flow still
-stops after the existing M1 Git scope gate. Exact reviewed-target
-construction and Reviewer behavior are deferred until after M2; Commit
-authorization and trusted commit execution remain later work.
+The intended experience is that the user selects an `opencode-agents`
+conversational Orchestrator and gives it an ordinary natural-language request.
+It delegates to a fresh native Planner child and a fresh native read-only
+`implementer_slot` child. Creating that slot grants no repository mutation
+authority. After trusted code binds and freezes the exact Planner
+proposal, presents it for explicit human confirmation, and passes freshness
+and exact-child checks, trusted TUI code switches that same child to
+`authorized_implementer`, consumes the one-use intent capability, and submits
+the frozen proposal to it. That trusted transition is the CAP implementation
+admission; the Orchestrator does not authorize or dispatch an
+implementation-capable worker. M2 adds no CAP authority kind.
+
+The same native child retains its Orchestrator parent relationship and
+ordinary transcript, so the operator can navigate to its normally exposed
+reasoning or thoughts, tool activity, and output where OpenCode provides
+them. Private hidden chain-of-thought is not required. Session visibility,
+agent selection, tool permission, and role output do not grant CAP authority.
+M2 preserves M1's explicit human authorization, exact candidate binding,
+freshness checks, exact-file scope, and fresh-context separation, then stops
+after the existing M1 Git scope gate. Exact reviewed-target construction and
+Reviewer behavior are deferred until after M2; Commit authorization and
+trusted commit execution remain later work.
 
 The protocol protects six facts: the exact Planner proposal (intent, plan, and repository file scope) approved by the human; the exact reviewed target established after M2; an independent review and its reviewer-owned validation; a fresh human authorization of the reviewed commit; the exact prepared Git effect; and the verified Git outcome.
 
@@ -60,7 +71,7 @@ claiming that M1 has established that target.
 
 A run is one attempt to advance one approved intent, in one canonical worktree and against one bound repository baseline, toward one reviewed and explicitly authorized commit. Ordinary failures terminate the run. A later run starts from current repository reality with fresh authority; it inherits no approval, validation, review, or repair lineage.
 
-The architecture deliberately excludes in-run repair, mutable scope, finding adjudication, inherited authority, general recovery, changed-HEAD recovery, arbitrary child or parallel workflows, old Workflow MCP compatibility, multi-host portability, and a generic workflow abstraction. M2 is limited to investigating the native fresh Planner and Implementer child roles on this single bounded path.
+The architecture deliberately excludes in-run repair, mutable scope, finding adjudication, inherited authority, general recovery, changed-HEAD recovery, arbitrary child or parallel workflows, old Workflow MCP compatibility, multi-host portability, and a generic workflow abstraction. M2 is limited to the selected native Orchestrator, Planner, and read-only-slot-to-authorized-Implementer path through the existing M1 Git scope gate.
 
 OpenCode provides orchestration, agents, and a replaceable interaction boundary that presents authorization candidates and returns explicit approve, reject, or dismiss decisions. The installed OpenCode host/TUI, installed `opencode-agents` integration and CAP kernel, OpenCode's role/tool permission checks, and the local OS/user-account boundary are the V1 trusted computing base. The authority kernel constructs and freezes candidates, binds each decision to its exact candidate, checks freshness, and creates and consumes process-local authority. Durable storage is optional for audit, diagnostics, or non-authorizing reconciliation hints; it is never the source of usable authority. Git and validation components provide observations and narrowly bounded effects.
 
