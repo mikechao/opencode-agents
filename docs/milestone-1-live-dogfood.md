@@ -16,9 +16,10 @@ Planner → frozen proposal → trusted human authorization
 This report records the live-dogfooded `/m1` harness and its M1 trust
 boundary. It does not establish the planned M2 user-selectable Orchestrator,
 native child-session navigation, or role-output visibility. The subsequent M2
-architecture investigation selected Candidate 1, but the M2 sequence itself
-remains unimplemented, un-dogfooded, and unpassed. See the [threat-model
-reassessment](milestone-2-native-child-threat-model-reassessment.md).
+architecture investigation selected Candidate 1. At the time of this M1
+dogfood, M2 had not yet been implemented or live-dogfooded. M2 was subsequently
+implemented and passed live dogfood; see the [M2 live dogfood report](milestone-2-live-dogfood.md)
+and [threat-model reassessment](milestone-2-native-child-threat-model-reassessment.md).
 
 This report separates behavior observed in the live TUI and independent Git
 checks from the invariants enforced by trusted M1 code. It records evidence for

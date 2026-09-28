@@ -23,11 +23,14 @@ or Commit. M1's trusted plugin code coordinates fresh role sessions; it did
 not establish a user-selectable OpenCode Orchestrator delegating navigable
 native child subagents.
 
-M2 architecture investigation is complete enough for implementation
-planning. Candidate 1 in the [threat-model reassessment](milestone-2-native-child-threat-model-reassessment.md)
-is selected as CAP-compatible under the existing V1/M1 threat model; M2
-implementation planning is next. M2 itself has not been implemented or passed,
-and live dogfood has not happened.
+M2 architecture/investigation and implementation are complete. Candidate 1 in
+the [threat-model reassessment](milestone-2-native-child-threat-model-reassessment.md)
+is CAP-compatible under the existing V1/M1 threat model, and M2 live dogfood
+achieved **PASS**; see the [M2 live dogfood report](milestone-2-live-dogfood.md).
+The selected same-child native Planner / read-only slot → authorized
+Implementer flow is the working M2 path. The Reviewer / exact reviewed-target
+milestone is next; Commit authorization and trusted Commit execution remain
+later work.
 
 The selected flow is an ordinary user request to a conversational Orchestrator,
 a fresh native Planner child, then a fresh native read-only
@@ -214,7 +217,7 @@ User request → /m1 harness → fresh Planner → intent authorization
              → trusted bound-HEAD + ordinary changed-path observation
              → exact-scope check → M1 STOP
 
-M2 (selected Candidate 1; implementation planning next)
+M2 (implemented Candidate 1; live-dogfooded with PASS)
 Select Orchestrator + ordinary request → trusted initial root/HEAD/clean check
              → fresh native Planner child
              → fresh native read-only implementer_slot child
@@ -230,9 +233,11 @@ Select Orchestrator + ordinary request → trusted initial root/HEAD/clean check
              → bind exact input/result → existing trusted M1 Git scope gate
              → STOP
 
-After M2
+Reviewer milestone (next)
 exact reviewed-target construction and binding
              → fresh Reviewer → reviewer-owned validation
+
+Later Commit milestone
              → reviewed-target commit authorization
              → bounded commit → verified Git outcome
 ```

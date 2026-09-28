@@ -6,18 +6,21 @@ Its purpose is to determine whether the useful safety guarantees learned from `c
 
 ## Milestone status and direction
 
-Milestone 0 is complete with **PASS**. Milestone 1 is complete and
-live-dogfooded with **PASS**. The current `/m1` command is the working M1
-harness and reference implementation; it ends after the trusted ordinary Git
+Milestone 0 is complete with **PASS**. Milestone 1 is complete, including live
+dogfood, with **PASS**. The current `/m1` command is the working M1 harness and
+reference implementation; it ends after the trusted ordinary Git
 changed-path scope gate, before Review or Commit. M1 did not prove the
 long-term invocation or operator experience described below.
 
-The M2 architecture investigation is complete enough to begin implementation
-planning. Candidate 1, the native-child design in the
+M2 architecture/investigation is complete, and M2 implementation is complete.
+Candidate 1, the native-child design in the
 [threat-model reassessment](milestone-2-native-child-threat-model-reassessment.md),
-is selected as CAP-compatible under the existing V1/M1 threat model. M2 itself
-has not been implemented, live-dogfooded, or passed; implementation planning
-is next.
+is CAP-compatible under the existing V1/M1 threat model. M2 live dogfood
+achieved **PASS**; see the [M2 live dogfood report](milestone-2-live-dogfood.md).
+The selected same-child native Planner / read-only slot → authorized
+Implementer flow is the working M2 path. The Reviewer / exact reviewed-target
+milestone is next. Commit authorization and trusted Commit execution remain
+later work.
 
 The intended experience is that the user selects an `opencode-agents`
 conversational Orchestrator and gives it an ordinary natural-language request.
@@ -38,9 +41,9 @@ them. Private hidden chain-of-thought is not required. Session visibility,
 agent selection, tool permission, and role output do not grant CAP authority.
 M2 preserves M1's explicit human authorization, exact candidate binding,
 freshness checks, exact-file scope, and fresh-context separation, then stops
-after the existing M1 Git scope gate. Exact reviewed-target construction and
-Reviewer behavior are deferred until after M2; Commit authorization and
-trusted commit execution remain later work.
+after the existing M1 Git scope gate. The next Reviewer milestone defines
+exact reviewed-target construction and Reviewer behavior; Commit authorization
+and trusted Commit execution remain later work.
 
 The protocol protects six facts: the exact Planner proposal (intent, plan, and repository file scope) approved by the human; the exact reviewed target established after M2; an independent review and its reviewer-owned validation; a fresh human authorization of the reviewed commit; the exact prepared Git effect; and the verified Git outcome.
 

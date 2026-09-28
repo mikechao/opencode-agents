@@ -7,11 +7,13 @@ harness/reference implementation, and M1 stops before Review or Commit. In
 this document, “Orchestrator” names the trusted coordination code in that
 harness; it does not mean a user-selectable OpenCode Orchestrator agent. M1
 did not establish native child-session navigation or role-output visibility.
-The M2 architecture investigation later completed and selected Candidate 1;
-implementation planning is next, while M2 itself remains unimplemented and
-unpassed. The selected interaction preserves the M1 authorization, freshness,
-scope, and fresh-context guarantees. See the [M2 threat-model
-reassessment](milestone-2-native-child-threat-model-reassessment.md).
+At the time of this M1 implementation account, the M2 architecture
+investigation had selected Candidate 1 and implementation planning was next.
+M2 was subsequently implemented and passed live dogfood; see the [M2 live
+dogfood report](milestone-2-live-dogfood.md) and [threat-model
+reassessment](milestone-2-native-child-threat-model-reassessment.md). The
+selected interaction preserves the M1 authorization, freshness, scope, and
+fresh-context guarantees.
 
 ## Contract and boundary
 

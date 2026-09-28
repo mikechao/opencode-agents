@@ -21,24 +21,25 @@ properties. M0 is complete and its **PASS** remains settled.
 
 ### Milestone status and M2 boundary
 
-M1 is complete and live-dogfooded with **PASS**; the `/m1` harness stops after
-its trusted ordinary Git changed-path scope gate and before Review or Commit.
-M2 architecture investigation is complete enough for implementation planning;
+M1 is complete, including live dogfood, with **PASS**; the `/m1` harness stops
+after its trusted ordinary Git changed-path scope gate and before Review or
+Commit. M2 architecture/investigation and implementation are complete.
 Candidate 1 in the [threat-model reassessment](milestone-2-native-child-threat-model-reassessment.md)
-is selected as CAP-compatible under the existing V1/M1 threat model. M2
-itself is not implemented or passed, and its live dogfood has not happened.
-The intended flow uses a conversational native Orchestrator, a
-fresh native Planner child, and a fresh native read-only `implementer_slot`
-child that trusted TUI code later switches to `authorized_implementer` for
-the admitted implementation turn. Native child creation is an inert/read-only
+is CAP-compatible under the existing V1/M1 threat model, and M2 live dogfood
+achieved **PASS**; see the [M2 live dogfood report](milestone-2-live-dogfood.md).
+Through the OpenCode-native conversational path, M2 establishes the existing
+intent Plan → Implement CAP boundary using a conversational native Orchestrator,
+a fresh native Planner child, and a fresh native read-only `implementer_slot`
+child that trusted TUI code switches to `authorized_implementer` for the
+admitted implementation turn. Native child creation is an inert/read-only
 bootstrap, not CAP admission. After explicit confirmation and freshness and
 exact-child checks, trusted TUI code switches that same child, consumes the
 one-use intent capability, and submits the exact frozen proposal. M2 changes
 invocation and observability, introduces no CAP authority kind, and preserves
 M1 authorization, freshness, exact-file scope, fresh-context separation, and
-fail-closed behavior. Exact reviewed-target construction and Reviewer
-behavior remain deferred until after M2. Commit authorization and trusted
-commit execution remain later work.
+fail-closed behavior. The Reviewer / exact reviewed-target milestone is next.
+Reviewed-target commit authorization and trusted Commit execution remain
+later work.
 
 ## 2. Authority model
 
@@ -72,7 +73,7 @@ an agent.
 OpenCode role and tool capability is distinct from CAP authority. Agent
 selection, edit or shell permission, session state, transcripts, native child
 relationships, and available tools describe or enable ordinary OpenCode
-execution; none creates, preserves, or restores CAP authority. M2 may establish
+execution; none creates, preserves, or restores CAP authority. M2 establishes
 a mechanically read-only native child before authorization. The CAP intent
 capability is consumed only when trusted TUI code admits the implementation
 turn to the verified child after confirmation and freshness checks. After
@@ -492,18 +493,16 @@ its PASS.
 
 ## 13. Open implementation questions
 
-M2 is the OpenCode-native Orchestrator and native Planner plus
-read-only-slot-to-authorized-Implementer path described above; it adds no CAP
-authority semantics. Binding the exact Planner result and slot child to the
-current attempt is an M2 implementation-planning question. The other
-implementation details below remain open for later work; none reopens M0's
-established host-boundary conclusion or the settled intent-scope and
-intent-freshness semantics above:
+M2 has implemented and live-dogfooded the OpenCode-native Orchestrator and
+native Planner plus read-only-slot-to-authorized-Implementer path described
+above; it adds no CAP authority semantics. M2 resolved binding the exact
+Planner result and slot child to the current attempt, and associating the
+trusted candidate presentation with its result; see the
+[M2 live dogfood report](milestone-2-live-dogfood.md). The remaining questions
+below concern future protocol implementation areas beyond the completed M2
+boundary. They do not block or reopen M2's PASS, M0's established host-boundary
+conclusion, or the settled intent-scope and intent-freshness semantics above:
 
-* Which smallest mechanism supported by current OpenCode APIs will let trusted
-  code bind the exact native Planner result and exact `implementer_slot`
-  child to the current attempt before CAP admission? This architecture does
-  not prescribe one.
 * What canonical encoding and digest inputs represent each candidate kind,
   the trusted-derived canonical worktree root, the exact proposed intent,
   plan, and path set, the bound `HEAD`, reviewed target, and validation evidence?
