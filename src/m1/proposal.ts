@@ -87,6 +87,24 @@ export function candidateIntact(candidate: IntentCandidate): boolean {
   return current.encoding === candidate.encoding && current.digest === candidate.digest
 }
 
+export function renderPlan(candidate: IntentCandidate): string {
+  return [
+    "Plan",
+    "",
+    candidate.proposal.intent,
+    "",
+    candidate.proposal.plan,
+    "",
+    "Exact files",
+    ...(candidate.proposal.files.length ? candidate.proposal.files.map((file) => `• ${file}`) : ["(none)"]),
+    "",
+    "Bound HEAD",
+    candidate.head,
+    "",
+    "No implementation has been authorized.",
+  ].join("\n")
+}
+
 export function candidateMessage(candidate: IntentCandidate): string {
   return [
     "Authorize one implementation attempt for this exact proposal?",

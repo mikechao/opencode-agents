@@ -6,7 +6,7 @@ import path from "node:path"
 import type { Context } from "@opencode/plugin/tui/context"
 import { implementerPrompt, type Generation } from "../src/m1/attempt.ts"
 import { observeGit } from "../src/m1/git.ts"
-import { makeCandidate, parseProposal, candidateMessage } from "../src/m1/proposal.ts"
+import { makeCandidate, parseProposal, candidateMessage, renderPlan } from "../src/m1/proposal.ts"
 import { plannerInput, publishM2PlanDogfood, runM2, SLOT_PROMPT } from "../src/m2/attempt.ts"
 import plugin from "../.opencode/plugins/opencode-agents/tui.ts"
 
@@ -25,7 +25,11 @@ function fixture() {
   return root
 }
 
-const proposal = JSON.stringify({ intent: "Change old file", plan: "Update its contents", files: ["old.txt"] })
+const proposal = JSON.stringify({
+  intent: "Change old file",
+  plan: "Update its contents\nCheck the result",
+  files: ["old.txt", "new.txt", "nested/three.txt"],
+})
 const request = "Change the file"
 const prefix = "You are a subagent spawned by another session.\n"
 const text = (value: string) => ({ type: "text", text: value })
@@ -108,6 +112,20 @@ function fake(root: string, options: FakeOptions = {}) {
   return { context, generation, histories, sessions, calls }
 }
 
+test("trusted plan rendering preserves multiline text and exact candidate scope", () => {
+  const root = fixture()
+  const candidate = makeCandidate(parseProposal(proposal, root), root, git(root, "rev-parse", "HEAD"))
+  const expected = [
+    "Plan", "", "Change old file", "", "Update its contents", "Check the result", "",
+    "Exact files", "• old.txt", "• new.txt", "• nested/three.txt", "",
+    "Bound HEAD", candidate.head, "", "No implementation has been authorized.",
+  ].join("\n")
+  expect(renderPlan(candidate)).toBe(expected)
+  expect(renderPlan(candidate)).not.toContain("\\n")
+  expect(renderPlan(candidate)).not.toBe(proposal)
+  expect(candidate.proposal.plan).toBe("Update its contents\nCheck the result")
+})
+
 test("post-idle dogfood binds exact Planner P and publishes it without authorizing implementation", async () => {
   const root = fixture()
   const f = fake(root, { onWait: (sessionID) => { if (sessionID === "parent") f.calls.toasts.push("root wait returned") } })
@@ -115,7 +133,7 @@ test("post-idle dogfood binds exact Planner P and publishes it without authorizi
   const result = await publishM2PlanDogfood(f.context, f.generation, baseline, "parent", { directory: root })
   expect(result.candidate).toEqual(makeCandidate(parseProposal(proposal, baseline.root), baseline.root, baseline.head))
   expect(result.syntheticID).toBe("synthetic-plan")
-  expect(f.calls.synthetic).toEqual([{ sessionID: "parent", text: proposal, description: proposal,
+  expect(f.calls.synthetic).toEqual([{ sessionID: "parent", text: proposal, description: renderPlan(result.candidate),
     metadata: { source: "planner", planHash: result.planHash }, resume: false }])
   expect(f.calls.toasts[0]).toBe("root wait returned")
   expect(f.calls.toasts.at(-1)).toContain(result.planHash)

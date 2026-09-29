@@ -4,7 +4,7 @@ import { createHash } from "node:crypto"
 import { realpathSync } from "node:fs"
 import { assertLive, candidateFits, consumeIntent, grantIntent, implementerPrompt, type Generation } from "../m1/attempt.ts"
 import { observeGit, requireFresh, requireInScope, type GitSnapshot } from "../m1/git.ts"
-import { candidateIntact, candidateMessage, makeCandidate, parseProposal } from "../m1/proposal.ts"
+import { candidateIntact, candidateMessage, makeCandidate, parseProposal, renderPlan } from "../m1/proposal.ts"
 import type { IntentCandidate } from "../m1/proposal.ts"
 
 export const SLOT_PROMPT = "Reply READY only. Do not inspect or modify the repository."
@@ -231,6 +231,7 @@ export async function publishM2PlanDogfood(
     requireDogfoodBaseline(directory, baseline)
     const plan = bound.plannerChild.text
     const candidate = makeCandidate(parseProposal(plan, baseline.root), baseline.root, baseline.head)
+    const description = renderPlan(candidate)
     const planHash = createHash("sha256").update(plan).digest("hex").slice(0, 12)
     context.ui.toast.show({ title: "M2 plan dogfood", message: `Root turn returned; idle confirmed; Planner bound (${planHash}).`, sessionID: parentID })
     // bind() checked the parent has no active execution or pending input. Check once more at admission.
@@ -238,10 +239,10 @@ export async function publishM2PlanDogfood(
     assertLive(generation)
     context.ui.toast.show({ title: "M2 plan dogfood", message: `Publishing synthetic plan ${planHash}.`, sessionID: parentID })
     const admitted = await after(generation, context.client.session.synthetic({
-      sessionID: parentID, text: plan, description: plan, metadata: { source: "planner", planHash }, resume: false,
+      sessionID: parentID, text: plan, description, metadata: { source: "planner", planHash }, resume: false,
     }))
     if (admitted.type !== "synthetic" || admitted.sessionID !== parentID ||
-        admitted.payload.text !== plan || admitted.payload.description !== plan) stop("synthetic admission changed Planner text")
+        admitted.payload.text !== plan || admitted.payload.description !== description) stop("synthetic admission changed Planner text or description")
     if ((await after(generation, context.client.session.active()))[parentID]) stop("root resumed immediately after synthetic admission")
     return { candidate, planHash, syntheticID: admitted.id }
   } finally {
