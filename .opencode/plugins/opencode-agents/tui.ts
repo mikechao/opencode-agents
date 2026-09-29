@@ -1,6 +1,5 @@
 import type { Definition } from "@opencode/plugin/tui/plugin"
 import type { Generation } from "../../../src/cap.ts"
-import { runM1 } from "../../../src/m1/attempt.ts"
 import { observeGit } from "../../../src/git.ts"
 import { publishPlan } from "../../../src/attempt.ts"
 import type { IntentCandidate } from "../../../src/proposal.ts"
@@ -52,32 +51,6 @@ const plugin: Definition = {
     }
     const removeFailed = context.data.on("session.execution.failed", (event) => stopParent(event.data.sessionID))
     const removeInterrupted = context.data.on("session.execution.interrupted", (event) => stopParent(event.data.sessionID))
-    const removeSlot = context.ui.slot({
-      append: "app",
-      render: () => {
-        context.keymap.layer(() => ({
-          mode: "global",
-          commands: [{
-            id: "opencode-agents.m1.run",
-            title: "M1: authorized implementation attempt",
-            description: "Plan, confirm, implement, and check exact Git scope once.",
-            group: "opencode-agents",
-            slash: { name: "m1", arguments: true },
-            run: async (input) => {
-              try {
-                const report = await runM1(context, generation, input ?? "")
-                if (!generation.revoked) await context.ui.dialog.alert({ title: "M1 PASS", message: report })
-              } catch (error) {
-                if (!generation.revoked) await context.ui.dialog.alert({
-                  title: "M1 STOP", message: error instanceof Error ? error.message : String(error),
-                })
-              }
-            },
-          }],
-        }))
-        return null
-      },
-    })
     return () => {
       generation.revoked = true
       boundCandidate = undefined
@@ -86,7 +59,6 @@ const plugin: Definition = {
       removeStarted()
       removeFailed()
       removeInterrupted()
-      removeSlot()
     }
   },
 }

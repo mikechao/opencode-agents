@@ -374,7 +374,6 @@ test("TUI activation publishes only after a newly observed parent completes", as
   const handlers = new Map<string, (event: any) => void>()
   const host = f.context as unknown as any
   host.data = { on: (type: string, handler: (event: any) => void) => { handlers.set(type, handler); return () => handlers.delete(type) } }
-  host.ui.slot = () => () => undefined
   host.ui.dialog.alert = async () => { throw new Error("unexpected alert") }
   const cleanup = await plugin.setup(f.context)
   handlers.get("session.execution.succeeded")?.({ data: { sessionID: "parent" } })
@@ -399,7 +398,6 @@ test("publication accepts a stable pre-existing diff but does not authorize it",
   const handlers = new Map<string, (event: any) => void>()
   const host = f.context as unknown as any
   host.data = { on: (type: string, handler: (event: any) => void) => { handlers.set(type, handler); return () => handlers.delete(type) } }
-  host.ui.slot = () => () => undefined
   const cleanup = await plugin.setup(f.context)
   handlers.get("session.created")?.({ data: { sessionID: "parent", agent: "opencode-agents", location: { directory: root } } })
   handlers.get("session.execution.succeeded")?.({ data: { sessionID: "parent" } })
@@ -596,7 +594,6 @@ test("TUI duplicate completions and failed or interrupted roots cannot start ano
     const alerts: unknown[] = []
     const host = f.context as unknown as any
     host.data = { on: (type: string, handler: (event: any) => void) => { handlers.set(type, handler); return () => handlers.delete(type) } }
-    host.ui.slot = () => () => undefined
     host.ui.dialog.alert = async (input: unknown) => { alerts.push(input) }
     const cleanup = await plugin.setup(f.context)
     try {
@@ -628,7 +625,6 @@ test("TUI cleanup revokes pending publication and a fresh activation has no inhe
   const alerts: unknown[] = []
   const host = f.context as unknown as any
   host.data = { on: (type: string, handler: (event: any) => void) => { handlers.set(type, handler); return () => handlers.delete(type) } }
-  host.ui.slot = () => () => undefined
   host.ui.dialog.alert = async (input: unknown) => { alerts.push(input) }
   const cleanup = await plugin.setup(f.context)
   handlers.get("session.created")?.({ data: { sessionID: "parent", agent: "opencode-agents", location: { directory: root } } })
