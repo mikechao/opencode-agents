@@ -1,0 +1,107 @@
+[
+  {
+    "mode": "fresh",
+    "run": 1,
+    "setupMs": 45.773499999999984,
+    "refreshMs": 0
+  },
+  {
+    "mode": "copy",
+    "run": 1,
+    "setupMs": 8.338292000000024,
+    "refreshMs": 6.031207999999992,
+    "copiedPaths": [
+      "old.txt"
+    ]
+  },
+  {
+    "mode": "clone",
+    "run": 1,
+    "setupMs": 59.64412499999992,
+    "refreshMs": 0
+  },
+  {
+    "mode": "fresh",
+    "run": 2,
+    "setupMs": 50.604916,
+    "refreshMs": 0
+  },
+  {
+    "mode": "copy",
+    "run": 2,
+    "setupMs": 6.214291999999887,
+    "refreshMs": 5.517790999999988,
+    "copiedPaths": [
+      "old.txt"
+    ]
+  },
+  {
+    "mode": "clone",
+    "run": 2,
+    "setupMs": 49.27304200000003,
+    "refreshMs": 0
+  },
+  {
+    "mode": "fresh",
+    "run": 3,
+    "setupMs": 47.62654099999986,
+    "refreshMs": 0
+  },
+  {
+    "mode": "copy",
+    "run": 3,
+    "setupMs": 6.374749999999949,
+    "refreshMs": 5.919375000000173,
+    "copiedPaths": [
+      "old.txt"
+    ]
+  },
+  {
+    "mode": "clone",
+    "run": 3,
+    "setupMs": 49.76649999999995,
+    "refreshMs": 0
+  },
+  {
+    "mode": "fresh",
+    "run": 4,
+    "setupMs": 45.32454199999984,
+    "refreshMs": 0
+  },
+  {
+    "mode": "copy",
+    "run": 4,
+    "setupMs": 6.228541999999834,
+    "refreshMs": 6.416333000000122,
+    "copiedPaths": [
+      "old.txt"
+    ]
+  },
+  {
+    "mode": "clone",
+    "run": 4,
+    "setupMs": 46.854249999999865,
+    "refreshMs": 0
+  },
+  {
+    "mode": "fresh",
+    "run": 5,
+    "setupMs": 50.89520799999991,
+    "refreshMs": 0
+  },
+  {
+    "mode": "copy",
+    "run": 5,
+    "setupMs": 6.429333999999926,
+    "refreshMs": 6.261667000000216,
+    "copiedPaths": [
+      "old.txt"
+    ]
+  },
+  {
+    "mode": "clone",
+    "run": 5,
+    "setupMs": 50.530583000000206,
+    "refreshMs": 0
+  }
+]

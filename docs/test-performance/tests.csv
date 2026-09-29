@@ -1,0 +1,46 @@
+file,line,test,median_uninstrumented_ms,temporary_repositories,direct_git_processes,git_maintenance_children,observe_calls,unchanged_observe_calls,instrumented_fixture_ms,instrumented_cleanup_ms,fixture_requirement
+attempt.test.ts,116,post-idle publication binds exact Planner P and publishes it without authorizing implementation,183.24,1,26,1,3,2,53.53,2.42,filesystem + trusted snapshot/observer double
+attempt.test.ts,132,publication refuses to publish while the root execution is active,134.64,1,19,1,2,1,49.51,2.77,filesystem + trusted snapshot/observer double
+attempt.test.ts,139,publication reports an immediate root wake after synthetic admission,180.02,1,26,1,3,2,50.43,2.25,filesystem + trusted snapshot/observer double
+attempt.test.ts,147,"binds native calls and exact Planner result, confirms candidate, switches and prompts exact slot once",301.88,1,47,1,6,4,52.82,2.87,real Git integration
+attempt.test.ts,172,Planner may complete read and search tools while the slot remains inert,552.63,3,78,3,9,6,149.65,7.77,filesystem + trusted snapshot/observer double
+attempt.test.ts,185,"missing, duplicate, continued, background, or substituted native child evidence stops before confirmation",1976.67,14,266,14,28,14,691.7,35.23,filesystem + trusted snapshot/observer double
+attempt.test.ts,211,"dirty baseline, dismissal, changed candidate state, and revoked generation cannot admit",655.88,1,100,1,13,6,50.82,2.54,real Git integration
+attempt.test.ts,236,"after switch or ambiguous prompt, no second dispatch or child is created",1017.71,4,153,4,19,15,199.8,9.6,filesystem + trusted snapshot/observer double
+attempt.test.ts,251,stale binding after confirmation or switch and revoked generation after prompt stop without redispatch,668.02,3,99,3,12,9,153.04,7.0,filesystem + trusted snapshot/observer double
+attempt.test.ts,265,authorized result must remain in the exact slot with one successful trusted input,783.62,3,120,3,15,12,142.93,7.34,filesystem + trusted snapshot/observer double
+attempt.test.ts,280,changed HEAD and out-of-scope implementation cannot pass the Git gate,596.78,2,91,3,12,8,96.78,5.21,real Git integration
+attempt.test.ts,296,native role files deny mutation and delegation through ordered effective rules,0.72,0,0,0,0,0,0,0,no Git or snapshot
+attempt.test.ts,340,session permission overrides and changed bound transcripts stop before role switch,699.34,5,95,5,10,5,246.61,12.37,filesystem + trusted snapshot/observer double
+attempt.test.ts,356,generation revocation after confirmation or switch stops before trusted prompt,397.42,2,59,2,7,5,102.18,4.99,filesystem + trusted snapshot/observer double
+attempt.test.ts,371,TUI activation publishes only after a newly observed parent completes,185.65,1,26,1,3,2,51.74,2.52,real Git integration
+attempt.test.ts,394,publication accepts a stable pre-existing diff but does not authorize it,176.83,1,26,1,3,2,50.93,2.74,real Git integration
+attempt.test.ts,411,candidate fit preserves complete confirmation text and terminal sizing policy,57.3,1,6,1,0,0,53.54,2.3,filesystem + fixed HEAD
+attempt.test.ts,424,unreadable candidate before or during confirmation cannot switch or prompt,356.04,2,52,2,6,4,96.23,4.73,filesystem + trusted snapshot/observer double
+attempt.test.ts,436,Planner bootstrap rejects forbidden or unfinished tools and slot rejects any tool or non-READY result,686.16,5,95,5,10,5,244.8,12.48,filesystem + trusted snapshot/observer double
+attempt.test.ts,456,repeated message cursors and duplicate IDs across pages reject native binding,278.35,2,38,2,4,2,101.26,4.75,filesystem + trusted snapshot/observer double
+attempt.test.ts,473,existing parent and Planner content remains immutable across confirmation and switch,834.19,4,118,4,14,10,199.39,10.28,filesystem + trusted snapshot/observer double
+attempt.test.ts,487,slot is rechecked after awaited parent verification before trusted prompt,216.84,1,33,1,4,3,52.26,2.63,filesystem + trusted snapshot/observer double
+attempt.test.ts,497,post-switch session permission overrides cannot admit the trusted prompt,672.55,3,99,3,12,9,147.15,7.21,filesystem + trusted snapshot/observer double
+attempt.test.ts,508,publication preserves pretty-printed raw Planner P and rejects altered synthetic admission,529.75,3,78,3,9,6,177.9,7.55,filesystem + trusted snapshot/observer double
+attempt.test.ts,535,"published candidate, hash and synthetic presentation do not relax implementation binding",225.19,1,33,1,4,3,48.27,2.57,filesystem + trusted snapshot/observer double
+attempt.test.ts,548,publication refuses pending inbox input and a changed publication path set,271.31,2,38,2,4,1,105.77,4.9,real Git integration
+attempt.test.ts,562,trusted prompt admission rejects substituted identity or attachments without redispatch,1586.78,6,240,6,30,24,293.3,14.66,filesystem + trusted snapshot/observer double
+attempt.test.ts,580,activation location substitution during confirmation cannot switch or dispatch,237.52,2,31,2,3,2,97.97,5.22,filesystem + trusted snapshot/observer double
+attempt.test.ts,589,TUI duplicate completions and failed or interrupted roots cannot start another publication,359.74,3,50,3,5,2,143.28,6.94,filesystem + trusted snapshot/observer double
+attempt.test.ts,618,TUI cleanup revokes pending publication and a fresh activation has no inherited authority,179.32,1,26,1,3,2,49.87,2.41,filesystem + trusted snapshot/observer double
+cap.test.ts,30,candidate binds proposal and one-use grant stays private to live generation,62.7,1,6,1,0,0,56.6,2.28,filesystem + fixed HEAD
+cap.test.ts,48,corrupted candidate encoding or digest cannot grant or consume authority,57.86,1,6,1,0,0,50.71,2.6,filesystem + fixed HEAD
+cap.test.ts,61,altered grant digest or purpose and a different intact candidate cannot consume,57.07,1,6,1,0,0,51.2,2.52,filesystem + fixed HEAD
+cap.test.ts,76,revocation prevents consumption of an otherwise valid unused grant,58.6,1,6,1,0,0,55.43,2.26,filesystem + fixed HEAD
+git.test.ts,29,"trusted Git observation covers staged, unstaged, untracked, deletion, and both rename paths",550.5,1,79,1,10,4,48.7,2.62,real Git integration
+git.test.ts,53,ordinary staged and unstaged paths are observed together,183.59,1,24,2,2,0,49.36,2.91,real Git integration
+git.test.ts,74,ignored untracked paths are excluded from ordinary cleanliness,246.07,1,35,2,4,1,48.4,3.07,real Git integration
+git.test.ts,87,scope uses exact path equality and observation requires the worktree root,188.55,1,27,1,4,1,48.94,2.55,real Git integration
+git.test.ts,97,changed HEAD cannot pass; unusual pathnames remain exact,213.23,1,30,2,4,1,48.12,2.78,real Git integration
+git.test.ts,108,freshness and exact scope reject substituted root or HEAD independently of paths,96.71,1,12,1,1,0,46.92,2.34,pure snapshot
+proposal.test.ts,30,proposal must preserve three exact fields and reject expanded scope,55.23,1,5,1,0,0,55.11,3.11,filesystem + fixed HEAD
+proposal.test.ts,51,trusted plan rendering preserves multiline text and exact candidate scope,58.66,1,6,1,0,0,54.51,2.56,filesystem + fixed HEAD
+proposal.test.ts,65,"exact intent, plan, file order, root and HEAD bind candidate encoding and digest",56.7,1,6,1,0,0,53.06,2.5,filesystem + fixed HEAD
+proposal.test.ts,90,candidate confirmation text preserves exact proposal and states implementation-only authority,57.81,1,6,1,0,0,50.54,2.32,filesystem + fixed HEAD
+proposal.test.ts,106,exact scope permits internal final symlinks and rejects escaping symlinks and malformed paths,101.73,2,10,2,0,0,102.45,4.98,filesystem + fixed HEAD

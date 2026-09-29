@@ -1,0 +1,75 @@
+[
+  {
+    "kind": "wait",
+    "test": "TUI activation publishes only after a newly observed parent completes",
+    "end": 307.669583,
+    "sessionID": "parent",
+    "ms": 0.2705420000000345
+  },
+  {
+    "kind": "sleep",
+    "test": "TUI activation publishes only after a newly observed parent completes",
+    "end": 371.089458,
+    "requested": 1,
+    "ms": 63.47649999999999,
+    "overlappingGitMs": 55.07899999999995,
+    "overlappingFingerprintMs": 1.329917000000023
+  },
+  {
+    "kind": "wait",
+    "test": "publication accepts a stable pre-existing diff but does not authorize it",
+    "end": 533.142625,
+    "sessionID": "parent",
+    "ms": 0.02470800000003237
+  },
+  {
+    "kind": "sleep",
+    "test": "publication accepts a stable pre-existing diff but does not authorize it",
+    "end": 580.716791,
+    "requested": 1,
+    "ms": 47.58158300000002,
+    "overlappingGitMs": 45.417626000000155,
+    "overlappingFingerprintMs": 1.0272919999999885
+  },
+  {
+    "kind": "wait",
+    "test": "TUI duplicate completions and failed or interrupted roots cannot start another publication",
+    "end": 738.588125,
+    "sessionID": "parent",
+    "ms": 0.03420899999991889
+  },
+  {
+    "kind": "sleep",
+    "test": "TUI duplicate completions and failed or interrupted roots cannot start another publication",
+    "end": 787.784083,
+    "requested": 1,
+    "ms": 49.203874999999925,
+    "overlappingGitMs": 46.725582999999915,
+    "overlappingFingerprintMs": 1.1899999999999409
+  },
+  {
+    "kind": "wait",
+    "test": "TUI cleanup revokes pending publication and a fresh activation has no inherited authority",
+    "end": 1152.49425,
+    "sessionID": "parent",
+    "ms": 0.17024999999989632
+  },
+  {
+    "kind": "sleep",
+    "test": "TUI cleanup revokes pending publication and a fresh activation has no inherited authority",
+    "end": 1154.101666,
+    "requested": 1,
+    "ms": 1.6125419999998485,
+    "overlappingGitMs": 0,
+    "overlappingFingerprintMs": 0
+  },
+  {
+    "kind": "sleep",
+    "test": "TUI cleanup revokes pending publication and a fresh activation has no inherited authority",
+    "end": 1206.2175,
+    "requested": 1,
+    "ms": 1.1805829999998423,
+    "overlappingGitMs": 0,
+    "overlappingFingerprintMs": 0
+  }
+]

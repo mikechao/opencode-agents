@@ -1,0 +1,202 @@
+[
+  {
+    "repetition": 1,
+    "file": "test/git.test.ts",
+    "wall": 1.5761361250188202,
+    "user": 0.728675,
+    "system": 0.652535,
+    "code": 0
+  },
+  {
+    "repetition": 1,
+    "file": "test/cap.test.ts",
+    "wall": 0.25917033303994685,
+    "user": 0.11584700000000003,
+    "system": 0.12838899999999998,
+    "code": 0
+  },
+  {
+    "repetition": 1,
+    "file": "test/proposal.test.ts",
+    "wall": 0.35683112498372793,
+    "user": 0.15438999999999992,
+    "system": 0.17947400000000002,
+    "code": 0
+  },
+  {
+    "repetition": 1,
+    "file": "test/attempt.test.ts",
+    "wall": 15.553519292036071,
+    "user": 7.422223,
+    "system": 6.513798,
+    "code": 0
+  },
+  {
+    "repetition": 1,
+    "file": "suite",
+    "wall": 17.35873920796439,
+    "user": 8.29197,
+    "system": 7.256704999999999,
+    "code": 0
+  },
+  {
+    "repetition": 2,
+    "file": "test/git.test.ts",
+    "wall": 1.4397389580262825,
+    "user": 0.7156350000000025,
+    "system": 0.5959070000000004,
+    "code": 0
+  },
+  {
+    "repetition": 2,
+    "file": "test/cap.test.ts",
+    "wall": 0.2512030409416184,
+    "user": 0.11444799999999944,
+    "system": 0.1197929999999996,
+    "code": 0
+  },
+  {
+    "repetition": 2,
+    "file": "test/proposal.test.ts",
+    "wall": 0.3464024169370532,
+    "user": 0.15301200000000037,
+    "system": 0.1729490000000009,
+    "code": 0
+  },
+  {
+    "repetition": 2,
+    "file": "test/attempt.test.ts",
+    "wall": 15.008779124938883,
+    "user": 7.293613999999998,
+    "system": 6.197859000000001,
+    "code": 0
+  },
+  {
+    "repetition": 2,
+    "file": "suite",
+    "wall": 17.34463620907627,
+    "user": 8.324952,
+    "system": 7.288684999999997,
+    "code": 0
+  },
+  {
+    "repetition": 3,
+    "file": "test/git.test.ts",
+    "wall": 1.618999500060454,
+    "user": 0.764409999999998,
+    "system": 0.6912560000000028,
+    "code": 0
+  },
+  {
+    "repetition": 3,
+    "file": "test/cap.test.ts",
+    "wall": 0.26928733300883323,
+    "user": 0.12154600000000215,
+    "system": 0.13447599999999937,
+    "code": 0
+  },
+  {
+    "repetition": 3,
+    "file": "test/proposal.test.ts",
+    "wall": 0.3399958750233054,
+    "user": 0.14969899999999825,
+    "system": 0.1730710000000002,
+    "code": 0
+  },
+  {
+    "repetition": 3,
+    "file": "test/attempt.test.ts",
+    "wall": 15.721959124901332,
+    "user": 7.512791,
+    "system": 6.695074999999996,
+    "code": 0
+  },
+  {
+    "repetition": 3,
+    "file": "suite",
+    "wall": 17.476516791968606,
+    "user": 8.360365000000002,
+    "system": 7.444053000000004,
+    "code": 0
+  },
+  {
+    "repetition": 4,
+    "file": "test/git.test.ts",
+    "wall": 1.5975432079285383,
+    "user": 0.7649900000000045,
+    "system": 0.6914909999999992,
+    "code": 0
+  },
+  {
+    "repetition": 4,
+    "file": "test/cap.test.ts",
+    "wall": 0.2613370419712737,
+    "user": 0.11470899999999773,
+    "system": 0.12328899999999976,
+    "code": 0
+  },
+  {
+    "repetition": 4,
+    "file": "test/proposal.test.ts",
+    "wall": 0.3511124999495223,
+    "user": 0.1547959999999975,
+    "system": 0.17817999999999756,
+    "code": 0
+  },
+  {
+    "repetition": 4,
+    "file": "test/attempt.test.ts",
+    "wall": 15.176675333059393,
+    "user": 7.365583000000001,
+    "system": 6.3883380000000045,
+    "code": 0
+  },
+  {
+    "repetition": 4,
+    "file": "suite",
+    "wall": 17.593725957907736,
+    "user": 8.351056,
+    "system": 7.364643000000001,
+    "code": 0
+  },
+  {
+    "repetition": 5,
+    "file": "test/git.test.ts",
+    "wall": 1.434564874973148,
+    "user": 0.7141179999999991,
+    "system": 0.5931639999999945,
+    "code": 0
+  },
+  {
+    "repetition": 5,
+    "file": "test/cap.test.ts",
+    "wall": 0.2512630409328267,
+    "user": 0.11564200000000824,
+    "system": 0.12218400000000429,
+    "code": 0
+  },
+  {
+    "repetition": 5,
+    "file": "test/proposal.test.ts",
+    "wall": 0.341693542082794,
+    "user": 0.15138999999999214,
+    "system": 0.1683489999999992,
+    "code": 0
+  },
+  {
+    "repetition": 5,
+    "file": "test/attempt.test.ts",
+    "wall": 14.630846208077855,
+    "user": 7.191143999999994,
+    "system": 5.995720999999996,
+    "code": 0
+  },
+  {
+    "repetition": 5,
+    "file": "suite",
+    "wall": 17.48348024999723,
+    "user": 8.363488000000004,
+    "system": 7.367080000000001,
+    "code": 0
+  }
+]

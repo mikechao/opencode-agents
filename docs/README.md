@@ -11,6 +11,9 @@ Start here, then read the owner for the question at hand:
 The implementation is authoritative for current runtime behavior; CAP defines
 its required authority invariants. This README owns navigation and status.
 
+[Test performance audit](test-performance-audit.md) records the current 45-test
+baseline, fixture and Git process measurements, and proposed regression budget.
+
 ## Current implementation status
 
 Runtime simplification is complete: milestone-named runtime architecture has

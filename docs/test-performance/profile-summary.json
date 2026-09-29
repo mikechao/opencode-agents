@@ -1,0 +1,100 @@
+{
+  "cap.test.ts": {
+    "tests": 4,
+    "counts": {
+      "repo": 4,
+      "git": 24,
+      "fixture": 4,
+      "test": 4,
+      "cleanup": 4
+    },
+    "git_categories": {
+      "fixture": 20,
+      "test-action": 4
+    },
+    "unchanged_observations": 0,
+    "duration_ms": {
+      "fixture": 213.94729099999995,
+      "git": 238.118001,
+      "observe": 0,
+      "cleanup": 9.654749999999964,
+      "sleep": 0,
+      "wait": 0
+    }
+  },
+  "proposal.test.ts": {
+    "tests": 5,
+    "counts": {
+      "repo": 6,
+      "git": 33,
+      "fixture": 6,
+      "test": 5,
+      "cleanup": 6
+    },
+    "git_categories": {
+      "fixture": 30,
+      "test-action": 3
+    },
+    "unchanged_observations": 0,
+    "duration_ms": {
+      "fixture": 315.67437499999994,
+      "git": 331.085875,
+      "observe": 0,
+      "cleanup": 15.463458999999887,
+      "sleep": 0,
+      "wait": 0
+    }
+  },
+  "attempt.test.ts": {
+    "tests": 30,
+    "counts": {
+      "repo": 79,
+      "git": 2168,
+      "fixture": 79,
+      "observe": 253,
+      "wait": 84,
+      "test": 30,
+      "cleanup": 79,
+      "sleep": 5
+    },
+    "git_categories": {
+      "fixture": 395,
+      "observe": 1766,
+      "test-action": 7
+    },
+    "unchanged_observations": 166,
+    "duration_ms": {
+      "fixture": 3953.441874999998,
+      "git": 15252.298968999998,
+      "observe": 11380.348211999997,
+      "cleanup": 196.23116600000162,
+      "sleep": 133.61420899999575,
+      "wait": 5.034377000001541
+    }
+  },
+  "git.test.ts": {
+    "tests": 6,
+    "counts": {
+      "repo": 6,
+      "git": 207,
+      "fixture": 6,
+      "observe": 25,
+      "test": 6,
+      "cleanup": 6
+    },
+    "git_categories": {
+      "fixture": 30,
+      "observe": 164,
+      "test-action": 13
+    },
+    "unchanged_observations": 7,
+    "duration_ms": {
+      "fixture": 290.4469179999978,
+      "git": 1399.2874100000117,
+      "observe": 1001.4740839999977,
+      "cleanup": 16.27462299999752,
+      "sleep": 0,
+      "wait": 0
+    }
+  }
+}
