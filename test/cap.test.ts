@@ -1,35 +1,26 @@
 import { afterEach, expect, test } from "bun:test"
-import { execFileSync } from "node:child_process"
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { assertLive, consumeIntent, grantIntent, type Generation, type IntentGrant } from "../src/cap.ts"
 import { candidateIntact, makeCandidate, parseProposal } from "../src/proposal.ts"
 
 const roots: string[] = []
+const HEAD = "1".repeat(40)
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
-function git(root: string, ...args: string[]): string {
-  return execFileSync("git", ["-C", root, ...args], { encoding: "utf8" }).trim()
-}
-
 function fixture(): string {
-  const root = mkdtempSync(path.join(tmpdir(), "opencode-agents-primitives-"))
+  const root = realpathSync(mkdtempSync(path.join(tmpdir(), "opencode-agents-primitives-")))
   roots.push(root)
-  git(root, "init", "-q")
-  git(root, "config", "user.name", "Primitive Test")
-  git(root, "config", "user.email", "primitives@example.invalid")
   writeFileSync(path.join(root, "old.txt"), "initial\n")
-  git(root, "add", "old.txt")
-  git(root, "commit", "-qm", "baseline")
   return root
 }
 
 test("candidate binds proposal and one-use grant stays private to live generation", () => {
   const root = fixture()
-  const candidate = makeCandidate(parseProposal('{"intent":"i","plan":"p","files":["old.txt"]}', root), root, git(root, "rev-parse", "HEAD"))
+  const candidate = makeCandidate(parseProposal('{"intent":"i","plan":"p","files":["old.txt"]}', root), root, HEAD)
   const generation: Generation = { revoked: false, busy: false }
   expect(() => assertLive(generation)).not.toThrow()
   expect(candidateIntact(candidate)).toBe(true)
@@ -47,7 +38,7 @@ test("candidate binds proposal and one-use grant stays private to live generatio
 
 test("corrupted candidate encoding or digest cannot grant or consume authority", () => {
   const root = fixture()
-  const candidate = makeCandidate(parseProposal('{"intent":"i","plan":"p","files":["old.txt"]}', root), root, git(root, "rev-parse", "HEAD"))
+  const candidate = makeCandidate(parseProposal('{"intent":"i","plan":"p","files":["old.txt"]}', root), root, HEAD)
   const generation: Generation = { revoked: false, busy: false }
   for (const corrupted of [{ ...candidate, encoding: candidate.encoding + " " }, { ...candidate, digest: "0".repeat(64) }]) {
     expect(candidateIntact(corrupted)).toBe(false)
@@ -60,7 +51,7 @@ test("corrupted candidate encoding or digest cannot grant or consume authority",
 
 test("altered grant digest or purpose and a different intact candidate cannot consume", () => {
   const root = fixture()
-  const candidate = makeCandidate(parseProposal('{"intent":"i","plan":"p","files":["old.txt"]}', root), root, git(root, "rev-parse", "HEAD"))
+  const candidate = makeCandidate(parseProposal('{"intent":"i","plan":"p","files":["old.txt"]}', root), root, HEAD)
   const generation: Generation = { revoked: false, busy: false }
   const grant = grantIntent(candidate, true, generation)
   for (const altered of [{ ...grant, digest: "different" }, { ...grant, purpose: "commit" } as unknown as IntentGrant]) {
@@ -75,7 +66,7 @@ test("altered grant digest or purpose and a different intact candidate cannot co
 
 test("revocation prevents consumption of an otherwise valid unused grant", () => {
   const root = fixture()
-  const candidate = makeCandidate(parseProposal('{"intent":"i","plan":"p","files":["old.txt"]}', root), root, git(root, "rev-parse", "HEAD"))
+  const candidate = makeCandidate(parseProposal('{"intent":"i","plan":"p","files":["old.txt"]}', root), root, HEAD)
   const generation: Generation = { revoked: false, busy: false }
   const grant = grantIntent(candidate, true, generation)
   generation.revoked = true

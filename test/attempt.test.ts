@@ -1,6 +1,6 @@
-import { afterEach, expect, test } from "bun:test"
+import { afterAll, afterEach, beforeAll, expect, test } from "bun:test"
 import { execFileSync } from "node:child_process"
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { cpSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import type { Context } from "@opencode/plugin/tui/context"
@@ -11,17 +11,25 @@ import { candidateFits, implementerPrompt, plannerInput, publishPlan, runImpleme
 import plugin from "../.opencode/plugins/opencode-agents/tui.ts"
 
 const roots: string[] = []
+let seed: string
+beforeAll(() => {
+  seed = realpathSync(mkdtempSync(path.join(tmpdir(), "opencode-agents-attempt-seed-")))
+  git(seed, "init", "-q")
+  git(seed, "config", "user.name", "Attempt Test")
+  git(seed, "config", "user.email", "attempt@example.invalid")
+  writeFileSync(path.join(seed, "old.txt"), "initial\n")
+  git(seed, "add", "old.txt")
+  git(seed, "commit", "-qm", "baseline")
+})
+afterAll(() => { rmSync(seed, { recursive: true, force: true }) })
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 function git(root: string, ...args: string[]) { return execFileSync("git", ["-C", root, ...args], { encoding: "utf8" }).trim() }
 function fixture() {
-  const root = mkdtempSync(path.join(tmpdir(), "opencode-agents-attempt-"))
+  const root = realpathSync(mkdtempSync(path.join(tmpdir(), "opencode-agents-attempt-")))
   roots.push(root)
-  git(root, "init", "-q")
-  git(root, "config", "user.name", "Attempt Test")
-  git(root, "config", "user.email", "attempt@example.invalid")
-  writeFileSync(path.join(root, "old.txt"), "initial\n")
-  git(root, "add", "old.txt")
-  git(root, "commit", "-qm", "baseline")
+  // Copy all Git state privately; refresh index stat data for the destination.
+  cpSync(seed, root, { recursive: true, preserveTimestamps: true })
+  git(root, "update-index", "--refresh")
   return root
 }
 
@@ -409,8 +417,10 @@ test("publication accepts a stable pre-existing diff but does not authorize it",
 })
 
 test("candidate fit preserves complete confirmation text and terminal sizing policy", () => {
-  const root = fixture()
-  const candidate = makeCandidate(parseProposal('{"intent":"i","plan":"p","files":["old.txt"]}', root), root, git(root, "rev-parse", "HEAD"))
+  const root = realpathSync(mkdtempSync(path.join(tmpdir(), "opencode-agents-attempt-")))
+  roots.push(root)
+  writeFileSync(path.join(root, "old.txt"), "initial\n")
+  const candidate = makeCandidate(parseProposal('{"intent":"i","plan":"p","files":["old.txt"]}', root), root, "1".repeat(40))
   expect(candidateFits(candidateMessage(candidate), 120, 50)).toBe(true)
   expect(candidateFits(candidateMessage(candidate), 40, 15)).toBe(false)
   expect(candidateFits("x".repeat(270), 36, 20)).toBe(true)

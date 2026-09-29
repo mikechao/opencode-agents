@@ -1,5 +1,4 @@
 import { afterEach, expect, test } from "bun:test"
-import { execFileSync } from "node:child_process"
 import { createHash } from "node:crypto"
 import { mkdtempSync, realpathSync, rmSync, writeFileSync, symlinkSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -7,23 +6,15 @@ import path from "node:path"
 import { candidateIntact, candidateMessage, makeCandidate, parseProposal, renderPlan } from "../src/proposal.ts"
 
 const roots: string[] = []
+const HEAD = "1".repeat(40)
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
-function git(root: string, ...args: string[]): string {
-  return execFileSync("git", ["-C", root, ...args], { encoding: "utf8" }).trim()
-}
-
 function fixture(): string {
-  const root = mkdtempSync(path.join(tmpdir(), "opencode-agents-primitives-"))
+  const root = realpathSync(mkdtempSync(path.join(tmpdir(), "opencode-agents-primitives-")))
   roots.push(root)
-  git(root, "init", "-q")
-  git(root, "config", "user.name", "Primitive Test")
-  git(root, "config", "user.email", "primitives@example.invalid")
   writeFileSync(path.join(root, "old.txt"), "initial\n")
-  git(root, "add", "old.txt")
-  git(root, "commit", "-qm", "baseline")
   return root
 }
 
@@ -50,7 +41,7 @@ const proposal = JSON.stringify({
 
 test("trusted plan rendering preserves multiline text and exact candidate scope", () => {
   const root = fixture()
-  const candidate = makeCandidate(parseProposal(proposal, root), root, git(root, "rev-parse", "HEAD"))
+  const candidate = makeCandidate(parseProposal(proposal, root), root, HEAD)
   const expected = [
     "Plan", "", "Change old file", "", "Update its contents", "Check the result", "",
     "Exact files", "• old.txt", "• new.txt", "• nested/three.txt", "",
@@ -69,7 +60,7 @@ test("exact intent, plan, file order, root and HEAD bind candidate encoding and 
   expect(parsed).toEqual(exact)
   expect(Object.isFrozen(parsed)).toBe(true)
   expect(Object.isFrozen(parsed.files)).toBe(true)
-  const head = git(root, "rev-parse", "HEAD")
+  const head = HEAD
   const candidate = makeCandidate(parsed, root, head)
   const encoding = JSON.stringify({ kind: "intent", intent: exact.intent, plan: exact.plan, files: exact.files, root, head })
   expect(candidate.encoding).toBe(encoding)
@@ -89,7 +80,7 @@ test("exact intent, plan, file order, root and HEAD bind candidate encoding and 
 
 test("candidate confirmation text preserves exact proposal and states implementation-only authority", () => {
   const root = fixture()
-  const candidate = makeCandidate(parseProposal(proposal, root), root, git(root, "rev-parse", "HEAD"))
+  const candidate = makeCandidate(parseProposal(proposal, root), root, HEAD)
   expect(candidateMessage(candidate)).toBe([
     "Authorize one implementation attempt for this exact proposal?",
     "Intent: Change old file", "Plan: Update its contents\nCheck the result", "Exact files (3):",
