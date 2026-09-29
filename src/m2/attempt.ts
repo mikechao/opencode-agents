@@ -1,9 +1,11 @@
 import type { Context } from "@opencode/plugin/tui/context"
 import type { SessionInfo, SessionMessageInfo } from "@opencode/client"
+import { createHash } from "node:crypto"
 import { realpathSync } from "node:fs"
 import { assertLive, candidateFits, consumeIntent, grantIntent, implementerPrompt, type Generation } from "../m1/attempt.ts"
 import { observeGit, requireFresh, requireInScope, type GitSnapshot } from "../m1/git.ts"
 import { candidateIntact, candidateMessage, makeCandidate, parseProposal } from "../m1/proposal.ts"
+import type { IntentCandidate } from "../m1/proposal.ts"
 
 export const SLOT_PROMPT = "Reply READY only. Do not inspect or modify the repository."
 export const plannerInput = (request: string) => `User request:\n${request}`
@@ -28,6 +30,10 @@ function requireActivationLocation(context: Context, location: Location): string
   const current = context.location ?? context.data.location.default()
   if (current.directory !== location.directory || !location.directory) stop("TUI location changed")
   return location.directory
+}
+function requireDogfoodBaseline(directory: string, baseline: GitSnapshot): void {
+  const current = observeGit(directory, baseline)
+  if (JSON.stringify(current.paths) !== JSON.stringify(baseline.paths)) stop("dogfood worktree paths changed")
 }
 async function after<T>(generation: Generation, operation: Promise<T>): Promise<T> {
   const value = await operation
@@ -207,6 +213,40 @@ async function switchedSlot(context: Context, generation: Generation, bound: Bou
       afterSwitch.some((message) => !["user", "assistant", "idle"].includes(message.type))) stop("authorized slot input/result mismatch")
   const final = oneFinal(afterSwitch, "authorized_implementer")
   if (!finalText(final)) stop("authorized Implementer returned no text")
+}
+
+// Temporary live dogfood: this runs from the root execution-succeeded event, after the root turn returns.
+export async function publishM2PlanDogfood(
+  context: Context, generation: Generation, baseline: GitSnapshot, parentID: string, activationLocation: Location,
+): Promise<{ candidate: IntentCandidate; planHash: string; syntheticID: string }> {
+  assertLive(generation)
+  if (generation.busy) throw new Error("Another CAP attempt is already running")
+  generation.busy = true
+  try {
+    const directory = requireActivationLocation(context, activationLocation)
+    if (realpathSync(directory) !== baseline.root) stop("worktree location changed")
+    requireDogfoodBaseline(directory, baseline)
+    await after(generation, context.client.session.wait({ sessionID: parentID }))
+    const bound = await bind(context, generation, parentID, activationLocation)
+    requireDogfoodBaseline(directory, baseline)
+    const plan = bound.plannerChild.text
+    const candidate = makeCandidate(parseProposal(plan, baseline.root), baseline.root, baseline.head)
+    const planHash = createHash("sha256").update(plan).digest("hex").slice(0, 12)
+    context.ui.toast.show({ title: "M2 plan dogfood", message: `Root turn returned; idle confirmed; Planner bound (${planHash}).`, sessionID: parentID })
+    // bind() checked the parent has no active execution or pending input. Check once more at admission.
+    await idle(context, parentID, generation)
+    assertLive(generation)
+    context.ui.toast.show({ title: "M2 plan dogfood", message: `Publishing synthetic plan ${planHash}.`, sessionID: parentID })
+    const admitted = await after(generation, context.client.session.synthetic({
+      sessionID: parentID, text: plan, description: plan, metadata: { source: "planner", planHash }, resume: false,
+    }))
+    if (admitted.type !== "synthetic" || admitted.sessionID !== parentID ||
+        admitted.payload.text !== plan || admitted.payload.description !== plan) stop("synthetic admission changed Planner text")
+    if ((await after(generation, context.client.session.active()))[parentID]) stop("root resumed immediately after synthetic admission")
+    return { candidate, planHash, syntheticID: admitted.id }
+  } finally {
+    generation.busy = false
+  }
 }
 
 export async function runM2(context: Context, generation: Generation, baseline: GitSnapshot, parentID: string, activationLocation: Location): Promise<string> {

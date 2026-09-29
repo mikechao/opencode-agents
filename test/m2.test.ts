@@ -7,7 +7,7 @@ import type { Context } from "@opencode/plugin/tui/context"
 import { implementerPrompt, type Generation } from "../src/m1/attempt.ts"
 import { observeGit } from "../src/m1/git.ts"
 import { makeCandidate, parseProposal, candidateMessage } from "../src/m1/proposal.ts"
-import { plannerInput, runM2, SLOT_PROMPT } from "../src/m2/attempt.ts"
+import { plannerInput, publishM2PlanDogfood, runM2, SLOT_PROMPT } from "../src/m2/attempt.ts"
 import plugin from "../.opencode/plugins/opencode-agents/tui.ts"
 
 const roots: string[] = []
@@ -39,6 +39,8 @@ function call(id: string, agent: string, prompt: string, childID: string, result
   } }
 }
 type FakeOptions = {
+  rootActive?: boolean
+  wakeOnSynthetic?: boolean
   confirm?: boolean
   onConfirm?: () => void
   onSwitch?: () => void
@@ -63,13 +65,21 @@ function fake(root: string, options: FakeOptions = {}) {
     "planner-child": { id: "planner-child", parentID: "parent", agent: "planner", location: { directory: root }, outcome: "succeeded", time: { idle: 1 } },
     "slot-child": { id: "slot-child", parentID: "parent", agent: "implementer_slot", location: { directory: root }, outcome: "succeeded", time: { idle: 1 } },
   }
-  const calls = { switched: [] as string[], prompted: [] as Array<{ sessionID: string; text: string }>, confirmed: [] as string[] }
+  const calls = { switched: [] as string[], prompted: [] as Array<{ sessionID: string; text: string }>, confirmed: [] as string[],
+    synthetic: [] as Array<{ sessionID: string; text: string; description: string; metadata: { source: string; planHash: string }; resume: boolean }>, toasts: [] as string[] }
   const context = {
     location: { directory: root }, renderer: { terminalWidth: 120, terminalHeight: 60 },
     client: {
       session: {
         get: async ({ sessionID }: { sessionID: string }) => sessions[sessionID],
-        active: async () => ({}), inbox: { list: async () => [] }, wait: async ({ sessionID }: { sessionID: string }) => { options.onWait?.(sessionID) },
+        active: async () => options.rootActive || (options.wakeOnSynthetic && calls.synthetic.length > 0)
+          ? { parent: { type: "running" } } : {},
+        inbox: { list: async () => [] }, wait: async ({ sessionID }: { sessionID: string }) => { options.onWait?.(sessionID) },
+        synthetic: async (input: { sessionID: string; text: string; description: string; metadata: { source: string; planHash: string }; resume: boolean }) => {
+          calls.synthetic.push(input)
+          return { id: "synthetic-plan", type: "synthetic", sessionID: input.sessionID,
+            payload: { text: input.text, description: input.description } }
+        },
         switchAgent: async ({ sessionID, agent }: { sessionID: string; agent: string }) => {
           calls.switched.push(sessionID)
           sessions[sessionID].agent = agent
@@ -90,13 +100,44 @@ function fake(root: string, options: FakeOptions = {}) {
         return cursor ? { data: all.slice(2), cursor: {} } : { data: all.slice(0, 2), cursor: { next: "rest" } }
       } },
     },
-    ui: { dialog: {
+    ui: { toast: { show: ({ message }: { message: string }) => { calls.toasts.push(message) } }, dialog: {
       confirm: async ({ message }: { message: string }) => { calls.confirmed.push(message); options.onConfirm?.(); return options.confirm },
       set: () => undefined,
     } },
   } as unknown as Context
   return { context, generation, histories, sessions, calls }
 }
+
+test("post-idle dogfood binds exact Planner P and publishes it without authorizing implementation", async () => {
+  const root = fixture()
+  const f = fake(root, { onWait: (sessionID) => { if (sessionID === "parent") f.calls.toasts.push("root wait returned") } })
+  const baseline = observeGit(root)
+  const result = await publishM2PlanDogfood(f.context, f.generation, baseline, "parent", { directory: root })
+  expect(result.candidate).toEqual(makeCandidate(parseProposal(proposal, baseline.root), baseline.root, baseline.head))
+  expect(result.syntheticID).toBe("synthetic-plan")
+  expect(f.calls.synthetic).toEqual([{ sessionID: "parent", text: proposal, description: proposal,
+    metadata: { source: "planner", planHash: result.planHash }, resume: false }])
+  expect(f.calls.toasts[0]).toBe("root wait returned")
+  expect(f.calls.toasts.at(-1)).toContain(result.planHash)
+  expect(f.calls.confirmed).toEqual([])
+  expect(f.calls.switched).toEqual([])
+  expect(f.calls.prompted).toEqual([])
+})
+
+test("dogfood refuses to publish while the root execution is active", async () => {
+  const root = fixture()
+  const f = fake(root, { rootActive: true })
+  await expect(publishM2PlanDogfood(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow("running")
+  expect(f.calls.synthetic).toEqual([])
+})
+
+test("dogfood reports an immediate root wake after synthetic admission", async () => {
+  const root = fixture()
+  const f = fake(root, { wakeOnSynthetic: true })
+  await expect(publishM2PlanDogfood(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow("resumed immediately")
+  expect(f.calls.synthetic).toHaveLength(1)
+  expect(f.calls.prompted).toEqual([])
+})
 
 test("binds native calls and exact Planner result, confirms candidate, switches and prompts exact slot once", async () => {
   const root = fixture()
@@ -292,28 +333,31 @@ test("generation revocation after confirmation or switch stops before trusted pr
   }
 })
 
-test("TUI activation accepts only a newly observed parent from a clean baseline", async () => {
+test("TUI activation publishes only after a newly observed parent completes", async () => {
   const root = fixture()
-  const f = fake(root, { confirm: true, onPrompt: () => writeFileSync(path.join(root, "old.txt"), "done") })
+  const f = fake(root)
   const handlers = new Map<string, (event: any) => void>()
-  let resolveAlert!: (value: string) => void
-  const alerted = new Promise<string>((resolve) => { resolveAlert = resolve })
   const host = f.context as unknown as any
   host.data = { on: (type: string, handler: (event: any) => void) => { handlers.set(type, handler); return () => handlers.delete(type) } }
   host.ui.slot = () => () => undefined
-  host.ui.dialog.alert = async ({ title }: { title: string }) => { resolveAlert(title) }
+  host.ui.dialog.alert = async () => { throw new Error("unexpected alert") }
   const cleanup = await plugin.setup(f.context)
   handlers.get("session.execution.succeeded")?.({ data: { sessionID: "parent" } })
-  expect(f.calls.confirmed).toEqual([])
+  expect(f.calls.synthetic).toEqual([])
   handlers.get("session.created")?.({ data: { sessionID: "parent", agent: "opencode-agents", location: { directory: root } } })
   handlers.get("session.execution.succeeded")?.({ data: { sessionID: "parent" } })
-  expect(await alerted).toBe("M2 gate complete")
-  expect(f.calls.prompted).toHaveLength(1)
+  await Promise.resolve()
+  for (let i = 0; i < 100 && !f.calls.synthetic.length; i++) await Bun.sleep(1)
+  expect(f.calls.synthetic).toHaveLength(1)
+  expect(f.calls.confirmed).toEqual([])
+  expect(f.calls.prompted).toEqual([])
+  handlers.get("session.execution.started")?.({ data: { sessionID: "parent" } })
+  expect(f.calls.toasts.at(-1)).toContain("Root execution started")
   if (typeof cleanup === "function") await cleanup()
   expect(handlers.size).toBe(0)
 })
 
-test("dirty activation leaves M2 unavailable for that generation", async () => {
+test("dogfood accepts a stable pre-existing diff but does not authorize it", async () => {
   const root = fixture()
   writeFileSync(path.join(root, "old.txt"), "dirty")
   const f = fake(root, { confirm: true })
@@ -324,6 +368,8 @@ test("dirty activation leaves M2 unavailable for that generation", async () => {
   const cleanup = await plugin.setup(f.context)
   handlers.get("session.created")?.({ data: { sessionID: "parent", agent: "opencode-agents", location: { directory: root } } })
   handlers.get("session.execution.succeeded")?.({ data: { sessionID: "parent" } })
+  for (let i = 0; i < 100 && !f.calls.synthetic.length; i++) await Bun.sleep(1)
+  expect(f.calls.synthetic).toHaveLength(1)
   expect(f.calls.confirmed).toEqual([])
   expect(f.calls.switched).toEqual([])
   if (typeof cleanup === "function") await cleanup()

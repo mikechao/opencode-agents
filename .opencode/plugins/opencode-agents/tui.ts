@@ -1,7 +1,8 @@
 import type { Definition } from "@opencode/plugin/tui/plugin"
 import { runM1, type Generation } from "../../../src/m1/attempt.ts"
 import { observeGit } from "../../../src/m1/git.ts"
-import { runM2 } from "../../../src/m2/attempt.ts"
+import { publishM2PlanDogfood } from "../../../src/m2/attempt.ts"
+import type { IntentCandidate } from "../../../src/m1/proposal.ts"
 
 const plugin: Definition = {
   id: "opencode-agents",
@@ -11,13 +12,12 @@ const plugin: Definition = {
     const directory = location.directory
     let baseline: ReturnType<typeof observeGit> | undefined
     try {
-      if (directory) {
-        const observed = observeGit(directory)
-        if (observed.paths.length === 0) baseline = observed
-      }
-    } catch { /* A fresh clean activation is required for M2. */ }
+      if (directory) baseline = observeGit(directory)
+    } catch { /* A valid Git baseline is required for the plan dogfood. */ }
     let freshParent: string | undefined
     let attempted = false
+    let boundCandidate: IntentCandidate | undefined
+    let publishedPlanHash: string | undefined
     const removeCreated = context.data.on("session.created", (event) => {
       if (generation.revoked || !baseline || attempted || freshParent || event.data.parentID ||
           event.data.agent !== "opencode-agents" || event.data.location.directory !== location.directory) return
@@ -26,9 +26,12 @@ const plugin: Definition = {
     const removeCompleted = context.data.on("session.execution.succeeded", (event) => {
       if (generation.revoked || attempted || !baseline || event.data.sessionID !== freshParent) return
       attempted = true
-      void runM2(context, generation, baseline, freshParent, location).then(
-        async (report) => {
-          if (!generation.revoked) await context.ui.dialog.alert({ title: "M2 gate complete", message: report })
+      void publishM2PlanDogfood(context, generation, baseline, freshParent, location).then(
+        ({ candidate, planHash, syntheticID }) => {
+          if (generation.revoked) return
+          boundCandidate = candidate
+          publishedPlanHash = planHash
+          context.ui.toast.show({ title: "M2 plan dogfood", message: `Synthetic plan ${planHash} published (${syntheticID}); CAP candidate ${boundCandidate.digest.slice(0, 12)} retained; root should remain idle.`, sessionID: freshParent })
         },
         async (error) => {
           if (!generation.revoked) await context.ui.dialog.alert({
@@ -36,6 +39,10 @@ const plugin: Definition = {
           })
         },
       )
+    })
+    const removeStarted = context.data.on("session.execution.started", (event) => {
+      if (generation.revoked || !publishedPlanHash || event.data.sessionID !== freshParent) return
+      context.ui.toast.show({ title: "M2 plan dogfood: root woke", message: `Root execution started after synthetic plan ${publishedPlanHash}. Check whether a human prompted it.`, variant: "warning", sessionID: freshParent })
     })
     const stopParent = (sessionID: string) => {
       if (generation.revoked || attempted || sessionID !== freshParent) return
@@ -72,8 +79,10 @@ const plugin: Definition = {
     })
     return () => {
       generation.revoked = true
+      boundCandidate = undefined
       removeCreated()
       removeCompleted()
+      removeStarted()
       removeFailed()
       removeInterrupted()
       removeSlot()
