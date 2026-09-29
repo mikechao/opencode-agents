@@ -1,5 +1,5 @@
 ---
-description: Conversational CAP Orchestrator for one M2 attempt
+description: Conversational CAP Orchestrator for one implementation attempt
 mode: primary
 permissions:
   - { action: "*", resource: "*", effect: deny }

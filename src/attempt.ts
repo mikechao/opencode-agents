@@ -2,11 +2,36 @@ import type { Context } from "@opencode/plugin/tui/context"
 import type { SessionInfo, SessionMessageInfo } from "@opencode/client"
 import { createHash } from "node:crypto"
 import { realpathSync } from "node:fs"
-import { assertLive, consumeIntent, grantIntent, type Generation } from "../cap.ts"
-import { candidateFits, implementerPrompt } from "../m1/attempt.ts"
-import { observeGit, requireFresh, requireInScope, type GitSnapshot } from "../git.ts"
-import { candidateIntact, candidateMessage, makeCandidate, parseProposal, renderPlan } from "../proposal.ts"
-import type { IntentCandidate } from "../proposal.ts"
+import { assertLive, consumeIntent, grantIntent, type Generation } from "./cap.ts"
+import { observeGit, requireFresh, requireInScope, type GitSnapshot } from "./git.ts"
+import { candidateIntact, candidateMessage, makeCandidate, parseProposal, renderPlan } from "./proposal.ts"
+import type { IntentCandidate } from "./proposal.ts"
+
+export function candidateFits(message: string, terminalWidth: number, terminalHeight: number): boolean {
+  const width = Math.min(116, terminalWidth - 2) - 4
+  const height = Math.floor(terminalHeight * 0.75) - 6
+  if (width < 30 || height < 8) return false
+  const lines = message.split("\n").reduce((total, line) => {
+    const columns = [...line].reduce((size, character) => size + (character.charCodeAt(0) > 127 ? 2 : 1), 0)
+    return total + Math.max(1, Math.ceil(columns / width))
+  }, 0)
+  return lines <= height
+}
+
+export function implementerPrompt(candidate: IntentCandidate): string {
+  return [
+    "You are the Implementer for one authorized implementation attempt.",
+    "Implement the frozen proposal below. Modify only its exact authorized repository paths; do not add, edit, or delete any other repository path.",
+    "Do not intentionally perform Git commit or other history effects reserved for the trusted CAP path.",
+    "Do not intentionally manipulate Git configuration, index metadata, ignore rules, repository metadata, or other shell-accessible state to conceal changes or evade ordinary Git changed-path scope observation.",
+    "You may read, edit, test, and use ordinary development shell commands. Do not alter scope or seek another approval.",
+    "The worktree was clean when the intent was authorized. Leave HEAD unchanged.",
+    `Canonical worktree root: ${candidate.root}`,
+    `Bound HEAD: ${candidate.head}`,
+    "Frozen proposal:",
+    JSON.stringify(candidate.proposal),
+  ].join("\n")
+}
 
 export const SLOT_PROMPT = "Reply READY only. Do not inspect or modify the repository."
 export const plannerInput = (request: string) => `User request:\n${request}`
@@ -20,7 +45,7 @@ type Child = { inputID: string; finalID: string; text: string }
 type Bound = { parentID: string; userID: string; request: string; planner: Call; slot: Call; plannerChild: Child; slotChild: Child;
   parentHistory: string; plannerHistory: string; slotHistory: string }
 
-function stop(message: string): never { throw new Error(`M2 binding failed: ${message}`) }
+function stop(message: string): never { throw new Error(`Attempt binding failed: ${message}`) }
 function plain(message: Extract<SessionMessageInfo, { type: "user" }>): boolean {
   return !message.files?.length && !message.agents?.length && !message.skills?.length
 }
@@ -32,9 +57,9 @@ function requireActivationLocation(context: Context, location: Location): string
   if (current.directory !== location.directory || !location.directory) stop("TUI location changed")
   return location.directory
 }
-function requireDogfoodBaseline(directory: string, baseline: GitSnapshot): void {
+function requirePublicationBaseline(directory: string, baseline: GitSnapshot): void {
   const current = observeGit(directory, baseline)
-  if (JSON.stringify(current.paths) !== JSON.stringify(baseline.paths)) stop("dogfood worktree paths changed")
+  if (JSON.stringify(current.paths) !== JSON.stringify(baseline.paths)) stop("publication worktree paths changed")
 }
 async function after<T>(generation: Generation, operation: Promise<T>): Promise<T> {
   const value = await operation
@@ -216,8 +241,8 @@ async function switchedSlot(context: Context, generation: Generation, bound: Bou
   if (!finalText(final)) stop("authorized Implementer returned no text")
 }
 
-// Temporary live dogfood: this runs from the root execution-succeeded event, after the root turn returns.
-export async function publishM2PlanDogfood(
+// Publish from the root execution-succeeded event, after the root turn returns.
+export async function publishPlan(
   context: Context, generation: Generation, baseline: GitSnapshot, parentID: string, activationLocation: Location,
 ): Promise<{ candidate: IntentCandidate; planHash: string; syntheticID: string }> {
   assertLive(generation)
@@ -226,19 +251,19 @@ export async function publishM2PlanDogfood(
   try {
     const directory = requireActivationLocation(context, activationLocation)
     if (realpathSync(directory) !== baseline.root) stop("worktree location changed")
-    requireDogfoodBaseline(directory, baseline)
+    requirePublicationBaseline(directory, baseline)
     await after(generation, context.client.session.wait({ sessionID: parentID }))
     const bound = await bind(context, generation, parentID, activationLocation)
-    requireDogfoodBaseline(directory, baseline)
+    requirePublicationBaseline(directory, baseline)
     const plan = bound.plannerChild.text
     const candidate = makeCandidate(parseProposal(plan, baseline.root), baseline.root, baseline.head)
     const description = renderPlan(candidate)
     const planHash = createHash("sha256").update(plan).digest("hex").slice(0, 12)
-    context.ui.toast.show({ title: "M2 plan dogfood", message: `Root turn returned; idle confirmed; Planner bound (${planHash}).`, sessionID: parentID })
+    context.ui.toast.show({ title: "Plan publication", message: `Root turn returned; idle confirmed; Planner bound (${planHash}).`, sessionID: parentID })
     // bind() checked the parent has no active execution or pending input. Check once more at admission.
     await idle(context, parentID, generation)
     assertLive(generation)
-    context.ui.toast.show({ title: "M2 plan dogfood", message: `Publishing synthetic plan ${planHash}.`, sessionID: parentID })
+    context.ui.toast.show({ title: "Plan publication", message: `Publishing synthetic plan ${planHash}.`, sessionID: parentID })
     const admitted = await after(generation, context.client.session.synthetic({
       sessionID: parentID, text: plan, description, metadata: { source: "planner", planHash }, resume: false,
     }))
@@ -251,7 +276,7 @@ export async function publishM2PlanDogfood(
   }
 }
 
-export async function runM2(context: Context, generation: Generation, baseline: GitSnapshot, parentID: string, activationLocation: Location): Promise<string> {
+export async function runImplementationAttempt(context: Context, generation: Generation, baseline: GitSnapshot, parentID: string, activationLocation: Location): Promise<string> {
   assertLive(generation)
   if (generation.busy) throw new Error("Another CAP attempt is already running")
   generation.busy = true
@@ -267,12 +292,12 @@ export async function runM2(context: Context, generation: Generation, baseline: 
     if (!candidateFits(message, context.renderer.terminalWidth, context.renderer.terminalHeight)) {
       throw new Error("The full authorization candidate will not fit in this terminal")
     }
-    const confirmation = context.ui.dialog.confirm({ title: "Authorize M2 implementation", message,
+    const confirmation = context.ui.dialog.confirm({ title: "Authorize implementation", message,
       label: { confirm: "Authorize", cancel: "Cancel" } })
     assertLive(generation)
     context.ui.dialog.set({ size: "xlarge" })
     const confirmed = await after(generation, confirmation)
-    if (confirmed !== true) throw new Error("M2 authorization was cancelled or dismissed")
+    if (confirmed !== true) throw new Error("Implementation authorization was cancelled or dismissed")
     requireActivationLocation(context, activationLocation)
     if (!candidateIntact(candidate) || !candidateFits(message, context.renderer.terminalWidth, context.renderer.terminalHeight)) {
       stop("candidate changed or became unreadable")
@@ -287,7 +312,7 @@ export async function runM2(context: Context, generation: Generation, baseline: 
     await switchedSlot(context, generation, bound, activationLocation)
     requireActivationLocation(context, activationLocation)
     requireFresh(observeGit(directory, baseline), baseline)
-    const frozenText = implementerPrompt(candidate, "Milestone 2")
+    const frozenText = implementerPrompt(candidate)
     assertLive(generation)
     consumeIntent(grant, candidate, generation)
     // One dispatch only. Any rejection here may follow host admission; never retry it.
@@ -302,7 +327,7 @@ export async function runM2(context: Context, generation: Generation, baseline: 
     assertLive(generation)
     const paths = requireInScope(result, baseline, candidate.proposal.files)
     assertLive(generation)
-    return `M2 implementation gate complete: HEAD ${baseline.head} unchanged. Resulting paths (${paths.length}): ${paths.join(", ") || "(none)"}. No review or commit was performed.`
+    return `Implementation gate complete: HEAD ${baseline.head} unchanged. Resulting paths (${paths.length}): ${paths.join(", ") || "(none)"}. No review or commit was performed.`
   } finally {
     generation.busy = false
   }

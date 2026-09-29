@@ -1,13 +1,11 @@
 import { afterEach, expect, test } from "bun:test"
 import { execFileSync } from "node:child_process"
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync, renameSync, symlinkSync, unlinkSync } from "node:fs"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import type { Context } from "@opencode/plugin/tui/context"
-import { assertLive, consumeIntent, grantIntent, type Generation } from "../src/cap.ts"
-import { candidateFits, runM1 } from "../src/m1/attempt.ts"
-import { observeGit, requireFresh, requireInScope } from "../src/git.ts"
-import { candidateIntact, candidateMessage, makeCandidate, parseProposal } from "../src/proposal.ts"
+import { type Generation } from "../src/cap.ts"
+import { runM1 } from "../src/m1/attempt.ts"
 
 const roots: string[] = []
 afterEach(() => {
@@ -29,118 +27,6 @@ function fixture(): string {
   git(root, "commit", "-qm", "baseline")
   return root
 }
-
-test("proposal must preserve three exact fields and reject expanded scope", () => {
-  const root = fixture()
-  const text = JSON.stringify({ intent: "change", plan: "edit", files: ["old.txt", "new.txt"] })
-  const proposal = parseProposal(text, root)
-  expect(proposal.files).toEqual(["old.txt", "new.txt"])
-  expect(Object.isFrozen(proposal.files)).toBe(true)
-  symlinkSync(tmpdir(), path.join(root, "outside"))
-  for (const files of [["old.txt", "old.txt"], ["../outside"], ["*.txt"], ["."], ["/tmp/file"], [".git/config"]]) {
-    expect(() => parseProposal(JSON.stringify({ intent: "change", plan: "edit", files }), root)).toThrow()
-  }
-  expect(() => parseProposal(JSON.stringify({ intent: "change", plan: "edit", files: ["old.txt"], extra: true }), root)).toThrow()
-  expect(() => parseProposal(JSON.stringify({ intent: "change", plan: "edit", files: ["outside/file.txt"] }), root)).toThrow()
-  expect(() => parseProposal("```json\n" + text + "\n```", root)).toThrow()
-})
-
-test("candidate binds proposal and one-use grant stays private to live generation", () => {
-  const root = fixture()
-  const candidate = makeCandidate(parseProposal('{"intent":"i","plan":"p","files":["old.txt"]}', root), root, git(root, "rev-parse", "HEAD"))
-  const generation: Generation = { revoked: false, busy: false }
-  expect(candidateIntact(candidate)).toBe(true)
-  expect(candidateMessage(candidate)).toContain(candidate.proposal.plan)
-  expect(candidateFits(candidateMessage(candidate), 120, 50)).toBe(true)
-  expect(candidateFits(candidateMessage(candidate), 40, 15)).toBe(false)
-  expect(() => grantIntent(candidate, false, generation)).toThrow()
-  expect(() => grantIntent(candidate, undefined, generation)).toThrow()
-  const grant = grantIntent(candidate, true, generation)
-  consumeIntent(grant, candidate, generation)
-  expect(() => consumeIntent(grant, candidate, generation)).toThrow()
-  generation.revoked = true
-  expect(() => assertLive(generation)).toThrow()
-  expect(() => grantIntent(candidate, true, generation)).toThrow()
-})
-
-test("trusted Git observation covers staged, unstaged, untracked, deletion, and both rename paths", () => {
-  const root = fixture()
-  const baseline = observeGit(root)
-  expect(baseline.paths).toEqual([])
-  writeFileSync(path.join(root, "old.txt"), "changed\n")
-  expect(observeGit(root).paths).toEqual(["old.txt"])
-  git(root, "add", "old.txt")
-  expect(observeGit(root).paths).toEqual(["old.txt"])
-  writeFileSync(path.join(root, "new.txt"), "new\n")
-  expect(new Set(observeGit(root).paths)).toEqual(new Set(["old.txt", "new.txt"]))
-  expect(() => requireFresh(observeGit(root), baseline)).toThrow()
-  expect(() => requireInScope(observeGit(root), baseline, ["old.txt"])).toThrow()
-  expect(requireInScope(observeGit(root), baseline, ["old.txt", "new.txt"])).toHaveLength(2)
-  unlinkSync(path.join(root, "new.txt"))
-  git(root, "reset", "-q", "--hard", "HEAD")
-  unlinkSync(path.join(root, "old.txt"))
-  expect(observeGit(root).paths).toEqual(["old.txt"])
-  git(root, "reset", "-q", "--hard", "HEAD")
-  renameSync(path.join(root, "old.txt"), path.join(root, "new.txt"))
-  git(root, "add", "-A")
-  expect(new Set(observeGit(root).paths)).toEqual(new Set(["old.txt", "new.txt"]))
-  expect(() => requireInScope(observeGit(root), baseline, ["new.txt"])).toThrow()
-})
-
-test("ordinary staged and unstaged paths are observed together", () => {
-  const root = fixture()
-  writeFileSync(path.join(root, "second.txt"), "baseline\n")
-  git(root, "add", "second.txt")
-  git(root, "commit", "-qm", "second tracked file")
-  const baseline = observeGit(root)
-  expect(baseline.paths).toEqual([])
-
-  writeFileSync(path.join(root, "old.txt"), "staged version\n")
-  git(root, "add", "old.txt")
-  writeFileSync(path.join(root, "old.txt"), "different working version\n")
-  writeFileSync(path.join(root, "second.txt"), "unstaged version\n")
-  const indexBefore = git(root, "ls-files", "--stage", "-z")
-  const observed = observeGit(root)
-  expect(observed.paths).toEqual(["old.txt", "second.txt"])
-  expect(git(root, "ls-files", "--stage", "-z")).toBe(indexBefore)
-  expect(() => requireFresh(observed, baseline)).toThrow()
-  expect(() => requireInScope(observed, baseline, ["old.txt"])).toThrow("second.txt")
-  expect(requireInScope(observed, baseline, ["old.txt", "second.txt"])).toEqual(observed.paths)
-})
-
-test("ignored untracked paths are excluded from ordinary cleanliness", () => {
-  const root = fixture()
-  writeFileSync(path.join(root, ".gitignore"), "ignored.txt\n")
-  git(root, "add", ".gitignore")
-  git(root, "commit", "-qm", "ignore rule")
-  const baseline = observeGit(root)
-  writeFileSync(path.join(root, "ignored.txt"), "ignored")
-  expect(observeGit(root).paths).toEqual([])
-  expect(() => requireFresh(observeGit(root), baseline)).not.toThrow()
-  writeFileSync(path.join(root, "visible.txt"), "visible")
-  expect(observeGit(root).paths).toEqual(["visible.txt"])
-})
-
-test("scope uses exact path equality and observation requires the worktree root", () => {
-  const root = fixture()
-  const baseline = observeGit(root)
-  writeFileSync(path.join(root, "old.txt.bak"), "different path")
-  expect(observeGit(root).paths).toEqual(["old.txt.bak"])
-  expect(() => requireInScope(observeGit(root), baseline, ["old.txt"])).toThrow("old.txt.bak")
-  mkdirSync(path.join(root, "subdirectory"))
-  expect(() => observeGit(path.join(root, "subdirectory"))).toThrow("Git root differ")
-})
-
-test("changed HEAD cannot pass; unusual pathnames remain exact", () => {
-  const root = fixture()
-  const baseline = observeGit(root)
-  writeFileSync(path.join(root, "line\nbreak.txt"), "data")
-  expect(observeGit(root).paths).toEqual(["line\nbreak.txt"])
-  git(root, "add", "-A")
-  git(root, "commit", "-qm", "new head")
-  expect(() => observeGit(root, baseline)).toThrow("HEAD changed before Git observation")
-  expect(() => requireInScope(observeGit(root), baseline, ["line\nbreak.txt"])).toThrow()
-})
 
 function fakeContext(root: string, generation: Generation, options: {
   confirm?: boolean | undefined

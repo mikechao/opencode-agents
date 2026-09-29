@@ -1,0 +1,116 @@
+import { afterEach, expect, test } from "bun:test"
+import { execFileSync } from "node:child_process"
+import { createHash } from "node:crypto"
+import { mkdtempSync, realpathSync, rmSync, writeFileSync, symlinkSync } from "node:fs"
+import { tmpdir } from "node:os"
+import path from "node:path"
+import { candidateIntact, candidateMessage, makeCandidate, parseProposal, renderPlan } from "../src/proposal.ts"
+
+const roots: string[] = []
+afterEach(() => {
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
+})
+
+function git(root: string, ...args: string[]): string {
+  return execFileSync("git", ["-C", root, ...args], { encoding: "utf8" }).trim()
+}
+
+function fixture(): string {
+  const root = mkdtempSync(path.join(tmpdir(), "opencode-agents-primitives-"))
+  roots.push(root)
+  git(root, "init", "-q")
+  git(root, "config", "user.name", "Primitive Test")
+  git(root, "config", "user.email", "primitives@example.invalid")
+  writeFileSync(path.join(root, "old.txt"), "initial\n")
+  git(root, "add", "old.txt")
+  git(root, "commit", "-qm", "baseline")
+  return root
+}
+
+test("proposal must preserve three exact fields and reject expanded scope", () => {
+  const root = fixture()
+  const text = JSON.stringify({ intent: "change", plan: "edit", files: ["old.txt", "new.txt"] })
+  const proposal = parseProposal(text, root)
+  expect(proposal.files).toEqual(["old.txt", "new.txt"])
+  expect(Object.isFrozen(proposal.files)).toBe(true)
+  symlinkSync(tmpdir(), path.join(root, "outside"))
+  for (const files of [["old.txt", "old.txt"], ["../outside"], ["*.txt"], ["."], ["/tmp/file"], [".git/config"]]) {
+    expect(() => parseProposal(JSON.stringify({ intent: "change", plan: "edit", files }), root)).toThrow()
+  }
+  expect(() => parseProposal(JSON.stringify({ intent: "change", plan: "edit", files: ["old.txt"], extra: true }), root)).toThrow()
+  expect(() => parseProposal(JSON.stringify({ intent: "change", plan: "edit", files: ["outside/file.txt"] }), root)).toThrow()
+  expect(() => parseProposal("```json\n" + text + "\n```", root)).toThrow()
+})
+
+const proposal = JSON.stringify({
+  intent: "Change old file",
+  plan: "Update its contents\nCheck the result",
+  files: ["old.txt", "new.txt", "nested/three.txt"],
+})
+
+test("trusted plan rendering preserves multiline text and exact candidate scope", () => {
+  const root = fixture()
+  const candidate = makeCandidate(parseProposal(proposal, root), root, git(root, "rev-parse", "HEAD"))
+  const expected = [
+    "Plan", "", "Change old file", "", "Update its contents", "Check the result", "",
+    "Exact files", "• old.txt", "• new.txt", "• nested/three.txt", "",
+    "Bound HEAD", candidate.head, "", "No implementation has been authorized.",
+  ].join("\n")
+  expect(renderPlan(candidate)).toBe(expected)
+  expect(renderPlan(candidate)).not.toContain("\\n")
+  expect(renderPlan(candidate)).not.toBe(proposal)
+  expect(candidate.proposal.plan).toBe("Update its contents\nCheck the result")
+})
+
+test("exact intent, plan, file order, root and HEAD bind candidate encoding and digest", () => {
+  const root = fixture()
+  const exact = { intent: "  exact intent\n ", plan: "  1. Edit\n2. Test\n ", files: ["new.txt", "old.txt"] }
+  const parsed = parseProposal(JSON.stringify(exact), root)
+  expect(parsed).toEqual(exact)
+  expect(Object.isFrozen(parsed)).toBe(true)
+  expect(Object.isFrozen(parsed.files)).toBe(true)
+  const head = git(root, "rev-parse", "HEAD")
+  const candidate = makeCandidate(parsed, root, head)
+  const encoding = JSON.stringify({ kind: "intent", intent: exact.intent, plan: exact.plan, files: exact.files, root, head })
+  expect(candidate.encoding).toBe(encoding)
+  expect(candidate.digest).toBe(createHash("sha256").update(encoding).digest("hex"))
+  expect(Object.isFrozen(candidate)).toBe(true)
+  expect(candidateIntact(candidate)).toBe(true)
+  for (const altered of [
+    { ...candidate, root: root + "/other" },
+    { ...candidate, head: "0".repeat(40) },
+    { ...candidate, encoding: encoding + " " },
+    { ...candidate, digest: "0".repeat(64) },
+    { ...candidate, proposal: { ...parsed, intent: exact.intent.trim() } },
+    { ...candidate, proposal: { ...parsed, plan: exact.plan.trim() } },
+    { ...candidate, proposal: { ...parsed, files: [...parsed.files].reverse() } },
+  ]) expect(candidateIntact(altered)).toBe(false)
+})
+
+test("candidate confirmation text preserves exact proposal and states implementation-only authority", () => {
+  const root = fixture()
+  const candidate = makeCandidate(parseProposal(proposal, root), root, git(root, "rev-parse", "HEAD"))
+  expect(candidateMessage(candidate)).toBe([
+    "Authorize one implementation attempt for this exact proposal?",
+    "Intent: Change old file", "Plan: Update its contents\nCheck the result", "Exact files (3):",
+    '• "old.txt"', '• "new.txt"', '• "nested/three.txt"',
+    `Worktree: ${JSON.stringify(root)}`, `HEAD: ${candidate.head}`, "Implementation only; no commit authorized.",
+  ].join("\n"))
+  expect(candidateMessage(candidate)).toContain(candidate.proposal.plan)
+  const empty = makeCandidate(parseProposal('{"intent":"i","plan":"p","files":[]}', root), root, candidate.head)
+  expect(candidateMessage(empty)).toContain("Exact files (0):\n(none)")
+  expect(renderPlan(empty)).toContain("Exact files\n(none)")
+  expect(renderPlan(empty)).toContain("No implementation has been authorized.")
+})
+
+test("exact scope permits internal final symlinks and rejects escaping symlinks and malformed paths", () => {
+  const root = realpathSync(fixture())
+  symlinkSync(path.join(root, "old.txt"), path.join(root, "internal.txt"))
+  const outside = fixture()
+  symlinkSync(path.join(outside, "old.txt"), path.join(root, "escaping.txt"))
+  expect(parseProposal(JSON.stringify({ intent: "i", plan: "p", files: ["internal.txt", "missing/parent/new.txt"] }), root).files)
+    .toEqual(["internal.txt", "missing/parent/new.txt"])
+  for (const file of ["escaping.txt", "old.txt/child", "a//b", "a/./b", "a/../b", "a\\b", "a\0b", "a?b", "a[b]", "a{b}", ""]) {
+    expect(() => parseProposal(JSON.stringify({ intent: "i", plan: "p", files: [file] }), root)).toThrow()
+  }
+})

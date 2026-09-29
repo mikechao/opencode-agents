@@ -1,19 +1,9 @@
 import type { Context } from "@opencode/plugin/tui/context"
 import type { SessionMessageInfo } from "@opencode/client"
 import { assertLive, consumeIntent, grantIntent, type Generation } from "../cap.ts"
-import { candidateMessage, makeCandidate, parseProposal, type IntentCandidate } from "../proposal.ts"
+import { candidateMessage, makeCandidate, parseProposal } from "../proposal.ts"
+import { candidateFits, implementerPrompt } from "../attempt.ts"
 import { observeGit, requireFresh, requireInScope } from "../git.ts"
-
-export function candidateFits(message: string, terminalWidth: number, terminalHeight: number): boolean {
-  const width = Math.min(116, terminalWidth - 2) - 4
-  const height = Math.floor(terminalHeight * 0.75) - 6
-  if (width < 30 || height < 8) return false
-  const lines = message.split("\n").reduce((total, line) => {
-    const columns = [...line].reduce((size, character) => size + (character.charCodeAt(0) > 127 ? 2 : 1), 0)
-    return total + Math.max(1, Math.ceil(columns / width))
-  }, 0)
-  return lines <= height
-}
 
 const noDirectCommit = [
   { action: "shell", resource: "git commit", effect: "deny" as const },
@@ -29,21 +19,6 @@ function plannerPrompt(request: string): string {
     "Do not include a Markdown code fence or commentary around the JSON.",
     "",
     `User request:\n${request}`,
-  ].join("\n")
-}
-
-export function implementerPrompt(candidate: IntentCandidate, milestone: "Milestone 1" | "Milestone 2" = "Milestone 1"): string {
-  return [
-    `You are the Implementer for one authorized ${milestone} attempt.`,
-    "Implement the frozen proposal below. Modify only its exact authorized repository paths; do not add, edit, or delete any other repository path.",
-    "Do not intentionally perform Git commit or other history effects reserved for the trusted CAP path.",
-    "Do not intentionally manipulate Git configuration, index metadata, ignore rules, repository metadata, or other shell-accessible state to conceal changes or evade ordinary M1 scope observation.",
-    "You may read, edit, test, and use ordinary development shell commands. Do not alter scope or seek another approval.",
-    "The worktree was clean when the intent was authorized. Leave HEAD unchanged.",
-    `Canonical worktree root: ${candidate.root}`,
-    `Bound HEAD: ${candidate.head}`,
-    "Frozen proposal:",
-    JSON.stringify(candidate.proposal),
   ].join("\n")
 }
 
