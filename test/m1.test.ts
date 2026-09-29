@@ -4,9 +4,10 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync, renameSync, symlinkSync,
 import { tmpdir } from "node:os"
 import path from "node:path"
 import type { Context } from "@opencode/plugin/tui/context"
-import { assertLive, candidateFits, consumeIntent, grantIntent, runM1, type Generation } from "../src/m1/attempt.ts"
-import { observeGit, requireFresh, requireInScope } from "../src/m1/git.ts"
-import { candidateIntact, candidateMessage, makeCandidate, parseProposal } from "../src/m1/proposal.ts"
+import { assertLive, consumeIntent, grantIntent, type Generation } from "../src/cap.ts"
+import { candidateFits, runM1 } from "../src/m1/attempt.ts"
+import { observeGit, requireFresh, requireInScope } from "../src/git.ts"
+import { candidateIntact, candidateMessage, makeCandidate, parseProposal } from "../src/proposal.ts"
 
 const roots: string[] = []
 afterEach(() => {

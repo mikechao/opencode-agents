@@ -1,8 +1,9 @@
 import type { Definition } from "@opencode/plugin/tui/plugin"
-import { runM1, type Generation } from "../../../src/m1/attempt.ts"
-import { observeGit } from "../../../src/m1/git.ts"
+import type { Generation } from "../../../src/cap.ts"
+import { runM1 } from "../../../src/m1/attempt.ts"
+import { observeGit } from "../../../src/git.ts"
 import { publishM2PlanDogfood } from "../../../src/m2/attempt.ts"
-import type { IntentCandidate } from "../../../src/m1/proposal.ts"
+import type { IntentCandidate } from "../../../src/proposal.ts"
 
 const plugin: Definition = {
   id: "opencode-agents",
