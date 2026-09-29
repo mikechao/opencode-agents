@@ -20,7 +20,7 @@ const plugin: Definition = {
     let publishedPlanHash: string | undefined
     const removeCreated = context.data.on("session.created", (event) => {
       if (generation.revoked || !baseline || attempted || freshParent || event.data.parentID ||
-          event.data.agent !== "opencode-agents" || event.data.location.directory !== location.directory) return
+          event.data.agent !== "orchestrator" || event.data.location.directory !== location.directory) return
       freshParent = event.data.sessionID
     })
     const removeCompleted = context.data.on("session.execution.succeeded", (event) => {

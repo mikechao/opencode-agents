@@ -72,7 +72,7 @@ session-level permission overrides.
 
 | Role | Current configuration and meaningful behavior |
 | --- | --- |
-| `opencode-agents` | Primary Orchestrator; only native delegation to `planner` and `implementer_slot`. No edit, shell, execute, session-control, MCP, question or authorized-Implementer delegation. |
+| `orchestrator` | Primary Orchestrator; only native delegation to `planner` and `implementer_slot`. No edit, shell, execute, session-control, MCP, question or authorized-Implementer delegation. |
 | `planner` | Fresh subagent; read/glob/grep only. Returns the exact three-field JSON proposal. No mutation, shell, execute or delegation. |
 | `implementer_slot` | Fresh read-only subagent; read/glob/grep permissions, but bootstrap must use no tools and return exactly `READY`. Creating it grants no implementation authority. |
 | `authorized_implementer` | Hidden subagent used only by the retained trusted switch path; read/glob/grep/edit/shell. Execute, delegation, session-control, MCP and question remain denied. Explicit `git commit` / `git commit *` denials provide defense in depth. |
@@ -190,7 +190,7 @@ enforce that stronger condition, which publication currently does not require.
 ## Activation lifetime and current limitations
 
 Each setup creates one activation-private generation and Git baseline. Only
-one newly observed root `opencode-agents` session at the activation directory
+one newly observed root `orchestrator` session at the activation directory
 is adopted; existing roots, children and later roots cannot replace it.
 `attempted` is set synchronously before async publication or a failed/interrupted
 root alert, and is never reset. The current limitation is **one fresh root and

@@ -59,14 +59,14 @@ function fake(root: string, options: FakeOptions = {}) {
   const generation: Generation = { revoked: false, busy: false }
   const histories: Record<string, any[]> = {
     parent: [user("parent-user", request),
-      { type: "assistant", id: "planner-tool-message", agent: "opencode-agents", content: [call("planner-call", "planner", plannerInput(request), "planner-child", proposal)] },
-      { type: "assistant", id: "slot-tool-message", agent: "opencode-agents", content: [call("slot-call", "implementer_slot", SLOT_PROMPT, "slot-child", "READY")] },
-      answer("parent-final", "opencode-agents", "Ready for trusted handoff"), idle("parent-idle")],
+      { type: "assistant", id: "planner-tool-message", agent: "orchestrator", content: [call("planner-call", "planner", plannerInput(request), "planner-child", proposal)] },
+      { type: "assistant", id: "slot-tool-message", agent: "orchestrator", content: [call("slot-call", "implementer_slot", SLOT_PROMPT, "slot-child", "READY")] },
+      answer("parent-final", "orchestrator", "Ready for trusted handoff"), idle("parent-idle")],
     "planner-child": [user("planner-user", prefix + plannerInput(request)), answer("planner-final", "planner", proposal), idle("planner-idle")],
     "slot-child": [user("slot-user", prefix + SLOT_PROMPT), answer("slot-final", "implementer_slot", "READY"), idle("slot-idle")],
   }
   const sessions: Record<string, any> = {
-    parent: { id: "parent", agent: "opencode-agents", location: { directory: root }, outcome: "succeeded", time: { idle: 1 } },
+    parent: { id: "parent", agent: "orchestrator", location: { directory: root }, outcome: "succeeded", time: { idle: 1 } },
     "planner-child": { id: "planner-child", parentID: "parent", agent: "planner", location: { directory: root }, outcome: "succeeded", time: { idle: 1 } },
     "slot-child": { id: "slot-child", parentID: "parent", agent: "implementer_slot", location: { directory: root }, outcome: "succeeded", time: { idle: 1 } },
   }
@@ -299,13 +299,13 @@ test("native role files deny mutation and delegation through ordered effective r
     const source = readFileSync(path.join(import.meta.dir, `../.opencode/agents/${name}.md`), "utf8")
     expect(source.startsWith("---\n")).toBe(true)
     const frontmatter = Bun.YAML.parse(source.split("---\n")[1]!) as { mode: string; permissions: Rule[] }
-    expect(frontmatter.mode).toBe(name === "opencode-agents" ? "primary" : "subagent")
+    expect(frontmatter.mode).toBe(name === "orchestrator" ? "primary" : "subagent")
     expect(frontmatter.permissions.length).toBeGreaterThan(0)
     return frontmatter.permissions
   }
   const effect = (rules: Rule[], action: string, resource = "*") =>
     rules.filter((rule) => (rule.action === "*" || rule.action === action) && (rule.resource === "*" || rule.resource === resource)).at(-1)?.effect
-  for (const name of ["opencode-agents", "planner", "implementer_slot", "authorized_implementer"]) {
+  for (const name of ["orchestrator", "planner", "implementer_slot", "authorized_implementer"]) {
     const rules = load(name)
     expect(rules[0]).toEqual({ action: "*", resource: "*", effect: "deny" })
     for (const action of ["execute", "session_move", "session_rename", "opencode", "mcp", "question"]) {
@@ -314,7 +314,7 @@ test("native role files deny mutation and delegation through ordered effective r
     expect(effect(rules, "subagent", "authorized_implementer")).toBe("deny")
     expect(effect(rules, "subagent", "other")).toBe("deny")
   }
-  const orchestrator = load("opencode-agents")
+  const orchestrator = load("orchestrator")
   expect(effect(orchestrator, "subagent", "planner")).toBe("allow")
   expect(effect(orchestrator, "subagent", "implementer_slot")).toBe("allow")
   expect(effect(orchestrator, "edit")).toBe("deny")
@@ -378,7 +378,7 @@ test("TUI activation publishes only after a newly observed parent completes", as
   const cleanup = await plugin.setup(f.context)
   handlers.get("session.execution.succeeded")?.({ data: { sessionID: "parent" } })
   expect(f.calls.synthetic).toEqual([])
-  handlers.get("session.created")?.({ data: { sessionID: "parent", agent: "opencode-agents", location: { directory: root } } })
+  handlers.get("session.created")?.({ data: { sessionID: "parent", agent: "orchestrator", location: { directory: root } } })
   handlers.get("session.execution.succeeded")?.({ data: { sessionID: "parent" } })
   await Promise.resolve()
   for (let i = 0; i < 100 && !f.calls.synthetic.length; i++) await Bun.sleep(1)
@@ -399,7 +399,7 @@ test("publication accepts a stable pre-existing diff but does not authorize it",
   const host = f.context as unknown as any
   host.data = { on: (type: string, handler: (event: any) => void) => { handlers.set(type, handler); return () => handlers.delete(type) } }
   const cleanup = await plugin.setup(f.context)
-  handlers.get("session.created")?.({ data: { sessionID: "parent", agent: "opencode-agents", location: { directory: root } } })
+  handlers.get("session.created")?.({ data: { sessionID: "parent", agent: "orchestrator", location: { directory: root } } })
   handlers.get("session.execution.succeeded")?.({ data: { sessionID: "parent" } })
   for (let i = 0; i < 100 && !f.calls.synthetic.length; i++) await Bun.sleep(1)
   expect(f.calls.synthetic).toHaveLength(1)
@@ -597,7 +597,7 @@ test("TUI duplicate completions and failed or interrupted roots cannot start ano
     host.ui.dialog.alert = async (input: unknown) => { alerts.push(input) }
     const cleanup = await plugin.setup(f.context)
     try {
-      handlers.get("session.created")?.({ data: { sessionID: "parent", agent: "opencode-agents", location: { directory: root } } })
+      handlers.get("session.created")?.({ data: { sessionID: "parent", agent: "orchestrator", location: { directory: root } } })
       handlers.get(`session.execution.${outcome}`)?.({ data: { sessionID: "parent" } })
       handlers.get("session.execution.succeeded")?.({ data: { sessionID: "parent" } })
       if (outcome === "succeeded") {
@@ -627,7 +627,7 @@ test("TUI cleanup revokes pending publication and a fresh activation has no inhe
   host.data = { on: (type: string, handler: (event: any) => void) => { handlers.set(type, handler); return () => handlers.delete(type) } }
   host.ui.dialog.alert = async (input: unknown) => { alerts.push(input) }
   const cleanup = await plugin.setup(f.context)
-  handlers.get("session.created")?.({ data: { sessionID: "parent", agent: "opencode-agents", location: { directory: root } } })
+  handlers.get("session.created")?.({ data: { sessionID: "parent", agent: "orchestrator", location: { directory: root } } })
   handlers.get("session.execution.succeeded")?.({ data: { sessionID: "parent" } })
   expect(waited).toBe(true)
   if (typeof cleanup === "function") await cleanup()

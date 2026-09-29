@@ -127,7 +127,7 @@ function parentCalls(history: SessionMessageInfo[], expectedUserID?: string): { 
   if (history.some((message) => !["user", "assistant", "idle"].includes(message.type))) stop("unexpected parent input or control message")
   const idles = history.filter((message) => message.type === "idle")
   if (idles.length !== 1 || idles[0]?.type !== "idle" || idles[0].outcome !== "succeeded") stop("parent did not complete one successful turn")
-  const final = oneFinal(history, "opencode-agents")
+  const final = oneFinal(history, "orchestrator")
   if (!finalText(final) || history.at(-1)?.type !== "idle") stop("parent final result is missing")
   const tools = history.flatMap((message) => message.type === "assistant"
     ? message.content.filter((part): part is Tool => part.type === "tool").map((part) => ({ messageID: message.id, part })) : [])
@@ -169,7 +169,7 @@ function resultMatches(history: SessionMessageInfo[], call: Call, child: Child):
 }
 async function bind(context: Context, generation: Generation, parentID: string, location: Location, expected?: Bound): Promise<Bound> {
   const parent = await after(generation, context.client.session.get({ sessionID: parentID }))
-  successful(parent, parentID, "opencode-agents", location)
+  successful(parent, parentID, "orchestrator", location)
   await idle(context, parentID, generation)
   const parentHistory = await messages(context, parentID, generation)
   if (expected && JSON.stringify(parentHistory) !== expected.parentHistory) stop("parent transcript changed")
@@ -197,7 +197,7 @@ async function bind(context: Context, generation: Generation, parentID: string, 
 }
 async function verifyParentPlanner(context: Context, generation: Generation, bound: Bound, location: Location): Promise<void> {
   const parent = await after(generation, context.client.session.get({ sessionID: bound.parentID }))
-  successful(parent, bound.parentID, "opencode-agents", location)
+  successful(parent, bound.parentID, "orchestrator", location)
   await idle(context, bound.parentID, generation)
   const parentHistory = await messages(context, bound.parentID, generation)
   if (JSON.stringify(parentHistory) !== bound.parentHistory) stop("parent transcript changed after slot switch")
