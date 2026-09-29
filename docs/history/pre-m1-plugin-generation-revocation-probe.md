@@ -1,5 +1,7 @@
 # Disposable Pre-M1 Plugin Generation Revocation Probe
 
+**Historical evidence.** This document records investigation, design, or observed behavior at an earlier repository state. It is not current normative documentation. See [`../README.md`](../README.md) for the current documentation map.
+
 This is a lifecycle-only dogfood probe. It has no CAP state, creates no grant,
 and performs no privileged effect. The command opens one trusted TUI
 confirmation and records whether an old activation resumes after its cleanup

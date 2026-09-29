@@ -1,5 +1,7 @@
 # Milestone 2 native-child threat-model reassessment
 
+**Historical evidence.** This document records investigation, design, or observed behavior at an earlier repository state. It is not current normative documentation. See [`../README.md`](../README.md) for the current documentation map.
+
 ## 1. Executive conclusion
 
 **CANDIDATE 1 IS CAP-COMPATIBLE.** The previous investigation applied a stronger post-run requirement to the switched child than accepted M1 applies to its editing-capable root Implementer. A persistent `authorized_implementer` selection is ordinary OpenCode role/tool capability, not a surviving CAP grant. With the narrow role and tool surface specified below, the Orchestrator's native continuation cannot use that selection to admit another mutation-capable turn: a call naming `authorized_implementer` is denied before child lookup; a call naming `implementer_slot` switches the child back before prompting. The trusted TUI can consume one process-local intent grant and submit one exact frozen implementation input to the exact child. Later direct local-client input is possible, exactly as for the M1 root session, and is outside that CAP admission. This is a source-based compatibility decision, **not** M2 implementation or runtime validation.

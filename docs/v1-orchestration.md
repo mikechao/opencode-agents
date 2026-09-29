@@ -6,7 +6,7 @@ This document owns actual OpenCode host/runtime sequencing and implementation
 status. [CAP](coding-authority-protocol.md) owns normative authority invariants;
 [the charter](charter.md) owns purpose and scope. Runtime simplification is
 complete: the milestone-named runtime architecture has been retired. Its
-[reconciliation report](m1-m2-runtime-simplification-reconciliation.md) is
+[reconciliation report](history/m1-m2-runtime-simplification-reconciliation.md) is
 historical evidence, not a current reading prerequisite.
 
 The live TUI reaches trusted Plan publication and then remains idle. It does
@@ -208,7 +208,7 @@ sessions continue. There is no retry/recovery workflow.
 ## Future work: published-plan authorization, then review and commit
 
 The selected future UX direction from the historical
-[hybrid decision](hybrid-authorization-ux-decision.md) is a readable trusted
+[hybrid decision](history/hybrid-authorization-ux-decision.md) is a readable trusted
 bound Plan in conversation plus a compact local `session.composer.top`
 authorization surface with direct TUI-local **Authorize / Cancel** callbacks.
 No model-mediated affirmative authorization is permitted. The Plan projection

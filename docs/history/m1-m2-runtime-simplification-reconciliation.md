@@ -1,5 +1,7 @@
 # M1/M2 Runtime Simplification Reconciliation
 
+**Historical evidence.** This document records investigation, design, or observed behavior at an earlier repository state. It is not current normative documentation. See [`../README.md`](../README.md) for the current documentation map.
+
 ## 1. Executive conclusion
 
 **COMPLETE — NO RUNTIME GAPS**

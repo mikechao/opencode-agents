@@ -26,8 +26,7 @@ reviewed-target construction, and Commit are later work.
 
 ## Historical evidence
 
-Other investigation, milestone, probe and audit documents record historical
-reasoning and evidence, rather than current contracts. They remain at their
-existing paths during Phase 1 and will move under `docs/history/` in the next
-cleanup phase, with superseded material pruned according to the
-[cleanup plan](documentation-cleanup-plan.md).
+Investigation, milestone, probe and audit documents are retained under
+[`history/`](history/README.md) as non-normative historical evidence. Superseded
+material was pruned according to the archived
+[cleanup plan](history/documentation-cleanup-plan.md).

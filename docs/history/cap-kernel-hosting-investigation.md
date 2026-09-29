@@ -1,5 +1,7 @@
 # CAP Kernel Hosting Investigation
 
+**Historical evidence.** This document records investigation, design, or observed behavior at an earlier repository state. It is not current normative documentation. See [`../README.md`](../README.md) for the current documentation map.
+
 ## 1. Executive Conclusion
 
 Pre-M1 CAP hosting validation is complete: both local TUI-to-worktree/Git hosting and plugin-generation revocation passed. **Candidate A is accepted for local V1:** the active installed `opencode-agents` TUI plugin generation in the local OpenCode TUI process is the CAP runtime. It owns candidate/result binding, process-local authority, trusted local Git observations, and eventually the bounded CAP effect.

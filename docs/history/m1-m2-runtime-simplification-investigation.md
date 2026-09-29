@@ -1,5 +1,7 @@
 # M1/M2 Runtime Simplification Investigation
 
+**Historical evidence.** This document records investigation, design, or observed behavior at an earlier repository state. It is not current normative documentation. See [`../README.md`](../README.md) for the current documentation map.
+
 ## 1. Executive conclusion
 
 **Retire M1/M2 as runtime architectural concepts.** Keep their proven integrity behavior, remove the standalone `/m1` validation harness, and move the native attempt into milestone-free modules. M1 and M2 name experiments, not distinct authority kinds. Both use the same intent candidate, process-local single-use grant, and Git gate.

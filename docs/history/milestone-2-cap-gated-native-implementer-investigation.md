@@ -1,5 +1,7 @@
 # Milestone 2: CAP-gated native Implementer investigation
 
+**Historical evidence.** This document records investigation, design, or observed behavior at an earlier repository state. It is not current normative documentation. See [`../README.md`](../README.md) for the current documentation map.
+
 > **Current status:** The finding below remains valid: a direct
 > model-originated `subagent("authorized_implementer", ...)` call cannot
 > itself be the CAP admission under the current hooks and permission APIs.

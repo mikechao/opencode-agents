@@ -1,5 +1,7 @@
 # B1 Authority-Integrity Reassessment
 
+**Historical evidence.** This document records investigation, design, or observed behavior at an earlier repository state. It is not current normative documentation. See [`../README.md`](../README.md) for the current documentation map.
+
 **Status:** Historical, non-normative reassessment artifact. The current normative CAP adopts process-scoped authority, trusts the installed OpenCode and `opencode-agents` components, and relies on trusted OpenCode role/tool enforcement for the reserved commit effect. This report's stronger runtime-verifier requirement was not adopted; its reasoning remains historical. See `docs/coding-authority-protocol.md` for the current resolution.
 
 ## 1. Executive Conclusion
@@ -10,7 +12,7 @@ CAP still needs a trusted runtime-selection boundary. Model-controlled repositor
 
 The narrower statement—“model execution cannot manufacture, enlarge, replay, reuse, or substitute CAP authority”—is sufficient for **authority integrity** only when it includes trusted runtime selection and the bounded effect path. Taken literally, it misses a separate bypass: a model-controlled shell that can run `git commit` directly can bypass CAP without manufacturing a CAP grant.
 
-**ESTABLISHED FROM CURRENT DOCS.** CAP currently makes durable store state authoritative, while also requiring that an unconsumed prior-process decision not resume after restart. Those choices are recorded in [CAP §§1–4 and 8](coding-authority-protocol.md:10) and the [pre-M1 review](pre-m1-documentation-readiness-review.md:103). The latter correctly identifies model-directed code and store changes as a risk, but its proposed remedy assumes durable grants are necessary.
+**ESTABLISHED FROM CURRENT DOCS.** CAP currently makes durable store state authoritative, while also requiring that an unconsumed prior-process decision not resume after restart. Those choices are recorded in [CAP §§1–4 and 8](https://github.com/mikechao/opencode-agents/blob/e480936ed70619457850cb0a484662a1d7dd73fe/docs/coding-authority-protocol.md#L10) and the [pre-M1 review](https://github.com/mikechao/opencode-agents/blob/bf8d5f34324f97f7c11be9437e50ae09fe167aaa/docs/pre-m1-documentation-readiness-review.md#L103). The latter correctly identifies model-directed code and store changes as a risk, but its proposed remedy assumes durable grants are necessary.
 
 **UNVERIFIED.** The inspected OpenCode setup does not yet establish an independent runtime-selection root for CAP. A model-writable plugin path, global config, or Git `HEAD` cannot serve as that root merely because it is outside the worktree.
 
@@ -27,13 +29,13 @@ Four properties should remain distinct:
 - **Durable audit and reconciliation:** Records may help with audit or locating an ambiguous Git outcome. They must not restore authority. They may be treated as untrusted evidence.
 - **Filesystem isolation:** Model execution need not be unable to write every CAP-related file. Writes may corrupt or delete audit data, or cause denial of service, provided they cannot change which code is trusted or make authority succeed.
 
-**ESTABLISHED FROM SOURCE.** OpenCode has a server-side `discovery: false` option that suppresses filesystem config discovery while retaining host-injected plugins (`../opencode/packages/core/src/instance.ts:119`). The TUI separately finds plugin directories using its current working directory (`../opencode/packages/tui/src/plugin/discovery.ts:8`, `../opencode/packages/tui/src/app.tsx:212`). The B1 investigation reports that the stock TUI has no supported project-plugin disable switch, so a trusted launch arrangement must control its discovery paths ([B1 feasibility investigation](b1-boundary-feasibility-investigation.md:1)).
+**ESTABLISHED FROM SOURCE.** OpenCode has a server-side `discovery: false` option that suppresses filesystem config discovery while retaining host-injected plugins (`../opencode/packages/core/src/instance.ts:119`). The TUI separately finds plugin directories using its current working directory (`../opencode/packages/tui/src/plugin/discovery.ts:8`, `../opencode/packages/tui/src/app.tsx:212`). The B1 investigation reports that the stock TUI has no supported project-plugin disable switch, so a trusted launch arrangement must control its discovery paths ([B1 feasibility investigation](https://github.com/mikechao/opencode-agents/blob/bf8d5f34324f97f7c11be9437e50ae09fe167aaa/docs/b1-boundary-feasibility-investigation.md#L1)).
 
 **INFERENCE — A separate effect-integrity requirement remains.** CAP says a commit occurs only through its bounded, separately authorized Git effect. If the model shell can invoke an equivalent `git commit` directly, CAP’s commit gate is bypassed even if no CAP grant was forged. The reviewed docs do not establish a hard control that prevents this. This is an effect-path question, not a reason to require general write isolation.
 
 ## 3. Current CAP Requirement Classification
 
-**ESTABLISHED FROM CURRENT DOCS.** CAP requires durable grant recording and consumption, SQLite as an acceptable implementation, no authority resumption after restart, and no reuse of a consumed grant ([CAP §8](coding-authority-protocol.md:181)).
+**ESTABLISHED FROM CURRENT DOCS.** CAP requires durable grant recording and consumption, SQLite as an acceptable implementation, no authority resumption after restart, and no reuse of a consumed grant ([CAP §8](https://github.com/mikechao/opencode-agents/blob/e480936ed70619457850cb0a484662a1d7dd73fe/docs/coding-authority-protocol.md#L181)).
 
 **INFERENCE — Classification:**
 
@@ -140,7 +142,7 @@ This wording removes physical write isolation as a requirement. It retains a con
 
 ## 11. CAP Changes Implied
 
-**INFERENCE.** No edits were made. If this decision is adopted, the smallest reconsideration in [CAP](coding-authority-protocol.md) is:
+**INFERENCE.** No edits were made. If this decision is adopted, the smallest reconsideration in [CAP](https://github.com/mikechao/opencode-agents/blob/e480936ed70619457850cb0a484662a1d7dd73fe/docs/coding-authority-protocol.md) is:
 
 - **§§1–2:** Remove the durable store as a condition for authority. Define current-process authority and its expiry.
 - **§3:** Identify the trusted runtime selector/verifier and state that repository-controlled plugins are not trusted merely because OpenCode discovers them.
@@ -150,7 +152,7 @@ This wording removes physical write isolation as a requirement. It retains a con
 - **§§9–10:** Preserve scope, freshness, review, and bounded effect rules. Clarify that a commit effect cannot be invoked outside its CAP path. Decide whether restart-time reconciliation is optional or removed.
 - **§13:** Remove the required durable grant transaction question; add trusted runtime-selection and effect-path verification.
 
-[V1 orchestration §§7–8](v1-orchestration.md:175) and the charter also refer to the durable store as authority and would need matching terminology.
+[V1 orchestration §§7–8](https://github.com/mikechao/opencode-agents/blob/e480936ed70619457850cb0a484662a1d7dd73fe/docs/v1-orchestration.md#L175) and the charter also refer to the durable store as authority and would need matching terminology.
 
 ## 12. Implementation Consequence
 

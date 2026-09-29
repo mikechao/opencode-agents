@@ -1,5 +1,7 @@
 # Milestone 0 investigation — trusted UI authorization boundary
 
+**Historical evidence.** This document records investigation, design, or observed behavior at an earlier repository state. It is not current normative documentation. See [`../README.md`](../README.md) for the current documentation map.
+
 ## Executive status
 
 **PASS — Phases A, B, and C complete. Milestone 0 establishes `ui.dialog.confirm`

@@ -1,5 +1,7 @@
 # Milestone 0 `ui.dialog.confirm` dogfood harness
 
+**Historical evidence.** This document records investigation, design, or observed behavior at an earlier repository state. It is not current normative documentation. See [`../README.md`](../README.md) for the current documentation map.
+
 ## Status and purpose
 
 **COMPLETE — Phases A, B, and C passed; Milestone 0 outcome: PASS.** This is a

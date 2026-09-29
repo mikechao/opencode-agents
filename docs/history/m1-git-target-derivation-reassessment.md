@@ -1,18 +1,20 @@
 # M1 Git target derivation reassessment
 
+**Historical evidence.** This document records investigation, design, or observed behavior at an earlier repository state. It is not current normative documentation. See [`../README.md`](../README.md) for the current documentation map.
+
 **Status:** This report's proposed temporary-index M1 design was subsequently
 superseded by the simpler M1 changed-path scope boundary. The normative
 documents define the current architecture.
 
 ## 1. What M1 needs at the Git boundary
 
-M1 needs the set of repository paths that could enter the resulting target, compared with the exact authorized path set. That set is the union of changes in the real index against bound `HEAD` and changes in a Git-staged view of the worktree against the same `HEAD`. A rename contributes both names; M1 does not need rename detection. M1 also needs the same canonical root and `HEAD` at the freshness and final gates ([M1 contract](milestone-1-intent-implementation.md)).
+M1 needs the set of repository paths that could enter the resulting target, compared with the exact authorized path set. That set is the union of changes in the real index against bound `HEAD` and changes in a Git-staged view of the worktree against the same `HEAD`. A rename contributes both names; M1 does not need rename detection. M1 also needs the same canonical root and `HEAD` at the freshness and final gates ([M1 contract](https://github.com/mikechao/opencode-agents/blob/bf8d5f34324f97f7c11be9437e50ae09fe167aaa/docs/milestone-1-intent-implementation.md)).
 
 The union matters because a staged version can differ from the working file. Neither view alone is complete.
 
 ## 2. Is the current snapshot stronger than M1 requires?
 
-**Yes.** The [current observer](../src/m1/git.ts) parses Git's index format, hashes filesystem contents itself, traverses directories twice, and compares file and directory metadata. That attempts to establish a stable physical filesystem view. M1 asks for a Git target path set and does not require proof that no transient filesystem mutation occurred.
+**Yes.** The current observer (`src/m1/git.ts`) parses Git's index format, hashes filesystem contents itself, traverses directories twice, and compares file and directory metadata. That attempts to establish a stable physical filesystem view. M1 asks for a Git target path set and does not require proof that no transient filesystem mutation occurred.
 
 It also uses different semantics from Git when configuration deliberately suppresses a physical change. That distinction drives the recommendation below.
 
@@ -50,7 +52,7 @@ Use NUL-delimited output throughout; `--no-renames` makes both sides of a rename
 
 Keep the supported state small: STOP on unmerged entries, sparse checkout or skip-worktree entries, gitlinks or embedded repositories that become gitlinks, intent-to-add entries, unsupported file types or modes, and failed Git commands. Split indexes can be read through Git plumbing, but STOP is reasonable if M1 chooses not to support them; no custom split-index parser is warranted.
 
-Under the **current tests' physical-change expectation**, also STOP when `core.filemode=false` or `core.symlinks=false`. Case-only worktree spelling changes under `core.ignorecase=true` need a separate, narrow spelling observation or an explicit contract decision; the temporary index alone does not establish them. The [focused tests](../test/m1.test.ts) intentionally require those physical-only observations.
+Under the **current tests' physical-change expectation**, also STOP when `core.filemode=false` or `core.symlinks=false`. Case-only worktree spelling changes under `core.ignorecase=true` need a separate, narrow spelling observation or an explicit contract decision; the temporary index alone does not establish them. The focused tests (`test/m1.test.ts`) intentionally require those physical-only observations.
 
 ## 6. Remaining races
 

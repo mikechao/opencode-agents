@@ -1,5 +1,7 @@
 # Documentation Cleanup Plan
 
+**Historical evidence.** This document records investigation, design, or observed behavior at an earlier repository state. It is not current normative documentation. See [`../README.md`](../README.md) for the current documentation map.
+
 ## 1. Executive recommendation
 
 Keep **four current documents**: new README, short charter, normative CAP contract, and runtime architecture. Merge selected hybrid authorization UX into orchestration's future section; archive its prototype decision. Use one flat history directory/index and delete superseded intermediates whose conclusions survive elsewhere.

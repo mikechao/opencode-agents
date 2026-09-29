@@ -1,5 +1,7 @@
 # Milestone 1 Live Dogfood Report
 
+**Historical evidence.** This document records investigation, design, or observed behavior at an earlier repository state. It is not current normative documentation. See [`../README.md`](../README.md) for the current documentation map.
+
 **MILESTONE 1 LIVE DOGFOOD PASS**
 
 Runtime: OpenCode 2.0.18; repository: `mikechao/opencode-agents`.

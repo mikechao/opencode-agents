@@ -1,5 +1,7 @@
 # Disposable Pre-M1 TUI/Git Hosting Probe
 
+**Historical evidence.** This document records investigation, design, or observed behavior at an earlier repository state. It is not current normative documentation. See [`../README.md`](../README.md) for the current documentation map.
+
 This is a temporary dogfood probe for the hosting assumption in
 `cap-kernel-hosting-investigation.md`. It is not CAP code and adds no workflow,
 authorization, or commit behavior. The plugin only runs read-only Git commands.

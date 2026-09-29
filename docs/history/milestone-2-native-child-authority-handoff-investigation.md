@@ -1,5 +1,7 @@
 # Milestone 2 native-child authority handoff investigation
 
+**Historical evidence.** This document records investigation, design, or observed behavior at an earlier repository state. It is not current normative documentation. See [`../README.md`](../README.md) for the current documentation map.
+
 > **Current status:** The final **NOT COMPATIBLE** conclusion below was
 > subsequently reassessed because it required a switched child to lose
 > persistent OpenCode role capability after its admitted turn, a stronger

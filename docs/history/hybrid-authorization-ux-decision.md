@@ -1,5 +1,7 @@
 # Hybrid Plan / Authorization UX Decision
 
+**Historical evidence.** This document records investigation, design, or observed behavior at an earlier repository state. It is not current normative documentation. See [`../README.md`](../README.md) for the current documentation map.
+
 ## Status
 
 **Selected for further UX work; production transcript projection remains unresolved.** This decision records presentation direction only. It does not authorize an implementation change.
