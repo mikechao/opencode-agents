@@ -42,6 +42,10 @@ and Commit remain later work. Automated verification and focused live OpenCode
 2.0.20 dogfood have exercised the published-Plan authorization path; see
 Verification for the evidence and remaining live cases.
 
+Issue #4's pending-resize recovery, post-claim resize tolerance, and continued
+fail-closed behavior on root-route invalidation have now passed live dogfood at
+the implementation HEAD recorded in [the issue #4 report](issue-4-live-dogfood.md).
+
 ## Runtime modules and live entry
 
 | Source | Responsibility |
@@ -294,6 +298,13 @@ Live OpenCode 2.0.20 dogfood verified the following:
   implementation prompt or repository edit. Restoring the old size did not
   restore authorization; the worktree remained clean. This is the historical
   behavior before the issue #4 fix, not the new implemented resize policy.
+- After the issue #4 fix, live dogfood at HEAD
+  `9754a33057efa894aac2e65826129b656a66c636` passed pending resize recovery,
+  post-claim shrink, an additional shrink that completed while still narrow, and
+  root-route invalidation after claim. The successful attempts retained
+  unchanged HEAD and exact `README.md` scope, and stopped before Reviewer /
+  Commit. See [the issue #4 live dogfood report](issue-4-live-dogfood.md) for
+  the full evidence and limits.
 - Dogfood found the startup failure caused by applying `structuredClone` to
   OpenCode 2.0.20's Solid-store-backed `context.location`. The implementation
   now snapshots only immutable primitive identity fields (`directory`, optional
@@ -305,8 +316,17 @@ Live OpenCode 2.0.20 dogfood verified the following:
   dogfood permanently stopped a claimed attempt on resize before prompt dispatch.
   The implemented fix keeps pending resize inert until a fresh fully valid frame
   and allows resize after a valid local click synchronously claims the exact
-  immutable attempt. Non-layout CAP admission checks remain active. The new
-  pending recovery and post-claim resize behavior still require live verification.
+  immutable attempt. Non-layout CAP admission checks remain active. Pending
+  recovery, post-claim shrink, and root-route invalidation after claim passed
+  live; the old STOP remains documented as pre-fix history. Automated regression
+  coverage includes the narrow-to-wide claimed sequence, but live implementation
+  completed while still narrow before a deliberate resize back could be made.
+  See [the issue #4 live dogfood report](issue-4-live-dogfood.md).
+- Issue #7, `[Feat]: Allow authorization at narrow readable terminal sizes`, is
+  a separate layout-policy follow-up from issue #4 dogfood: at roughly 70
+  columns the pending surface remained readable and the attempt stayed alive,
+  while Authorize remained inert under the existing fixed 80×24 minimum. This
+  restriction does not block issue #4's resize-recovery or post-claim behavior.
 - Issue #5, `[Fix]: Allow Plan publication while inspecting Planner`: entering
   Planner before trusted root Plan publication, then allowing Planner/root to
   complete, reproduced the root-view guard STOP. Returning to root showed only
