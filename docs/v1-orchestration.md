@@ -34,8 +34,9 @@ activation Git observation + completion time
 
 There is one authorization path. `runImplementationAttempt()` and its independent
 modal confirmation have been removed. Reviewer, reviewed-target construction,
-and Commit remain later work. Automated bridge checks pass; focused live
-OpenCode 2.0.20 pointer/layout dogfood remains required and has not been run.
+and Commit remain later work. Automated verification and focused live OpenCode
+2.0.20 dogfood have exercised the published-Plan authorization path; see
+Verification for the evidence and remaining live cases.
 
 ## Runtime modules and live entry
 
@@ -92,6 +93,9 @@ The adopted root's host Created evidence is copied and its time is rebound to
 and creation strictly later than observation completion. Equal, missing,
 replayed/pre-observation, or ambiguous clock evidence cannot authorize. This
 uses the supported local topology's shared OS clock, not remote attestation.
+Activation retains an immutable snapshot of only the plain primitive location
+identity fields (`directory` and optional `workspaceID`), rather than cloning
+OpenCode's Solid-store-backed location object.
 
 A stable dirty baseline still runs planning and publishes the normal readable
 Plan. It receives this inert local status, with no decision callbacks:
@@ -152,9 +156,12 @@ The strip shows the complete canonical worktree, Plan/HEAD prefixes,
 “Implementation only,” Authorize and Cancel. It occupies at most three rows:
 worktree at most two wrapped rows and controls on one row. It requires an
 80×24-or-larger terminal and visible, unclipped worktree/control geometry.
-Controls become live only after a completed renderer frame proves the layout. Unusable
-layout, lost view, or later shrink permanently ends the pending authorization.
-The full Plan is not duplicated in the strip.
+Controls become live only after a completed renderer frame proves the layout.
+Unusable layout, lost view, or later shrink permanently ends the pending
+authorization. In the current implementation, resizing during a claimed
+pre-admission continuation also stops before prompt dispatch; restoring the
+previous size does not restore authorization. The full Plan is not duplicated
+in the strip.
 
 Direct left-pointer handlers call an unregistered closure. There is no
 keyboard authorization, Form/Question, slash/palette action, keymap command ID,
@@ -219,19 +226,82 @@ review, commit, recovery, or retry.
 
 ## Verification and remaining work
 
+### Automated verification
+
 CAP/session/callback sequencing uses pure tests and test-scoped trusted host,
 observer and JSX handler doubles. Real Git remains confined to production Git
 boundary cases with immutable seed/private copies. Production freshness is not
 cached or weakened for test speed. The diagnostic profiler follows the new
-published authorization entry; timing checks must use the updated test count.
+published authorization entry. After the Solid-store location snapshot fix,
+typecheck passed, the full suite passed (63 tests), and focused location-proxy
+regressions passed.
 
-A focused, explicitly authorized live OpenCode 2.0.20 dogfood remains required:
-clean pointer Authorize; Cancel with no switch/prompt; dirty inert status;
-readable/scrollable Plan and compact strip; root/view/navigation/location/resize/
-reload fail closed; same retained slot and one prompt; unchanged-HEAD/exact-scope
-acceptance and rejection; STOP before Reviewer/Commit. Keyboard authorization
-is not implemented. No live dogfood or automatic launcher is part of the
-current implementation verification.
+### Live PASS evidence
+
+Live OpenCode 2.0.20 dogfood verified the following:
+
+- A clean fresh attempt ran Orchestrator → Planner → inert implementer slot.
+  The readable trusted Plan appeared in the root TUI, and the composer-top
+  authorization surface appeared only after publication and readability checks.
+- Before Authorize, `git status` stayed clean and `README.md` stayed unchanged.
+  Clicking the trusted local pointer Authorize admitted implementation, and
+  `README.md` contained exactly `# published-plan-authorization-dogfood`.
+  The Git delta contained only `README.md`, HEAD was unchanged, and the flow
+  stopped before Reviewer / Commit.
+- Clicking Cancel admitted no implementation, left the worktree clean, and did
+  not restore authorization later in that attempt.
+- An ordinary untracked dirty path at startup still allowed planning and trusted
+  Plan publication, with no Authorize / Cancel controls and a planning-only
+  explanation that the worktree was dirty when the attempt started. Removing
+  the file did not make that attempt authorizable.
+- During a claimed pre-admission continuation, resizing caused STOP before an
+  implementation prompt or repository edit. Restoring the old size did not
+  restore authorization; the worktree remained clean. This is the current
+  implemented behavior.
+- Dogfood found the startup failure caused by applying `structuredClone` to
+  OpenCode 2.0.20's Solid-store-backed `context.location`. The implementation
+  now snapshots only immutable primitive identity fields (`directory`, optional
+  `workspaceID`), and fresh plugin startup was verified afterward.
+
+### Dogfood findings and tracked follow-ups
+
+- Issue #2, `[Feat]: Clarify published-Plan authorization strip copy`: the
+  current strip is too terse. Desired copy should explicitly ask something
+  like “Do you authorize this plan for implementation?”
+- Issue #3, `[Feat]: Show persistent post-authorization implementation status`:
+  after Authorize, Cancel, or STOP, controls disappear and a transient toast
+  carries most of the terminal state. The immutable Plan can remain visibly
+  stale, including saying that no implementation has been authorized. A
+  persistent trusted, presentation-only lifecycle/result state is desired.
+- Issue #4, `[Feat]: Allow terminal resize after authorization claim`: current
+  resize behavior permanently stops a claimed attempt before prompt dispatch.
+  Dogfood showed this is mechanically safe but stricter than necessary. Desired
+  policy is to keep stale or unreadable layout from enabling a click, while
+  allowing resizing after a valid local click synchronously claims the exact
+  immutable attempt.
+- Issue #5, `[Fix]: Allow Plan publication while inspecting Planner`: entering
+  Planner before trusted root Plan publication, then allowing Planner/root to
+  complete, reproduced the root-view guard STOP. Returning to root showed only
+  model-authored `Plan prepared; awaiting human authorization.`; the trusted
+  synthetic Plan had not been published, and the worktree stayed clean. This is
+  CAP safety fail-closed behavior and a publication/DX failure. Desired behavior
+  is to let child inspection coexist with trusted Plan publication while
+  keeping authorization root-only.
+- On a dirty initial worktree, the trusted planning-only strip correctly says
+  the attempt cannot be authorized, while Orchestrator model-authored prose may
+  still say `awaiting human authorization`. Model-authored prose is not
+  authority.
+
+### Remaining unverified live cases
+
+The following live cases remain unverified: reload/restart during a pending
+authorization attempt fails closed; location/workspace identity changes during
+an attempt; unexpected root wake or additional root input after publication;
+direct inspection that the exact same retained implementer slot receives
+exactly one trusted implementation prompt; exact-scope rejection for an
+out-of-scope implementation result; and longer or scrollable Plan presentation
+with a compact authorization surface under realistic content. Keyboard
+authorization is unimplemented and out of this milestone.
 
 One fresh root and one attempt per activation remain the milestone's limit.
 Later work establishes independent Reviewer, an exact reviewed target, and
