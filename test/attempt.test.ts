@@ -9,9 +9,10 @@ import * as gitModule from "../src/git.ts"
 import { observeGit, type GitSnapshot } from "../src/git.ts"
 import { makeCandidate, parseProposal, candidateMessage, renderPlan } from "../src/proposal.ts"
 import { activationEvidence, initiallyAuthorizable, assertPublishedCoherence, exactEvidence, publishedPresentationMatches,
-  authorizePublishedAttempt, implementerPrompt, plannerInput, publishPlan as publish, verifyPublishedAttempt,
+  authorizePublishedAttempt, implementerPrompt, plannerInput, publishPlan as publish, snapshotLocation, verifyPublishedAttempt,
   type DecisionOwner, type PublishedAttempt, SLOT_PROMPT } from "../src/attempt.ts"
 import { createRoot, createEffect, createMemo, createComponent } from "solid-js"
+import { createStore } from "solid-js/store"
 import { EventEmitter } from "node:events"
 
 // Test-scoped JSX property/handler capture. No renderer, terminal, or native UI integration.
@@ -721,12 +722,16 @@ snapshotTest("trusted prompt admission rejects substituted identity or attachmen
 })
 
 snapshotTest("activation location substitution during decision cannot switch or dispatch", async (observer) => {
-  const root = snapshotFixture(observer)
-  const otherRoot = snapshotFixture(observer)
-  const f = fake(root, { decision: true, onDecision: () => { (f.context as unknown as any).location.directory = otherRoot } })
-  await expect(implement(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow("TUI location changed")
-  expect(f.calls.switched).toEqual([])
-  expect(f.calls.prompted).toEqual([])
+  for (const field of ["directory", "workspaceID"] as const) {
+    const root = snapshotFixture(observer)
+    const [location, setLocation] = createStore({ directory: root, workspaceID: undefined as string | undefined,
+      project: { id: "project", directory: root, canonical: root } })
+    const f = fake(root, { decision: true, onDecision: () => { setLocation(field, "changed") } })
+    Object.defineProperty(f.context, "location", { get: () => location })
+    await expect(implement(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow("TUI location changed")
+    expect(f.calls.switched).toEqual([])
+    expect(f.calls.prompted).toEqual([])
+  }
 })
 
 
@@ -755,6 +760,77 @@ function mount(f: ReturnType<typeof fake>, sessionID = "parent", completeLayout 
   const click = (index: number, button = 0) => buttons[index]?.onMouseUp({ button, stopPropagation() {} })
   return { view, mounted, buttons, click, dispose }
 }
+
+test("location snapshots detach and freeze the identity fields of non-cloneable host info", () => {
+  const [location, setLocation] = createStore({ directory: "/original", workspaceID: "workspace-original",
+    project: { id: "project", directory: "/project", canonical: "/canonical" } })
+  expect(() => structuredClone(location)).toThrow()
+  const snapshot = snapshotLocation(location)
+  expect(snapshot).toEqual({ directory: "/original", workspaceID: "workspace-original" })
+  expect(Object.isFrozen(snapshot)).toBe(true)
+  expect(() => { (snapshot as any).directory = "/forged" }).toThrow()
+  setLocation("directory", "/changed")
+  setLocation("workspaceID", "workspace-changed")
+  setLocation("project", "canonical", "/changed")
+  expect(snapshot).toEqual({ directory: "/original", workspaceID: "workspace-original" })
+  expect(snapshotLocation({ directory: "/default", workspaceID: undefined })).toEqual({ directory: "/default" })
+})
+
+snapshotTest("TUI startup accepts non-cloneable synchronized location info and default refs", async (observer) => {
+  for (const source of ["current", "default"] as const) {
+    const root = snapshotFixture(observer)
+    // OpenCode 2.0.20 returns store-backed Location.PublicInfo from context.location.
+    // Before sync, the plugin falls back to a Location.Ref instead.
+    const [store] = createStore({ info: { directory: root, project: { id: "project", directory: root, canonical: root } },
+      ref: { directory: root } })
+    expect(() => structuredClone(source === "current" ? store.info : store.ref)).toThrow()
+    const f = fake(root)
+    let synchronized = source === "current"
+    Object.defineProperty(f.context, "location", { get: () => synchronized ? store.info : undefined })
+    Object.assign(f.context.data.location, { default: () => store.ref })
+    const cleanup = await plugin.setup(f.context)
+    expect(f.handlers.has("session.created")).toBe(true)
+    expect(f.calls.synthetic).toEqual([])
+    expect(f.calls.prompted).toEqual([])
+    expect(observer.calls(root)).toHaveLength(1)
+    synchronized = true
+    f.sessions.parent.time.created = Date.now() + 10
+    f.emit(f.created())
+    f.emit({ type: "session.execution.succeeded", id: "evt_completed", data: { sessionID: "parent" } })
+    await settleUntil(() => f.slots.length > 0 || f.calls.toasts.length > 0)
+    const view = mount(f)
+    expect(view.buttons).toHaveLength(2)
+    view.click(0)
+    await settleUntil(() => f.calls.toasts.length > 0)
+    expect(f.calls.toasts.at(-1)).toContain("Implementation gate complete")
+    expect(f.calls.switched).toEqual(["slot-child"])
+    expect(f.calls.prompted).toHaveLength(1)
+    if (typeof cleanup === "function") cleanup()
+    view.dispose()
+  }
+})
+
+snapshotTest("TUI startup location evidence survives proxy mutation and rejects identity drift", async (observer) => {
+  for (const field of ["directory", "workspaceID"] as const) {
+    const root = snapshotFixture(observer)
+    const [location, setLocation] = createStore({ directory: root, workspaceID: undefined as string | undefined,
+      project: { id: "project", directory: root, canonical: root } })
+    const f = fake(root)
+    Object.defineProperty(f.context, "location", { get: () => location })
+    const cleanup = await plugin.setup(f.context)
+    setLocation(field, "changed")
+    f.sessions.parent.time.created = Date.now() + 10
+    f.emit(f.created())
+    f.emit({ type: "session.execution.succeeded", id: "evt_completed", data: { sessionID: "parent" } })
+    await settleUntil(() => f.calls.toasts.length > 0)
+    expect(f.calls.toasts.at(-1)).toContain("TUI location changed")
+    expect(f.calls.synthetic).toEqual([])
+    expect(f.slots).toEqual([])
+    expect(f.calls.switched).toEqual([])
+    expect(f.calls.prompted).toEqual([])
+    if (typeof cleanup === "function") cleanup()
+  }
+})
 
 snapshotTest("retained evidence is copied, deeply immutable, and coherent", async (observer) => {
   const root = snapshotFixture(observer)

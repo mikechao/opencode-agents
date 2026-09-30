@@ -6,7 +6,7 @@ import type { Generation } from "../../../src/cap.ts"
 import { observeGit, requireFresh } from "../../../src/git.ts"
 import {
   activationEvidence, authorizePublishedAttempt, exactEvidence, initiallyAuthorizable,
-  publishedPresentationMatches, publishPlan, type DecisionOwner, type PublishedAttempt,
+  publishedPresentationMatches, publishPlan, snapshotLocation, type DecisionOwner, type PublishedAttempt,
 } from "../../../src/attempt.ts"
 
 const dirtyStatus = "Planning only — worktree was dirty when this attempt started. Start a new attempt from a clean worktree to enable implementation."
@@ -17,7 +17,7 @@ const plugin: Definition = {
   id: "opencode-agents",
   setup(context) {
     const generation: Generation = { revoked: false, busy: false }
-    const location = structuredClone(context.location ?? context.data.location.default())
+    const location = snapshotLocation(context.location ?? context.data.location.default())
     let baseline: ReturnType<typeof observeGit> | undefined
     let observationCompletedAt = NaN
     try {
@@ -79,7 +79,7 @@ const plugin: Definition = {
     const rootSelected = () => {
       const route = context.ui.router.current()
       return route.type === "session" && route.sessionID === creation?.data.sessionID &&
-        same(context.location ?? context.data.location.default(), location)
+        same(snapshotLocation(context.location ?? context.data.location.default()), location)
     }
     const surfaceUsable = (published: PublishedAttempt) => {
       if (context.renderer.isDestroyed || context.renderer.terminalWidth < 80 || context.renderer.terminalHeight < 24) return false
@@ -97,7 +97,7 @@ const plugin: Definition = {
       },
       assertCurrent() {
         if (closed || generation.revoked) throw new Error("Attempt ownership was closed or revoked")
-        if (attempted && ((!guard.dispatched && !rootSelected()) || !same(context.location ?? context.data.location.default(), location))) throw new Error("Root view or TUI location changed")
+        if (attempted && ((!guard.dispatched && !rootSelected()) || !same(snapshotLocation(context.location ?? context.data.location.default()), location))) throw new Error("Root view or TUI location changed")
         const retained = pending ?? deciding
         if (retained) {
           if (!guard.dispatched && (!surfaceUsable(retained) || (pending && !mounted))) throw new Error("Authorization surface became unreadable or unavailable")

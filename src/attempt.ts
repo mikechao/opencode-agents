@@ -1,5 +1,5 @@
 import type { Context } from "@opencode/plugin/tui/context"
-import type { OpenCodeEvent, SessionInboxInfo, SessionInfo, SessionMessageInfo } from "@opencode/client"
+import type { LocationRef, OpenCodeEvent, SessionInboxInfo, SessionInfo, SessionMessageInfo } from "@opencode/client"
 import { createHash, randomUUID } from "node:crypto"
 import { assertLive, consumeIntent, grantIntent, type Generation } from "./cap.ts"
 import { observeGit, requireFresh, requireInScope, type GitSnapshot } from "./git.ts"
@@ -28,6 +28,12 @@ const prefix = "You are a subagent spawned by another session.\n"
 type Assistant = Extract<SessionMessageInfo, { type: "assistant" }>
 type Tool = Extract<Assistant["content"][number], { type: "tool" }>
 type Location = SessionInfo["location"]
+// OpenCode's TUI supplies reactive location info, including project metadata.
+// Retain only Location.Ref's primitive identity fields, never the host proxy.
+export function snapshotLocation(location: LocationRef): Readonly<LocationRef> {
+  const { directory, workspaceID } = location
+  return Object.freeze({ directory, ...(workspaceID === undefined ? {} : { workspaceID }) })
+}
 type Call = Readonly<{ messageID: string; toolID: string; childID: string; prompt: string; agent: "planner" | "implementer_slot" }>
 type Child = Readonly<{ inputID: string; finalID: string; text: string }>
 export type Bound = Readonly<{ parentID: string; userID: string; request: string; planner: Call; slot: Call; plannerChild: Child; slotChild: Child;
@@ -110,7 +116,7 @@ function sameLocation(session: SessionInfo, location: Location): boolean {
   return same(session.location, location)
 }
 function requireActivationLocation(context: Context, location: Location): string {
-  const current = context.location ?? context.data.location.default()
+  const current = snapshotLocation(context.location ?? context.data.location.default())
   if (!same(current, location) || !location.directory) stop("TUI location changed")
   return location.directory
 }
