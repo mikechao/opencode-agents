@@ -1,18 +1,19 @@
-import { afterAll, afterEach, beforeAll, expect, test } from "bun:test"
+import { afterAll, afterEach, expect, mock, test } from "bun:test"
 import { execFileSync } from "node:child_process"
 import { cpSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import type { Context } from "@opencode/plugin/tui/context"
 import type { Generation } from "../src/cap.ts"
-import { observeGit } from "../src/git.ts"
+import * as gitModule from "../src/git.ts"
+import { observeGit, type GitSnapshot } from "../src/git.ts"
 import { makeCandidate, parseProposal, candidateMessage, renderPlan } from "../src/proposal.ts"
 import { candidateFits, implementerPrompt, plannerInput, publishPlan, runImplementationAttempt, SLOT_PROMPT } from "../src/attempt.ts"
 import plugin from "../.opencode/plugins/opencode-agents/tui.ts"
 
 const roots: string[] = []
-let seed: string
-beforeAll(() => {
+let seed: string | undefined
+function createSeed() {
   seed = realpathSync(mkdtempSync(path.join(tmpdir(), "opencode-agents-attempt-seed-")))
   git(seed, "init", "-q")
   git(seed, "config", "user.name", "Attempt Test")
@@ -20,16 +21,79 @@ beforeAll(() => {
   writeFileSync(path.join(seed, "old.txt"), "initial\n")
   git(seed, "add", "old.txt")
   git(seed, "commit", "-qm", "baseline")
-})
-afterAll(() => { rmSync(seed, { recursive: true, force: true }) })
+}
+afterAll(() => { if (seed) rmSync(seed, { recursive: true, force: true }) })
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 function git(root: string, ...args: string[]) { return execFileSync("git", ["-C", root, ...args], { encoding: "utf8" }).trim() }
 function fixture() {
+  if (gitModule.observeGit !== realGit.observeGit) throw new Error("Real-Git fixture used while observer is doubled")
+  if (!seed) createSeed()
   const root = realpathSync(mkdtempSync(path.join(tmpdir(), "opencode-agents-attempt-")))
   roots.push(root)
   // Copy all Git state privately; refresh index stat data for the destination.
-  cpSync(seed, root, { recursive: true, preserveTimestamps: true })
+  cpSync(seed!, root, { recursive: true, preserveTimestamps: true })
   git(root, "update-index", "--refresh")
+  return root
+}
+
+// Capture real exports before interception. Bun updates existing ESM consumers,
+// including attempt.ts and the plugin, when this module is mocked/restored.
+const realGit = { ...gitModule }
+const gitModulePath = path.resolve(import.meta.dir, "../src/git.ts")
+const HEAD = "1".repeat(40)
+class SnapshotObserver {
+  private active = true
+  readonly locations = new Map<string, { current: GitSnapshot; calls: Array<{ baseline?: GitSnapshot; current: GitSnapshot }> }>()
+
+  configure(location: string, head = HEAD, paths: readonly string[] = []) {
+    if (!this.active) throw new Error("Snapshot observer is closed")
+    const root = realpathSync(location)
+    if (!/^[0-9a-f]{40}$|^[0-9a-f]{64}$/.test(head)) throw new Error("Invalid Git HEAD")
+    if (paths.some((name) => !name || name.startsWith("/") || name.split("/").some((part) => !part || part === "." || part === ".." || part === ".git"))) {
+      throw new Error("Invalid repository path in Git observation")
+    }
+    const current = Object.freeze({ root, head, paths: Object.freeze([...new Set(paths)].sort()) })
+    const state = this.locations.get(root)
+    if (state) state.current = current
+    else this.locations.set(root, { current, calls: [] })
+  }
+
+  observe = (location: string, baseline?: GitSnapshot): GitSnapshot => {
+    if (!this.active) throw new Error("Snapshot observer is closed")
+    const state = this.locations.get(realpathSync(location))
+    if (!state) throw new Error("Unconfigured snapshot observer location")
+    const current = state.current
+    state.calls.push({ baseline, current })
+    if (baseline && (current.root !== baseline.root || current.head !== baseline.head)) {
+      throw new Error("Worktree root or HEAD changed before Git observation")
+    }
+    return current
+  }
+
+  calls(root: string) { return this.locations.get(realpathSync(root))!.calls }
+  close() { this.active = false; this.locations.clear() }
+}
+
+// Serial, case-local interception only. Unconfigured/closed doubles fail closed;
+// finally restores the real exports even if a rejection/assertion fails.
+function snapshotTest(name: string, run: (observer: SnapshotObserver) => Promise<void>) {
+  test(name, async () => {
+    if (gitModule.observeGit !== realGit.observeGit) throw new Error("Leaked Git observer interception")
+    const observer = new SnapshotObserver()
+    mock.module(gitModulePath, () => ({ ...realGit, observeGit: observer.observe }))
+    try { await run(observer) }
+    finally {
+      observer.close()
+      mock.module(gitModulePath, () => realGit)
+    }
+  })
+}
+
+function snapshotFixture(observer: SnapshotObserver) {
+  const root = realpathSync(mkdtempSync(path.join(tmpdir(), "opencode-agents-attempt-snapshot-")))
+  roots.push(root)
+  writeFileSync(path.join(root, "old.txt"), "initial\n")
+  observer.configure(root)
   return root
 }
 
@@ -121,8 +185,8 @@ function fake(root: string, options: FakeOptions = {}) {
   return { context, generation, histories, sessions, calls }
 }
 
-test("post-idle publication binds exact Planner P and publishes it without authorizing implementation", async () => {
-  const root = fixture()
+snapshotTest("post-idle publication binds exact Planner P and publishes it without authorizing implementation", async (observer) => {
+  const root = snapshotFixture(observer)
   const f = fake(root, { onWait: (sessionID) => { if (sessionID === "parent") f.calls.toasts.push("root wait returned") } })
   const baseline = observeGit(root)
   const result = await publishPlan(f.context, f.generation, baseline, "parent", { directory: root })
@@ -135,17 +199,35 @@ test("post-idle publication binds exact Planner P and publishes it without autho
   expect(f.calls.confirmed).toEqual([])
   expect(f.calls.switched).toEqual([])
   expect(f.calls.prompted).toEqual([])
+  expect(observer.calls(root).map((call) => call.baseline)).toEqual([undefined, baseline, baseline])
+
+  // Exercise the double's contract separately from the production call records.
+  const isolated = new SnapshotObserver()
+  expect(() => isolated.observe(root)).toThrow("Unconfigured")
+  isolated.configure(root)
+  const trusted = isolated.observe(root + "/.")
+  expect([trusted.root, trusted.head, trusted.paths, Object.isFrozen(trusted), Object.isFrozen(trusted.paths)])
+    .toEqual([root, HEAD, [], true, true])
+  for (const bound of [{ ...trusted, root: root + "/other" }, { ...trusted, head: "0".repeat(40) }]) {
+    expect(() => isolated.observe(root, bound)).toThrow("root or HEAD changed")
+  }
+  isolated.configure(root, "2".repeat(40), ["old.txt", "new.txt", "old.txt"])
+  expect(() => isolated.observe(root, trusted)).toThrow("root or HEAD changed")
+  expect(isolated.observe(root).paths).toEqual(["new.txt", "old.txt"])
+  expect(trusted).toEqual({ root, head: HEAD, paths: [] })
+  isolated.close()
+  expect(() => isolated.observe(root)).toThrow("closed")
 })
 
-test("publication refuses to publish while the root execution is active", async () => {
-  const root = fixture()
+snapshotTest("publication refuses to publish while the root execution is active", async (observer) => {
+  const root = snapshotFixture(observer)
   const f = fake(root, { rootActive: true })
   await expect(publishPlan(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow("running")
   expect(f.calls.synthetic).toEqual([])
 })
 
-test("publication reports an immediate root wake after synthetic admission", async () => {
-  const root = fixture()
+snapshotTest("publication reports an immediate root wake after synthetic admission", async (observer) => {
+  const root = snapshotFixture(observer)
   const f = fake(root, { wakeOnSynthetic: true })
   await expect(publishPlan(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow("resumed immediately")
   expect(f.calls.synthetic).toHaveLength(1)
@@ -177,9 +259,9 @@ test("binds native calls and exact Planner result, confirms candidate, switches 
   expect(f.calls.prompted[0].text).toContain(`Bound HEAD: ${baseline.head}`)
 })
 
-test("Planner may complete read and search tools while the slot remains inert", async () => {
+snapshotTest("Planner may complete read and search tools while the slot remains inert", async (observer) => {
   for (const tool of ["read", "glob", "grep"]) {
-    const root = fixture()
+    const root = snapshotFixture(observer)
     const f = fake(root, { confirm: false })
     f.histories["planner-child"].splice(1, 0, { type: "assistant", id: "planner-read", agent: "planner", content: [
       { type: "tool", id: "read-call", name: tool, state: { status: "completed", input: { path: "old.txt" }, content: [text("initial")], metadata: {} } },
@@ -190,7 +272,7 @@ test("Planner may complete read and search tools while the slot remains inert", 
   }
 })
 
-test("missing, duplicate, continued, background, or substituted native child evidence stops before confirmation", async () => {
+snapshotTest("missing, duplicate, continued, background, or substituted native child evidence stops before confirmation", async (observer) => {
   for (const mutate of [
     (f: ReturnType<typeof fake>) => { f.histories.parent[2].content.pop() },
     (f: ReturnType<typeof fake>) => { f.histories.parent[1].content.push(f.histories.parent[1].content[0]) },
@@ -207,7 +289,7 @@ test("missing, duplicate, continued, background, or substituted native child evi
     (f: ReturnType<typeof fake>) => { f.histories["planner-child"].push(user("extra", "extra")) },
     (f: ReturnType<typeof fake>) => { f.histories["slot-child"].push({ type: "agent-switched", id: "early", agent: "authorized_implementer" }) },
   ]) {
-    const root = fixture()
+    const root = snapshotFixture(observer)
     const f = fake(root, { confirm: true })
     mutate(f)
     await expect(runImplementationAttempt(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow()
@@ -241,14 +323,14 @@ test("dirty baseline, dismissal, changed candidate state, and revoked generation
   expect(revoked.calls.switched).toEqual([])
 })
 
-test("after switch or ambiguous prompt, no second dispatch or child is created", async () => {
+snapshotTest("after switch or ambiguous prompt, no second dispatch or child is created", async (observer) => {
   for (const options of [
     { confirm: true, onSwitch: () => { throw new Error("switch uncertain") } },
     { confirm: true, promptError: true },
     { confirm: true, promptMismatch: true },
     { confirm: true, promptIDMismatch: true },
   ]) {
-    const root = fixture()
+    const root = snapshotFixture(observer)
     const f = fake(root, options)
     await expect(runImplementationAttempt(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow()
     expect(f.calls.switched).toEqual(["slot-child"])
@@ -256,9 +338,9 @@ test("after switch or ambiguous prompt, no second dispatch or child is created",
   }
 })
 
-test("stale binding after confirmation or switch and revoked generation after prompt stop without redispatch", async () => {
+snapshotTest("stale binding after confirmation or switch and revoked generation after prompt stop without redispatch", async (observer) => {
   for (const boundary of ["confirm", "switch", "prompt"] as const) {
-    const root = fixture()
+    const root = snapshotFixture(observer)
     let f: ReturnType<typeof fake>
     f = fake(root, { confirm: true,
       onConfirm: boundary === "confirm" ? () => { f.histories["slot-child"].push(user("extra-slot", "continued")) } : undefined,
@@ -270,17 +352,23 @@ test("stale binding after confirmation or switch and revoked generation after pr
   }
 })
 
-test("authorized result must remain in the exact slot with one successful trusted input", async () => {
-  for (const mutation of ["extra-input", "wrong-agent", "failed-outcome"] as const) {
-    const root = fixture()
+snapshotTest("authorized result must remain in the exact slot with one successful trusted input", async (observer) => {
+  for (const mutation of ["none", "extra-input", "wrong-agent", "failed-outcome"] as const) {
+    const root = snapshotFixture(observer)
     let f: ReturnType<typeof fake>
-    f = fake(root, { confirm: true, onWait: (sessionID) => {
+    f = fake(root, { confirm: true,
+      onPrompt: mutation === "none" ? () => observer.configure(root, HEAD, ["old.txt"]) : undefined,
+      onWait: (sessionID) => {
       if (sessionID !== "slot-child") return
       if (mutation === "extra-input") f.histories["slot-child"].push(user("extra", "more"))
       if (mutation === "wrong-agent") f.sessions["slot-child"].agent = "planner"
       if (mutation === "failed-outcome") f.sessions["slot-child"].outcome = "failed"
     } })
-    await expect(runImplementationAttempt(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow()
+    const result = runImplementationAttempt(f.context, f.generation, observeGit(root), "parent", { directory: root })
+    if (mutation === "none") {
+      expect(await result).toContain("Resulting paths (1): old.txt")
+      expect(observer.calls(root).map((call) => call.current.paths)).toEqual([[], [], [], [], [], ["old.txt"]])
+    } else await expect(result).rejects.toThrow()
     expect(f.calls.prompted).toHaveLength(1)
   }
 })
@@ -345,7 +433,7 @@ test("native role files deny mutation and delegation through ordered effective r
   expect(instructions).toContain("Do not intentionally manipulate Git configuration, index metadata, ignore rules, repository metadata, or other shell accessible state to conceal changes or evade ordinary Git changed-path scope observation.")
 })
 
-test("session permission overrides and changed bound transcripts stop before role switch", async () => {
+snapshotTest("session permission overrides and changed bound transcripts stop before role switch", async (observer) => {
   for (const mutate of [
     (f: ReturnType<typeof fake>) => { f.sessions["slot-child"].permissions = [{ action: "edit", resource: "*", effect: "allow" }] },
     (f: ReturnType<typeof fake>) => { f.sessions.parent.permissions = [{ action: "shell", resource: "*", effect: "allow" }] },
@@ -353,7 +441,7 @@ test("session permission overrides and changed bound transcripts stop before rol
     (f: ReturnType<typeof fake>) => { f.histories.parent.push(user("extra-parent", "another request")) },
     (f: ReturnType<typeof fake>) => { f.histories["slot-child"].push(user("continuation", "again")) },
   ]) {
-    const root = fixture()
+    const root = snapshotFixture(observer)
     const f = fake(root, { confirm: true })
     mutate(f)
     await expect(runImplementationAttempt(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow()
@@ -361,9 +449,9 @@ test("session permission overrides and changed bound transcripts stop before rol
   }
 })
 
-test("generation revocation after confirmation or switch stops before trusted prompt", async () => {
+snapshotTest("generation revocation after confirmation or switch stops before trusted prompt", async (observer) => {
   for (const boundary of ["confirm", "switch"] as const) {
-    const root = fixture()
+    const root = snapshotFixture(observer)
     let generation: Generation
     const f = fake(root, {
       confirm: true,
@@ -431,9 +519,9 @@ test("candidate fit preserves complete confirmation text and terminal sizing pol
   expect(candidateFits("x", 120, 18)).toBe(false)
 })
 
-test("unreadable candidate before or during confirmation cannot switch or prompt", async () => {
+snapshotTest("unreadable candidate before or during confirmation cannot switch or prompt", async (observer) => {
   for (const boundary of ["before", "confirm"] as const) {
-    const root = fixture()
+    const root = snapshotFixture(observer)
     const f = fake(root, { confirm: true, onConfirm: () => { f.context.renderer.terminalHeight = 15 } })
     if (boundary === "before") f.context.renderer.terminalHeight = 15
     await expect(runImplementationAttempt(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow(/fit|unreadable/)
@@ -443,12 +531,12 @@ test("unreadable candidate before or during confirmation cannot switch or prompt
   }
 })
 
-test("Planner bootstrap rejects forbidden or unfinished tools and slot rejects any tool or non-READY result", async () => {
+snapshotTest("Planner bootstrap rejects forbidden or unfinished tools and slot rejects any tool or non-READY result", async (observer) => {
   for (const [sessionID, name, status] of [
     ["planner-child", "edit", "completed"], ["planner-child", "read", "running"],
     ["slot-child", "read", "completed"], ["slot-child", "glob", "completed"],
   ]) {
-    const root = fixture()
+    const root = snapshotFixture(observer)
     const f = fake(root, { confirm: true })
     f.histories[sessionID!].splice(1, 0, { type: "assistant", id: "bootstrap-tool", agent: f.sessions[sessionID!].agent,
       content: [{ type: "tool", id: "bootstrap-call", name, state: { status, input: {}, content: [], metadata: {} } }] })
@@ -456,16 +544,16 @@ test("Planner bootstrap rejects forbidden or unfinished tools and slot rejects a
     expect(f.calls.confirmed).toEqual([])
     expect(f.calls.switched).toEqual([])
   }
-  const root = fixture()
+  const root = snapshotFixture(observer)
   const f = fake(root, { confirm: true })
   f.histories["slot-child"][1].content[0].text = "READY\n"
   await expect(runImplementationAttempt(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow("final text")
   expect(f.calls.confirmed).toEqual([])
 })
 
-test("repeated message cursors and duplicate IDs across pages reject native binding", async () => {
+snapshotTest("repeated message cursors and duplicate IDs across pages reject native binding", async (observer) => {
   for (const mutation of ["cursor", "id"] as const) {
-    const root = fixture()
+    const root = snapshotFixture(observer)
     const f = fake(root, { confirm: true })
     const host = f.context as unknown as any
     host.client.message.list = async ({ sessionID, cursor }: { sessionID: string; cursor?: string }) => {
@@ -480,10 +568,10 @@ test("repeated message cursors and duplicate IDs across pages reject native bind
   }
 })
 
-test("existing parent and Planner content remains immutable across confirmation and switch", async () => {
+snapshotTest("existing parent and Planner content remains immutable across confirmation and switch", async (observer) => {
   for (const boundary of ["confirm", "switch"] as const) {
     for (const sessionID of ["parent", "planner-child"]) {
-      const root = fixture()
+      const root = snapshotFixture(observer)
       const mutate = () => { f.histories[sessionID][sessionID === "parent" ? 3 : 1].content[0].text += " changed" }
       const f = fake(root, { confirm: true, onConfirm: boundary === "confirm" ? mutate : undefined,
         onSwitch: boundary === "switch" ? mutate : undefined })
@@ -494,8 +582,8 @@ test("existing parent and Planner content remains immutable across confirmation 
   }
 })
 
-test("slot is rechecked after awaited parent verification before trusted prompt", async () => {
-  const root = fixture()
+snapshotTest("slot is rechecked after awaited parent verification before trusted prompt", async (observer) => {
+  const root = snapshotFixture(observer)
   const f = fake(root, { confirm: true, onGet: (sessionID) => {
     if (sessionID === "parent" && f.calls.switched.length) f.histories["slot-child"].push(user("late-input", "continued"))
   } })
@@ -504,9 +592,9 @@ test("slot is rechecked after awaited parent verification before trusted prompt"
   expect(f.calls.prompted).toEqual([])
 })
 
-test("post-switch session permission overrides cannot admit the trusted prompt", async () => {
+snapshotTest("post-switch session permission overrides cannot admit the trusted prompt", async (observer) => {
   for (const sessionID of ["parent", "planner-child", "slot-child"]) {
-    const root = fixture()
+    const root = snapshotFixture(observer)
     const f = fake(root, { confirm: true, onSwitch: () => {
       f.sessions[sessionID].permissions = [{ action: "edit", resource: "*", effect: "allow" }]
     } })
@@ -515,9 +603,9 @@ test("post-switch session permission overrides cannot admit the trusted prompt",
   }
 })
 
-test("publication preserves pretty-printed raw Planner P and rejects altered synthetic admission", async () => {
+snapshotTest("publication preserves pretty-printed raw Planner P and rejects altered synthetic admission", async (observer) => {
   for (const mutation of ["none", "text", "description"] as const) {
-    const root = fixture()
+    const root = snapshotFixture(observer)
     const f = fake(root)
     const raw = " \n" + JSON.stringify(JSON.parse(proposal), null, 2) + "\n "
     f.histories["planner-child"][1].content[0].text = raw
@@ -542,8 +630,8 @@ test("publication preserves pretty-printed raw Planner P and rejects altered syn
   }
 })
 
-test("published candidate, hash and synthetic presentation do not relax implementation binding", async () => {
-  const root = fixture()
+snapshotTest("published candidate, hash and synthetic presentation do not relax implementation binding", async (observer) => {
+  const root = snapshotFixture(observer)
   const f = fake(root, { confirm: true })
   const baseline = observeGit(root)
   const published = await publishPlan(f.context, f.generation, baseline, "parent", { directory: root })
@@ -569,9 +657,9 @@ test("publication refuses pending inbox input and a changed publication path set
   }
 })
 
-test("trusted prompt admission rejects substituted identity or attachments without redispatch", async () => {
+snapshotTest("trusted prompt admission rejects substituted identity or attachments without redispatch", async (observer) => {
   for (const mutation of ["sessionID", "type", "id", "files", "agents", "skills"] as const) {
-    const root = fixture()
+    const root = snapshotFixture(observer)
     const f = fake(root, { confirm: true })
     const host = f.context as unknown as any
     const prompt = host.client.session.prompt
@@ -587,18 +675,18 @@ test("trusted prompt admission rejects substituted identity or attachments witho
   }
 })
 
-test("activation location substitution during confirmation cannot switch or dispatch", async () => {
-  const root = fixture()
-  const otherRoot = fixture()
+snapshotTest("activation location substitution during confirmation cannot switch or dispatch", async (observer) => {
+  const root = snapshotFixture(observer)
+  const otherRoot = snapshotFixture(observer)
   const f = fake(root, { confirm: true, onConfirm: () => { (f.context as unknown as any).location.directory = otherRoot } })
   await expect(runImplementationAttempt(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow("TUI location changed")
   expect(f.calls.switched).toEqual([])
   expect(f.calls.prompted).toEqual([])
 })
 
-test("TUI duplicate completions and failed or interrupted roots cannot start another publication", async () => {
+snapshotTest("TUI duplicate completions and failed or interrupted roots cannot start another publication", async (observer) => {
   for (const outcome of ["succeeded", "failed", "interrupted"] as const) {
-    const root = fixture()
+    const root = snapshotFixture(observer)
     const f = fake(root)
     const handlers = new Map<string, (event: any) => void>()
     const alerts: unknown[] = []
@@ -625,8 +713,8 @@ test("TUI duplicate completions and failed or interrupted roots cannot start ano
   }
 })
 
-test("TUI cleanup revokes pending publication and a fresh activation has no inherited authority", async () => {
-  const root = fixture()
+snapshotTest("TUI cleanup revokes pending publication and a fresh activation has no inherited authority", async (observer) => {
+  const root = snapshotFixture(observer)
   let release!: () => void
   let waited = false
   const pending = new Promise<void>((resolve) => { release = resolve })
