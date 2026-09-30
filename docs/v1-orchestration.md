@@ -163,22 +163,31 @@ concatenated with the binding row. The surface occupies at most five rows:
 worktree at most two wrapped rows, then one row each for binding, question, and
 controls. It requires an 80×24-or-larger terminal and visible, unclipped
 worktree, binding, question, and control geometry. Controls become live only
-after a completed renderer frame proves the layout. Unusable layout, lost view,
-or later shrink permanently ends the pending authorization. In the current
-implementation, resizing during a claimed pre-admission continuation also
-stops before prompt dispatch; restoring the previous size does not restore
-authorization. The full Plan is not duplicated in the composer surface.
+after a completed renderer frame proves the entire layout. Pending resize
+synchronously invalidates that proof and disables decisions before descendants
+reflow. Stale geometry or resizing back to the previous dimensions cannot
+restore readiness: a fresh completed frame must validate the current viewport,
+ancestor visibility/liveness, wrapping, dimensions, and every required text and
+control's bounds and clipping before publishing a new proof. Invalid geometry,
+including a terminal below 80×24, leaves the exact attempt pending and inert;
+a later valid completed frame may restore readiness. True pending-surface loss
+or unmount remains fail-closed and permanently ends that attempt. The full Plan
+is not duplicated in the composer surface.
 
 Direct left-pointer handlers call an unregistered closure. There is no
 keyboard authorization, Form/Question, slash/palette action, keymap command ID,
 RPC route, session message, or model-callable tool for the decision. Authorize
-and Cancel synchronously claim the exact pending object and remove controls
-before asynchronous work. Authorize replaces them with persistent
+and Cancel synchronously verify exact pending ownership and a valid current
+completed-frame surface proof, then claim that immutable object and disable/
+remove controls before asynchronous work. Authorize replaces them with persistent
 `Authorization claimed — implementation admission in progress…` status while
 the existing authorization bridge runs. This wording does not claim that the
 implementation prompt has been dispatched. Duplicates, stale handlers, and
 racing decisions are inert after the first claim. The click is a decision, not
-a grant.
+a grant. After the exact claim, terminal geometry is presentation-only: resize
+alone, including below the authorization minimum and back wider, does not
+revoke continuation. Authorize / Cancel never return for that attempt. Cleanup
+of the replaced DecisionStrip cannot terminate its already-claimed continuation.
 
 Cancel clears authority-capable ownership and leaves persistent
 `Cancelled — no implementation admitted` status; it creates no grant, switch
@@ -194,8 +203,10 @@ Observers are installed before publication. Only exact expected synthetic,
 switch and implementation events are admitted, with RPC/history reconciliation.
 Unexpected root execution, inbox lifecycle, transcript/control mutation,
 permission/role/location changes, missing children, deletion/fork/revert/
-compaction, route loss, renderer errors, or unreadable layout terminate the
-attempt. Events revoke on receipt; independent server reads cover delayed
+compaction, route loss, renderer errors, or true pending-surface loss terminate
+the attempt. Global frame/reactive watchers and continuation-wide owner checks
+retain non-layout invariants after claim; they do not recheck the disposed
+decision surface. Events revoke on receipt; independent server reads cover delayed
 notifications. There is no broad busy-period event exemption.
 
 Every awaited operation/page is followed by owner/generation/location and fresh
@@ -252,9 +263,14 @@ CAP/session/callback sequencing uses pure tests and test-scoped trusted host,
 observer and JSX handler doubles. Real Git remains confined to production Git
 boundary cases with immutable seed/private copies. Production freshness is not
 cached or weakened for test speed. The diagnostic profiler follows the new
-published authorization entry. The full baseline suite had 63 tests. This
-presentation change passes typecheck, the focused attempt suite (50 tests),
-and the full suite (65 tests).
+published authorization entry. The full baseline suite had 63 tests. The
+issue #3 presentation change passed typecheck, the focused attempt suite (50
+tests), and the full suite (65 tests). Issue #4 adds pending stale-frame,
+full-proof invalidation/recovery, and post-claim resize/replacement-cleanup
+regressions with the same test-scoped doubles. Claimed non-layout drift tests
+also cover location, projection, native transcript and permission mutation.
+The issue #4 implementation passes typecheck, the focused attempt suite (55
+tests), and the full suite (70 tests).
 
 ### Live PASS evidence
 
@@ -276,8 +292,8 @@ Live OpenCode 2.0.20 dogfood verified the following:
   the file did not make that attempt authorizable.
 - During a claimed pre-admission continuation, resizing caused STOP before an
   implementation prompt or repository edit. Restoring the old size did not
-  restore authorization; the worktree remained clean. This is the current
-  implemented behavior.
+  restore authorization; the worktree remained clean. This is the historical
+  behavior before the issue #4 fix, not the new implemented resize policy.
 - Dogfood found the startup failure caused by applying `structuredClone` to
   OpenCode 2.0.20's Solid-store-backed `context.location`. The implementation
   now snapshots only immutable primitive identity fields (`directory`, optional
@@ -285,12 +301,12 @@ Live OpenCode 2.0.20 dogfood verified the following:
 
 ### Dogfood findings and tracked follow-ups
 
-- Issue #4, `[Feat]: Allow terminal resize after authorization claim`: current
-  resize behavior permanently stops a claimed attempt before prompt dispatch.
-  Dogfood showed this is mechanically safe but stricter than necessary. Desired
-  policy is to keep stale or unreadable layout from enabling a click, while
-  allowing resizing after a valid local click synchronously claims the exact
-  immutable attempt.
+- Issue #4, `[Feat]: Allow terminal resize after authorization claim`: baseline
+  dogfood permanently stopped a claimed attempt on resize before prompt dispatch.
+  The implemented fix keeps pending resize inert until a fresh fully valid frame
+  and allows resize after a valid local click synchronously claims the exact
+  immutable attempt. Non-layout CAP admission checks remain active. The new
+  pending recovery and post-claim resize behavior still require live verification.
 - Issue #5, `[Fix]: Allow Plan publication while inspecting Planner`: entering
   Planner before trusted root Plan publication, then allowing Planner/root to
   complete, reproduced the root-view guard STOP. Returning to root showed only

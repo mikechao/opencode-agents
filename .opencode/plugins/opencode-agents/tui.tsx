@@ -38,9 +38,8 @@ const plugin: Definition = {
     let completionID: string | undefined
     let pending: PublishedAttempt | undefined
     let deciding: PublishedAttempt | undefined
-    let mounted = false
-    let frame: Renderable | undefined
-    let layoutViewport: { width: number; height: number } | undefined
+    let pendingSurfaceUsable: (() => boolean) | undefined
+    let invalidateLayout: (() => void) | undefined
     let removePresentation: (() => void) | undefined
     let switchEcho: unknown
     let publicationEcho: unknown
@@ -88,15 +87,6 @@ const plugin: Definition = {
       return route.type === "session" && route.sessionID === creation?.data.sessionID &&
         same(snapshotLocation(context.location ?? context.data.location.default()), location)
     }
-    const surfaceUsable = (published: PublishedAttempt) => {
-      if (context.renderer.isDestroyed || context.renderer.terminalWidth < 80 || context.renderer.terminalHeight < 24) return false
-      if (!layoutViewport || layoutViewport.width !== context.renderer.terminalWidth || layoutViewport.height !== context.renderer.terminalHeight) return false
-      if (!frame || frame.isDestroyed) return false
-      for (let node: Renderable | null = frame; node; node = node.parent) if (!node.visible || node.isDestroyed) return false
-      const width = frame.width
-      return width <= layoutViewport.width && columns(`Worktree: ${JSON.stringify(published.candidate.root)}`) <= width * 2 &&
-        columns(binding(published)) <= width && columns(authorizationQuestion) <= width
-    }
     const guard: DecisionOwner = {
       assertDecision(captured) {
         if (deciding !== captured) throw new Error("Local decision no longer owns the exact published attempt")
@@ -107,7 +97,6 @@ const plugin: Definition = {
         if (attempted && ((!guard.dispatched && !rootSelected()) || !same(snapshotLocation(context.location ?? context.data.location.default()), location))) throw new Error("Root view or TUI location changed")
         const retained = pending ?? deciding
         if (retained) {
-          if (!guard.dispatched && (!surfaceUsable(retained) || (pending && !mounted))) throw new Error("Authorization surface became unreadable or unavailable")
           if (!publishedPresentationMatches(context, retained)) throw new Error("Published Plan projection changed")
         }
         if (guard.switchRecord && switchEcho && !same(guard.switchRecord, switchEcho)) throw new Error("Slot switch echo identity changed")
@@ -136,9 +125,13 @@ const plugin: Definition = {
       if (closed || generation.revoked || pending !== captured || deciding || generation.busy) return
       try {
         guard.assertCurrent()
+        // Only a complete current frame can support a pending human decision.
+        // Invalid geometry leaves this exact attempt pending for a later frame.
+        if (!pendingSurfaceUsable?.()) { invalidateLayout?.(); return }
         // Run-to-completion claims the exact object before any asynchronous work.
         pending = undefined
         deciding = captured
+        invalidateLayout?.()
         if (decision === "cancel") {
           const message = "Cancelled — no implementation admitted"
           closeAuthority()
@@ -172,41 +165,63 @@ const plugin: Definition = {
       let questionText: Renderable | undefined
       const [ready, setReady] = createSignal(false)
       const [width, setWidth] = createSignal(context.renderer.terminalWidth)
+      let layoutProof: { width: number; height: number; surface: Renderable; frame: Renderable } | undefined
       const rootLines = () => Math.min(2, Math.max(1, Math.ceil(columns(`Worktree: ${JSON.stringify(captured.candidate.root)}`) / Math.max(1, width()))))
+      const invalidate = () => { layoutProof = undefined; setReady(false) }
+      invalidateLayout = invalidate
+      const live = (node: Renderable | undefined) => {
+        if (!node) return false
+        for (let ancestor: Renderable | null = node; ancestor; ancestor = ancestor.parent) {
+          if (!ancestor.visible || ancestor.isDestroyed) return false
+        }
+        return true
+      }
+      const validGeometry = () => {
+        const frame = surface?.parent ?? surface
+        const viewport = { width: context.renderer.terminalWidth, height: context.renderer.terminalHeight }
+        if (context.renderer.isDestroyed || viewport.width < 80 || viewport.height < 24 || !live(surface) || !frame ||
+            frame.width <= 0 || frame.width > viewport.width || width() !== frame.width ||
+            columns(`Worktree: ${JSON.stringify(captured.candidate.root)}`) > frame.width * 2 ||
+            columns(binding(captured)) > frame.width || columns(authorizationQuestion) > frame.width) return false
+        const inViewport = (node: Renderable | undefined, height = 1) => node && live(node) && node.width > 0 && node.height === height &&
+          node.screenX >= 0 && node.screenY >= 0 && node.screenX + node.width <= viewport.width &&
+          node.screenY + node.height <= viewport.height
+        return !!(inViewport(surface, rootLines() + 3) &&
+          inViewport(worktreeText, rootLines()) && columns(`Worktree: ${JSON.stringify(captured.candidate.root)}`) <= worktreeText!.width * rootLines() &&
+          inViewport(bindingText) && columns(binding(captured)) <= bindingText!.width &&
+          inViewport(questionText) && columns(authorizationQuestion) <= questionText!.width &&
+          inViewport(authorizeButton) && authorizeButton!.width >= 11 && inViewport(cancelButton) && cancelButton!.width >= 8)
+      }
+      pendingSurfaceUsable = () => {
+        if (pending !== captured) return false
+        if (!live(surface)) { terminate(new Error("Authorization surface is unavailable")); return false }
+        return ready() && !!layoutProof && layoutProof.surface === surface && layoutProof.frame === (surface!.parent ?? surface!) &&
+          layoutProof.width === context.renderer.terminalWidth && layoutProof.height === context.renderer.terminalHeight && validGeometry()
+      }
       const checkLayout = () => {
         if (closed || pending !== captured) return
-        if (!surface?.width || !surface.height || !surface.visible || surface.isDestroyed) {
+        invalidate()
+        guard.assertCurrent()
+        if (!live(surface)) {
           terminate(new Error("Authorization surface is unavailable"))
           return
         }
-        frame = surface.parent ?? surface
-        layoutViewport = { width: context.renderer.terminalWidth, height: context.renderer.terminalHeight }
-        if (!rootSelected() || !surfaceUsable(captured)) {
-          terminate(new Error("Authorization surface is unreadable or unavailable"))
-          return
-        }
+        const frame = surface!.parent ?? surface!
         // Measure after the complete parent/child layout pass. A width change
         // schedules the correct path wrapping; wait for that frame before enabling.
-        if (width() !== frame.width) { setReady(false); setWidth(frame.width); return }
-        mounted = true
-        const inViewport = (node: Renderable | undefined, height = 1) => node && !node.isDestroyed && node.visible && node.width > 0 && node.height === height &&
-          node.screenX >= 0 && node.screenY >= 0 && node.screenX + node.width <= context.renderer.terminalWidth &&
-          node.screenY + node.height <= context.renderer.terminalHeight
-        if (!rootSelected() || !surfaceUsable(captured) || rootLines() > 2 || surface.height !== rootLines() + 3 ||
-            !inViewport(worktreeText, rootLines()) || columns(`Worktree: ${JSON.stringify(captured.candidate.root)}`) > worktreeText!.width * rootLines() ||
-            !inViewport(bindingText) || columns(binding(captured)) > bindingText!.width ||
-            !inViewport(questionText) || columns(authorizationQuestion) > questionText!.width ||
-            !inViewport(authorizeButton) || authorizeButton!.width < 11 || !inViewport(cancelButton) || cancelButton!.width < 8) {
-          terminate(new Error("Authorization surface is unreadable or unavailable"))
-          return
-        }
+        if (width() !== frame.width) { setWidth(frame.width); return }
+        if (!validGeometry()) return
+        // Publish proof only after the entire completed-frame validation passes.
+        layoutProof = { width: context.renderer.terminalWidth, height: context.renderer.terminalHeight, surface: surface!, frame }
         setReady(true)
       }
-      const completedFrame = () => checkLayout()
+      const completedFrame = () => { try { checkLayout() } catch (error) { terminate(error) } }
       context.renderer.on("frame", completedFrame)
       onCleanup(() => {
         context.renderer.off("frame", completedFrame)
-        mounted = false
+        invalidate()
+        pendingSurfaceUsable = undefined
+        invalidateLayout = undefined
         if (pending === captured && !closed) {
           // The view is already disposing. Close ownership synchronously while
           // leaving the root-scoped status contribution registered.
@@ -302,10 +317,9 @@ const plugin: Definition = {
       terminate(new Error(`Unexpected ${event.type}; attempt terminated`))
     })
     const resized = () => {
-      // Resize precedes descendant layout. Revoke its evidence synchronously;
-      // a later frame or resize back cannot revive a pre-admission decision.
-      layoutViewport = undefined
-      if ((pending || deciding) && !guard.dispatched) terminate(new Error("Authorization layout invalidated by terminal resize"))
+      // Resize precedes descendant layout. A pending decision needs a fresh
+      // completed frame; geometry is presentation-only after the exact claim.
+      invalidateLayout?.()
       setLayoutRevision((value) => value + 1)
     }
     const rendererLost = () => terminate(new Error("TUI renderer was lost"))
@@ -327,9 +341,7 @@ const plugin: Definition = {
         context.data.session.message.list(creation!.data.sessionID)
         context.data.session.pending.list(creation!.data.sessionID)
         try {
-          if (pending && !mounted) {
-            if (!rootSelected() || context.renderer.terminalWidth < 80 || context.renderer.terminalHeight < 24) throw new Error("Authorization view is unavailable")
-          } else guard.assertCurrent()
+          guard.assertCurrent()
         } catch (error) { terminate(error) }
       })
       return dispose
@@ -343,7 +355,8 @@ const plugin: Definition = {
       remove?.()
       rootSessionID = undefined
       creation = undefined
-      frame = undefined
+      pendingSurfaceUsable = undefined
+      invalidateLayout = undefined
       removeCreated()
       removeCompleted()
       removeEvents()

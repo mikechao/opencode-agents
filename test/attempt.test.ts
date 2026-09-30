@@ -1045,8 +1045,8 @@ snapshotTest("root wake during publication permanently stops before installing c
   cleanup()
 })
 
-snapshotTest("lost view, navigation, resize, projection mutation, and cleanup cannot restore controls", async (observer) => {
-  for (const loss of ["unmount", "navigation", "location", "resize", "projection", "wake", "cleanup"] as const) {
+snapshotTest("lost view, navigation, projection mutation, and cleanup cannot restore controls", async (observer) => {
+  for (const loss of ["unmount", "navigation", "location", "projection", "wake", "cleanup"] as const) {
     const root = snapshotFixture(observer)
     const f = fake(root)
     const cleanup = await activate(f)
@@ -1054,28 +1054,41 @@ snapshotTest("lost view, navigation, resize, projection mutation, and cleanup ca
     if (loss === "unmount") view.dispose()
     if (loss === "navigation") (f.context.ui.router as any).current = () => ({ type: "session", sessionID: "planner-child" })
     if (loss === "location") (f.context as any).location.directory = "different"
-    if (loss === "resize") f.renderer.terminalWidth = 40
     if (loss === "projection") f.cache.parent.at(-1).description += " changed"
     if (loss === "wake") f.emit({ type: "session.execution.started", id: "evt_wake", data: { sessionID: "parent" } })
     if (loss === "cleanup") cleanup()
     view.click(0)
     expect(f.calls.switched).toEqual([])
     expect(f.calls.prompted).toEqual([])
+    if (loss === "unmount") expect(f.calls.toasts.at(-1)).toContain("Authorization view was lost")
     f.renderer.terminalWidth = 120
+    f.renderer.emit("resize")
+    f.renderer.emit("frame")
     view.click(0)
     expect(f.calls.switched).toEqual([])
+    expect(f.calls.prompted).toEqual([])
+    if (loss === "unmount") {
+      const later = mount(f)
+      expect(later.buttons).toEqual([])
+      expect(later.text()).toContain("STOP — Implementation was not admitted")
+      later.dispose()
+    }
     cleanup(); view.dispose()
   }
 })
 
-snapshotTest("claimed authorization still stops on view or Git drift during awaited switch", async (observer) => {
-  for (const drift of ["route", "head", "dirty", "cleanup"] as const) {
+snapshotTest("claimed authorization still stops on non-layout drift during awaited switch", async (observer) => {
+  for (const drift of ["route", "location", "head", "dirty", "projection", "native", "permissions", "cleanup"] as const) {
     const root = snapshotFixture(observer)
     let cleanup!: () => void
     const f = fake(root, { onSwitch: () => {
       if (drift === "route") (f.context.ui.router as any).current = () => ({ type: "home" })
+      if (drift === "location") (f.context as any).location.workspaceID = "different"
       if (drift === "head") observer.configure(root, "2".repeat(40))
       if (drift === "dirty") observer.configure(root, HEAD, ["old.txt"])
+      if (drift === "projection") f.cache.parent.at(-1).description += " changed"
+      if (drift === "native") f.histories["planner-child"][1].content[0].text += " changed"
+      if (drift === "permissions") f.sessions["slot-child"].permissions = [{ action: "edit", resource: "*", effect: "allow" }]
       if (drift === "cleanup") cleanup()
     } })
     cleanup = await activate(f)
@@ -1090,7 +1103,163 @@ snapshotTest("claimed authorization still stops on view or Git drift during awai
   }
 })
 
-snapshotTest("resize during an awaited post-switch read invalidates stale layout before prompt admission", async (observer) => {
+snapshotTest("pending resize rejects stale callbacks and resize back needs a fresh completed frame", async (observer) => {
+  const root = snapshotFixture(observer)
+  const f = fake(root)
+  const cleanup = await activate(f)
+  const view = mount(f)
+  const retainedPublication = structuredClone(f.inboxes.parent)
+  f.renderer.terminalWidth = 80
+  f.renderer.emit("resize")
+  // Descendants and captured callbacks still belong to the old valid frame.
+  expect(view.mounted[0].width).toBe(120)
+  view.click(0); view.click(1)
+  f.renderer.terminalWidth = 120
+  f.renderer.emit("resize")
+  view.click(0); view.click(1)
+  expect(f.calls.switched).toEqual([])
+  expect(f.calls.prompted).toEqual([])
+  expect(f.calls.toasts).toEqual([])
+  expect(view.text()).not.toContain("Authorization claimed")
+  expect(f.inboxes.parent).toEqual(retainedPublication)
+  f.renderer.emit("frame")
+  view.click(0)
+  expect(view.text()).toContain("Authorization claimed")
+  await settleUntil(() => f.calls.toasts.length > 0)
+  expect(f.calls.toasts.at(-1)).toContain("Implementation gate complete")
+  expect(f.calls.switched).toEqual(["slot-child"])
+  expect(f.calls.prompted).toHaveLength(1)
+  expect(f.calls.synthetic).toHaveLength(1)
+  cleanup(); view.dispose()
+})
+
+snapshotTest("pending invalid frames clear the entire proof and recover only on a valid completed frame", async (observer) => {
+  for (const invalid of ["small-width", "small-height", "surface", "wrap", "worktree", "binding", "question", "authorize", "cancel", "viewport"] as const) {
+    const root = snapshotFixture(observer)
+    const f = fake(root)
+    const cleanup = await activate(f)
+    const view = mount(f)
+    const copy = view.mounted.filter((node) => node.type === "text" && node.wrapMode === "char")
+    // Keep viewport identity unchanged for detailed-check failures: an early
+    // viewport snapshot must not turn a partially validated frame into proof.
+    if (invalid === "small-width") { f.renderer.terminalWidth = 79; f.renderer.emit("resize") }
+    if (invalid === "small-height") { f.renderer.terminalHeight = 23; f.renderer.emit("resize") }
+    if (invalid === "surface") view.mounted[0].height = 2
+    if (invalid === "wrap") copy[0].height = 2
+    if (invalid === "worktree") copy[0].width = 1
+    if (invalid === "binding") copy[1].width = 1
+    if (invalid === "question") copy[2].width = 1
+    if (invalid === "authorize") view.buttons[0].width = 3
+    if (invalid === "cancel") view.buttons[1].width = 3
+    if (invalid === "viewport") view.buttons[1].screenY = 60
+    f.renderer.emit("frame")
+    view.click(0); view.click(1)
+    expect(f.calls.switched).toEqual([])
+    expect(f.calls.prompted).toEqual([])
+    expect(f.calls.toasts).toEqual([])
+    // Repair all geometry without a completed frame. This is still inert.
+    f.renderer.terminalWidth = 120
+    f.renderer.terminalHeight = 60
+    if (invalid.startsWith("small-")) f.renderer.emit("resize")
+    view.mounted[0].height = 4
+    for (const node of copy) { node.height = 1; node.width = 120 }
+    for (const node of view.buttons) { node.width = 13; node.screenY = 0 }
+    view.click(0); view.click(1)
+    expect(f.calls.switched).toEqual([])
+    expect(f.calls.prompted).toEqual([])
+    expect(f.calls.toasts).toEqual([])
+    f.renderer.emit("frame")
+    view.click(0)
+    await settleUntil(() => f.calls.toasts.length > 0)
+    expect(f.calls.toasts.at(-1)).toContain("Implementation gate complete")
+    expect(f.calls.switched).toEqual(["slot-child"])
+    expect(f.calls.prompted).toHaveLength(1)
+    expect(f.calls.synthetic).toHaveLength(1)
+    cleanup(); view.dispose()
+  }
+})
+
+snapshotTest("pending resize remeasures current wrapping and waits for the follow-up frame", async (observer) => {
+  const root = snapshotFixture(observer)
+  const f = fake(root)
+  const cleanup = await activate(f)
+  const view = mount(f)
+  const surface = view.mounted[0]
+  const copy = view.mounted.filter((node) => node.type === "text" && node.wrapMode === "char")
+  f.renderer.terminalWidth = 80
+  f.renderer.emit("resize")
+  // Supply current descendant bounds; the first frame still schedules wrapping.
+  for (const node of view.mounted.filter((node) => node.type === "box" || node.type === "text")) {
+    if (!node.onMouseUp) node.width = 80
+  }
+  f.renderer.emit("frame")
+  view.click(0); view.click(1)
+  expect(f.calls.toasts).toEqual([])
+  expect(f.calls.switched).toEqual([])
+  expect(f.calls.prompted).toEqual([])
+  const rows = Math.ceil([...`Worktree: ${JSON.stringify(root)}`].length / 80)
+  expect(rows).toBeLessThanOrEqual(2)
+  surface.height = rows + 3
+  copy[0].height = rows
+  f.renderer.emit("frame")
+  view.click(0)
+  await settleUntil(() => f.calls.toasts.length > 0)
+  expect(f.calls.toasts.at(-1)).toContain("Implementation gate complete")
+  expect(f.calls.switched).toEqual(["slot-child"])
+  expect(f.calls.prompted).toHaveLength(1)
+  cleanup(); view.dispose()
+})
+
+snapshotTest("the synchronous decision boundary rechecks detailed geometry against its completed-frame proof", async (observer) => {
+  const root = snapshotFixture(observer)
+  const f = fake(root)
+  const cleanup = await activate(f)
+  const view = mount(f)
+  // Mutate a descendant after a valid frame without delivering another frame.
+  view.buttons[1].screenX = 120
+  view.click(0)
+  expect(f.calls.toasts).toEqual([])
+  expect(f.calls.switched).toEqual([])
+  expect(f.calls.prompted).toEqual([])
+  view.buttons[1].screenX = 0
+  view.click(0); view.click(1)
+  expect(f.calls.toasts).toEqual([])
+  expect(f.calls.switched).toEqual([])
+  expect(f.calls.prompted).toEqual([])
+  f.renderer.emit("frame")
+  view.click(1)
+  expect(f.calls.toasts).toEqual(["Cancelled — no implementation admitted"])
+  expect(f.calls.switched).toEqual([])
+  expect(f.calls.prompted).toEqual([])
+  cleanup(); view.dispose()
+})
+
+snapshotTest("sub-minimum pending geometry before mount can recover without replacing the publication", async (observer) => {
+  const root = snapshotFixture(observer)
+  const f = fake(root)
+  f.renderer.terminalWidth = 40
+  f.renderer.terminalHeight = 20
+  const cleanup = await activate(f)
+  const view = mount(f)
+  view.click(0); view.click(1)
+  expect(f.calls.toasts).toEqual([])
+  expect(f.calls.switched).toEqual([])
+  expect(f.calls.prompted).toEqual([])
+  f.renderer.terminalWidth = 120
+  f.renderer.terminalHeight = 60
+  f.renderer.emit("resize")
+  view.click(0)
+  expect(f.calls.switched).toEqual([])
+  f.renderer.emit("frame")
+  view.click(1)
+  expect(f.calls.toasts).toEqual(["Cancelled — no implementation admitted"])
+  expect(f.calls.synthetic).toHaveLength(1)
+  expect(f.calls.switched).toEqual([])
+  expect(f.calls.prompted).toEqual([])
+  cleanup(); view.dispose()
+})
+
+snapshotTest("post-claim resize and DecisionStrip replacement cleanup preserve the same continuation", async (observer) => {
   const root = snapshotFixture(observer)
   const f = fake(root)
   let release!: () => void
@@ -1108,28 +1277,46 @@ snapshotTest("resize during an awaited post-switch read invalidates stale layout
   }
   const cleanup = await activate(f)
   const view = mount(f)
+  expect(f.renderer.listenerCount("frame")).toBe(2)
   view.click(0)
+  expect(view.text()).toContain("Authorization claimed — implementation admission in progress…")
+  // Keyed status replacement disposed the DecisionStrip frame subscription.
+  expect(f.renderer.listenerCount("frame")).toBe(1)
   await settleUntil(() => waiting)
   expect(f.calls.switched).toEqual(["slot-child"])
   expect(view.mounted[0].width).toBe(120)
-  f.renderer.terminalWidth = 80
-  f.renderer.emit("resize")
-  // No completed frame: descendants still report the old usable width.
-  expect(view.mounted[0].width).toBe(120)
-  expect(f.calls.toasts.at(-1)).toContain("layout invalidated by terminal resize")
-  expect(view.text()).toContain("STOP — Implementation was not admitted; no implementation prompt was dispatched.")
-  expect(f.calls.prompted).toEqual([])
+  f.renderer.emit("frame")
+  for (const width of [80, 40, 160]) {
+    f.renderer.terminalWidth = width
+    f.renderer.emit("resize")
+    // Both stale and freshly changed presentation geometry are harmless.
+    f.renderer.emit("frame")
+    view.mounted[0].width = width
+    f.renderer.emit("frame")
+    view.click(0); view.click(1)
+    expect(f.calls.toasts).toEqual([])
+    expect(f.calls.prompted).toEqual([])
+    expect(f.renderer.listenerCount("frame")).toBe(1)
+  }
+  view.dispose()
+  const status = mount(f)
+  expect(status.buttons).toEqual([])
+  expect(status.text()).toContain("Authorization claimed — implementation admission in progress…")
   release()
-  for (let i = 0; i < 2000; i++) await Promise.resolve()
-  expect(f.calls.prompted).toEqual([])
-  expect(f.calls.toasts.at(-1)).toContain("layout")
-  f.renderer.terminalWidth = 120
+  await settleUntil(() => f.calls.toasts.length > 0)
+  expect(status.text()).toContain("Implementation gate complete")
+  expect(f.calls.toasts.at(-1)).toContain("STOP before Reviewer / Commit")
+  expect(f.calls.switched).toEqual(["slot-child"])
+  expect(f.calls.prompted).toHaveLength(1)
+  expect(f.calls.prompted[0]).toEqual({ sessionID: "slot-child", text: implementerPrompt(makeCandidate(parseProposal(proposal, root), root, HEAD)) })
+  expect(Object.keys(f.sessions).sort()).toEqual(["parent", "planner-child", "slot-child"])
+  view.click(0); view.click(1)
   f.renderer.emit("resize")
   f.renderer.emit("frame")
-  view.click(0)
-  expect(f.calls.switched).toEqual(["slot-child"])
-  expect(f.calls.prompted).toEqual([])
-  cleanup(); view.dispose()
+  expect(status.buttons).toEqual([])
+  expect(f.calls.switched).toHaveLength(1)
+  expect(f.calls.prompted).toHaveLength(1)
+  cleanup(); status.dispose()
 })
 
 snapshotTest("switch identity, parent evidence, and slot results remain bound after implementation", async (observer) => {
@@ -1295,8 +1482,10 @@ snapshotTest("pointer controls wait for completed layout and reject clipped deci
       expect(f.calls.toasts).toEqual(["Cancelled — no implementation admitted"])
     } else {
       view.click(0)
-      expect(f.calls.toasts.at(-1)).toContain("surface")
+      if (layout === "hidden") expect(f.calls.toasts.at(-1)).toContain("surface")
+      else expect(f.calls.toasts).toEqual([])
       expect(f.calls.switched).toEqual([])
+      expect(f.calls.prompted).toEqual([])
     }
     cleanup(); view.dispose()
   }
