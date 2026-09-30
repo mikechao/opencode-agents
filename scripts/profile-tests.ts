@@ -86,6 +86,6 @@ function wrapWait(context: any) {
 }
 mock.module(attemptPath, () => ({ ...originalAttempt,
  publishPlan: (...args: any[]) => { wrapWait(args[0]); return (originalAttempt.publishPlan as any)(...args) },
- runImplementationAttempt: (...args: any[]) => { wrapWait(args[0]); return (originalAttempt.runImplementationAttempt as any)(...args) },
+ authorizePublishedAttempt: (...args: any[]) => { wrapWait(args[0]); return (originalAttempt.authorizePublishedAttempt as any)(...args) },
 }))
 testAPI.afterAll(() => nativeWrite(process.env.PERF_OUTPUT!, JSON.stringify(events, null, 2)))

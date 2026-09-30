@@ -8,8 +8,32 @@ import type { Generation } from "../src/cap.ts"
 import * as gitModule from "../src/git.ts"
 import { observeGit, type GitSnapshot } from "../src/git.ts"
 import { makeCandidate, parseProposal, candidateMessage, renderPlan } from "../src/proposal.ts"
-import { candidateFits, implementerPrompt, plannerInput, publishPlan, runImplementationAttempt, SLOT_PROMPT } from "../src/attempt.ts"
-import plugin from "../.opencode/plugins/opencode-agents/tui.ts"
+import { activationEvidence, initiallyAuthorizable, assertPublishedCoherence, exactEvidence, publishedPresentationMatches,
+  authorizePublishedAttempt, implementerPrompt, plannerInput, publishPlan as publish, verifyPublishedAttempt,
+  type DecisionOwner, type PublishedAttempt, SLOT_PROMPT } from "../src/attempt.ts"
+import { createRoot, createEffect, createMemo, createComponent } from "solid-js"
+import { EventEmitter } from "node:events"
+
+// Test-scoped JSX property/handler capture. No renderer, terminal, or native UI integration.
+const elements: any[] = []
+mock.module("@opentui/solid", () => ({
+  createElement: (type: string) => {
+    const node = { type, children: [] as any[], parent: null as any, width: 120, height: type === "text" ? 1 : 3,
+      screenX: 0, screenY: 0, visible: true, isDestroyed: false }
+    elements.push(node)
+    return node
+  },
+  createTextNode: (value: unknown) => { const node = { type: "literal", value }; elements.push(node); return node },
+  setProp: (node: any, key: string, value: unknown) => { node[key] = value; if (key === "onMouseUp") { node.height = 1; node.width = 13 } },
+  use: (fn: (node: any) => void, node: any) => fn(node),
+  insertNode: (parent: any, child: any) => { child.parent = parent; parent.children.push(child) },
+  insert: (parent: any, value: any) => {
+    const update = () => { const child = typeof value === "function" ? value() : value; if (typeof child === "string") elements.push({ type: "literal", value: child }); if (child && typeof child === "object") { child.parent = parent; parent.children.push(child) } }
+    createEffect(update)
+  },
+  effect: createEffect, memo: createMemo, createComponent,
+}))
+const { default: plugin } = await import("../.opencode/plugins/opencode-agents/tui.tsx")
 
 const roots: string[] = []
 let seed: string | undefined
@@ -115,18 +139,22 @@ function call(id: string, agent: string, prompt: string, childID: string, result
   } }
 }
 type FakeOptions = {
+  events?: boolean
+  singlePage?: boolean
   rootActive?: boolean
   wakeOnSynthetic?: boolean
-  confirm?: boolean | undefined
-  onConfirm?: () => void
+  decision?: boolean | undefined
+  onDecision?: () => void
   onSwitch?: () => void
   onPrompt?: (value: string) => void
   onWait?: (sessionID: string) => void | Promise<void>
   onGet?: (sessionID: string) => void
+  onRead?: (kind: string, sessionID?: string) => void
   promptError?: boolean
   promptMismatch?: boolean
   promptIDMismatch?: boolean
 }
+const fakes = new WeakMap<Context, ReturnType<typeof fake>>()
 function fake(root: string, options: FakeOptions = {}) {
   const generation: Generation = { revoked: false, busy: false }
   const histories: Record<string, any[]> = {
@@ -138,68 +166,153 @@ function fake(root: string, options: FakeOptions = {}) {
     "slot-child": [user("slot-user", prefix + SLOT_PROMPT), answer("slot-final", "implementer_slot", "READY"), idle("slot-idle")],
   }
   const sessions: Record<string, any> = {
-    parent: { id: "parent", agent: "orchestrator", location: { directory: root }, outcome: "succeeded", time: { idle: 1 } },
-    "planner-child": { id: "planner-child", parentID: "parent", agent: "planner", location: { directory: root }, outcome: "succeeded", time: { idle: 1 } },
-    "slot-child": { id: "slot-child", parentID: "parent", agent: "implementer_slot", location: { directory: root }, outcome: "succeeded", time: { idle: 1 } },
+    parent: { id: "parent", agent: "orchestrator", location: { directory: root }, outcome: "succeeded", time: { created: 1, idle: 2 } },
+    "planner-child": { id: "planner-child", parentID: "parent", agent: "planner", location: { directory: root }, outcome: "succeeded", time: { created: 1, idle: 2 } },
+    "slot-child": { id: "slot-child", parentID: "parent", agent: "implementer_slot", location: { directory: root }, outcome: "succeeded", time: { created: 1, idle: 2 } },
   }
-  const calls = { switched: [] as string[], prompted: [] as Array<{ sessionID: string; text: string }>, confirmed: [] as string[],
-    synthetic: [] as Array<{ sessionID: string; text: string; description: string; metadata: { source: string; planHash: string }; resume: boolean }>, toasts: [] as string[] }
+  const inboxes: Record<string, any[]> = { parent: [], "planner-child": [], "slot-child": [] }
+  const cache: Record<string, any[]> = structuredClone(histories)
+  const handlers = new Map<string, (event: any) => void>()
+  const listeners = new Set<(event: any) => void>()
+  const slots: any[] = []
+  const renderer = Object.assign(new EventEmitter(), { terminalWidth: 120, terminalHeight: 60, isDestroyed: false })
+  const calls = { switched: [] as string[], prompted: [] as Array<{ sessionID: string; text: string }>, decided: [] as string[],
+    synthetic: [] as any[], toasts: [] as string[] }
+  const syncCache = (sessionID: string) => {
+    cache[sessionID] = structuredClone([...histories[sessionID], ...inboxes[sessionID].filter((item) => item.type === "synthetic")
+      .map((item) => ({ id: item.id, type: item.type, ...item.payload, time: item.time }))])
+  }
   const context = {
-    location: { directory: root }, renderer: { terminalWidth: 120, terminalHeight: 60 },
+    location: { directory: root }, renderer,
+    data: {
+      on: (type: string, handler: (event: any) => void) => { handlers.set(type, handler); return () => handlers.delete(type) },
+      listen: (listener: (event: any) => void) => { listeners.add(listener); return () => listeners.delete(listener) },
+      location: { default: () => ({ directory: root }) },
+      session: {
+        message: { list: (id: string) => cache[id], invalidate: () => {}, sync: async (id: string) => { options.onRead?.("hydrate", id); syncCache(id) } },
+        pending: { list: (id: string) => inboxes[id], invalidate: () => {}, sync: async (id: string) => { options.onRead?.("pending-sync", id) } },
+      },
+    },
     client: {
       session: {
-        get: async ({ sessionID }: { sessionID: string }) => { options.onGet?.(sessionID); return sessions[sessionID] },
-        active: async () => options.rootActive || (options.wakeOnSynthetic && calls.synthetic.length > 0)
-          ? { parent: { type: "running" } } : {},
-        inbox: { list: async () => [] }, wait: async ({ sessionID }: { sessionID: string }) => { await options.onWait?.(sessionID) },
-        synthetic: async (input: { sessionID: string; text: string; description: string; metadata: { source: string; planHash: string }; resume: boolean }) => {
+        get: async ({ sessionID }: { sessionID: string }) => { options.onRead?.("get", sessionID); options.onGet?.(sessionID); return sessions[sessionID] },
+        active: async () => { options.onRead?.("active"); return options.rootActive || (options.wakeOnSynthetic && calls.synthetic.length > 0) ? { parent: { type: "running" } } : {} },
+        inbox: { list: async ({ sessionID }: { sessionID: string }) => { options.onRead?.("inbox", sessionID); return structuredClone(inboxes[sessionID]) } },
+        wait: async ({ sessionID }: { sessionID: string }) => { await options.onWait?.(sessionID) },
+        synthetic: async (input: any) => {
           calls.synthetic.push(input)
-          return { id: "synthetic-plan", type: "synthetic", sessionID: input.sessionID,
-            payload: { text: input.text, description: input.description } }
+          const admitted = { id: input.id, type: "synthetic", sessionID: input.sessionID, delivery: input.delivery,
+            time: { created: 3 }, payload: { text: input.text, description: input.description, metadata: input.metadata } }
+          inboxes[input.sessionID].push(structuredClone(admitted))
+          syncCache(input.sessionID)
+          if (options.events) emit({ type: "session.inbox.enqueued", id: "evt_publication", created: admitted.time.created,
+            data: { sessionID: input.sessionID, inboxID: input.id, item: { type: admitted.type, payload: admitted.payload, delivery: admitted.delivery } } })
+          return admitted
         },
         switchAgent: async ({ sessionID, agent }: { sessionID: string; agent: string }) => {
           calls.switched.push(sessionID)
           sessions[sessionID].agent = agent
-          histories[sessionID].push({ type: "agent-switched", id: "switch", agent, previous: "implementer_slot" })
+          histories[sessionID].push({ type: "agent-switched", id: "msg_switch", agent, previous: "implementer_slot", time: { created: 4 } })
+          if (options.events) emit({ type: "session.agent.selected", id: "evt_switch", created: 4,
+            data: { sessionID, agent, previous: "implementer_slot" } })
           options.onSwitch?.()
         },
-        prompt: async ({ sessionID, text: value }: { sessionID: string; text: string }) => {
+        prompt: async ({ sessionID, text: value, id }: { sessionID: string; text: string; id: string }) => {
           calls.prompted.push({ sessionID, text: value })
+          if (options.events) {
+            emit({ type: "session.inbox.enqueued", id: "evt_prompt", created: 5,
+              data: { sessionID, inboxID: id, item: { type: "user", delivery: "steer", payload: { text: value } } } })
+            emit({ type: "session.execution.started", id: "evt_start", created: 6, data: { sessionID } })
+            emit({ type: "session.inbox.delivered", id: "evt_delivered", created: 7, data: { sessionID, inboxID: id } })
+            for (const type of ["session.step.started", "session.text.started", "session.text.ended", "session.step.ended"])
+              emit({ type, id: `evt_${type}`, data: { sessionID } })
+          }
           options.onPrompt?.(value)
           if (options.promptError) throw new Error("ambiguous prompt transport failure")
-          histories[sessionID].push(user("trusted-input", value), answer("implementer-final", "authorized_implementer", "Done"), idle("implementer-idle"))
-          return { type: "user", id: options.promptIDMismatch ? "different-id" : "trusted-input", sessionID,
+          histories[sessionID].push(user(id, value), answer("implementer-final", "authorized_implementer", "Done"), idle("implementer-idle"))
+          if (options.events) emit({ type: "session.execution.succeeded", id: "evt_implemented", created: 8, data: { sessionID } })
+          return { type: "user", id: options.promptIDMismatch ? "different-id" : id, sessionID, delivery: "steer", time: { created: 5 },
             payload: { text: options.promptMismatch ? "different" : value, files: [], agents: [], skills: [] } }
         },
       },
       message: { list: async ({ sessionID, cursor }: { sessionID: string; cursor?: string }) => {
+        options.onRead?.("messages", sessionID)
         const all = histories[sessionID]
-        return cursor ? { data: all.slice(2), cursor: {} } : { data: all.slice(0, 2), cursor: { next: "rest" } }
+        return structuredClone(options.singlePage ? { data: all, cursor: {} } :
+          cursor ? { data: all.slice(2), cursor: {} } : { data: all.slice(0, 2), cursor: { next: "rest" } })
       } },
     },
-    ui: { toast: { show: ({ message }: { message: string }) => { calls.toasts.push(message) } }, dialog: {
-      confirm: async ({ message }: { message: string }) => { calls.confirmed.push(message); options.onConfirm?.(); return options.confirm },
-      set: () => undefined,
-    } },
+    theme: { text: { feedback: { info: { base: "blue" } } } },
+    ui: {
+      router: { current: () => ({ type: "session", sessionID: "parent" }) },
+      slot: (claim: any) => { const registration = { claim, removed: false }; slots.push(registration); return () => { registration.removed = true; (registration as any).dispose?.() } },
+      toast: { show: ({ message }: { message: string }) => { calls.toasts.push(message) } },
+      dialog: { confirm: () => { throw new Error("Modal authorization must never be called") } },
+    },
   } as unknown as Context
-  return { context, generation, histories, sessions, calls }
+  let claimed: PublishedAttempt | undefined
+  const claim = (published: PublishedAttempt) => { if (claimed) throw new Error("already claimed"); claimed = published }
+  const guard: DecisionOwner = {
+    assertCurrent: () => { if (generation.revoked) throw new Error("revoked") },
+    assertDecision: (published) => { if (claimed !== published) throw new Error("wrong decision owner"); guard.assertCurrent() },
+  }
+  const created = () => ({ type: "session.created", id: "evt_created", created: sessions.parent.time.created,
+    data: { sessionID: "parent", agent: "orchestrator", location: { directory: root } } })
+  const emit = (event: any) => { handlers.get(event.type)?.(event); for (const listener of listeners) listener({ details: event }) }
+  const f = { context, generation, histories, sessions, inboxes, cache, slots, handlers, listeners, calls, options, guard, claim, created, emit, renderer }
+  fakes.set(context, f)
+  return f
+}
+function evidence(context: Context, generation: Generation, baseline: GitSnapshot, location: { directory: string }) {
+  return activationEvidence(generation, location, baseline, 0, fakes.get(context)!.created() as any)
+}
+function publication(context: Context, generation: Generation, baseline: GitSnapshot, _parent: string, location: { directory: string }) {
+  return publish(context, evidence(context, generation, baseline, location), fakes.get(context)!.guard)
+}
+// Test-only positive/negative decision driver for native executor invariants.
+// The live-path cases below exercise the real closure's synchronous ownership separately.
+async function implement(context: Context, generation: Generation, baseline: GitSnapshot, parent: string, location: { directory: string }) {
+  const f = fakes.get(context)!
+  const published = await publication(context, generation, baseline, parent, location)
+  f.claim(published)
+  f.calls.decided.push(candidateMessage(published.candidate))
+  f.options.onDecision?.()
+  if (f.options.decision !== true) throw new Error("Implementation authorization was cancelled")
+  return authorizePublishedAttempt(context, published, f.guard)
+}
+
+// Native/CAP sequencing is doubled. Only post-dispatch Git boundary observations
+// use the real repository in these two integration cases.
+async function realImplementationGate(f: ReturnType<typeof fake>, baseline: GitSnapshot) {
+  // These small histories fit one real API page. Pagination invariants are
+  // proved with doubles; do not multiply Git observations for artificial pages.
+  f.options.singlePage = true
+  const observer = new SnapshotObserver()
+  observer.configure(baseline.root, baseline.head, baseline.paths)
+  const onPrompt = f.options.onPrompt
+  f.options.onPrompt = (value) => {
+    mock.module(gitModulePath, () => realGit)
+    onPrompt?.(value)
+  }
+  mock.module(gitModulePath, () => ({ ...realGit, observeGit: observer.observe }))
+  try { return await implement(f.context, f.generation, baseline, "parent", { directory: baseline.root }) }
+  finally { observer.close(); mock.module(gitModulePath, () => realGit) }
 }
 
 snapshotTest("post-idle publication binds exact Planner P and publishes it without authorizing implementation", async (observer) => {
   const root = snapshotFixture(observer)
   const f = fake(root, { onWait: (sessionID) => { if (sessionID === "parent") f.calls.toasts.push("root wait returned") } })
   const baseline = observeGit(root)
-  const result = await publishPlan(f.context, f.generation, baseline, "parent", { directory: root })
+  const result = await publication(f.context, f.generation, baseline, "parent", { directory: root })
   expect(result.candidate).toEqual(makeCandidate(parseProposal(proposal, baseline.root), baseline.root, baseline.head))
-  expect(result.syntheticID).toBe("synthetic-plan")
-  expect(f.calls.synthetic).toEqual([{ sessionID: "parent", text: proposal, description: renderPlan(result.candidate),
-    metadata: { source: "planner", planHash: result.planHash }, resume: false }])
+  expect(result.publication.id).toStartWith("msg_")
+  expect(f.calls.synthetic).toEqual([{ id: result.publication.id, delivery: "steer", sessionID: "parent", text: proposal, description: renderPlan(result.candidate),
+    metadata: { source: "planner", planHash: result.publication.payload.metadata!.planHash }, resume: false }])
   expect(f.calls.toasts[0]).toBe("root wait returned")
-  expect(f.calls.toasts.at(-1)).toContain(result.planHash)
-  expect(f.calls.confirmed).toEqual([])
+  expect(f.calls.decided).toEqual([])
   expect(f.calls.switched).toEqual([])
   expect(f.calls.prompted).toEqual([])
-  expect(observer.calls(root).map((call) => call.baseline)).toEqual([undefined, baseline, baseline])
+  expect(observer.calls(root).slice(1).every((call) => call.baseline !== undefined)).toBe(true)
 
   // Exercise the double's contract separately from the production call records.
   const isolated = new SnapshotObserver()
@@ -222,25 +335,25 @@ snapshotTest("post-idle publication binds exact Planner P and publishes it witho
 snapshotTest("publication refuses to publish while the root execution is active", async (observer) => {
   const root = snapshotFixture(observer)
   const f = fake(root, { rootActive: true })
-  await expect(publishPlan(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow("running")
+  await expect(publication(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow("running")
   expect(f.calls.synthetic).toEqual([])
 })
 
 snapshotTest("publication reports an immediate root wake after synthetic admission", async (observer) => {
   const root = snapshotFixture(observer)
   const f = fake(root, { wakeOnSynthetic: true })
-  await expect(publishPlan(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow("resumed immediately")
+  await expect(publication(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow("running")
   expect(f.calls.synthetic).toHaveLength(1)
   expect(f.calls.prompted).toEqual([])
 })
 
-test("binds native calls and exact Planner result, confirms candidate, switches and prompts exact slot once", async () => {
+test("binds native calls and exact Planner result, authorizes the published candidate, switches and prompts exact slot once", async () => {
   const root = fixture()
-  const f = fake(root, { confirm: true, onPrompt: () => writeFileSync(path.join(root, "old.txt"), "implemented\n") })
+  const f = fake(root, { decision: true, onPrompt: () => writeFileSync(path.join(root, "old.txt"), "implemented\n") })
   const baseline = observeGit(root)
   const candidate = makeCandidate(parseProposal(proposal, baseline.root), baseline.root, baseline.head)
-  expect(await runImplementationAttempt(f.context, f.generation, baseline, "parent", { directory: root })).toContain("Implementation gate complete")
-  expect(f.calls.confirmed).toEqual([candidateMessage(candidate)])
+  expect(await realImplementationGate(f, baseline)).toContain("Implementation gate complete")
+  expect(f.calls.decided).toEqual([candidateMessage(candidate)])
   expect(f.calls.switched).toEqual(["slot-child"])
   const trustedPrompt = [
     "You are the Implementer for one authorized implementation attempt.",
@@ -262,17 +375,17 @@ test("binds native calls and exact Planner result, confirms candidate, switches 
 snapshotTest("Planner may complete read and search tools while the slot remains inert", async (observer) => {
   for (const tool of ["read", "glob", "grep"]) {
     const root = snapshotFixture(observer)
-    const f = fake(root, { confirm: false })
+    const f = fake(root, { decision: false })
     f.histories["planner-child"].splice(1, 0, { type: "assistant", id: "planner-read", agent: "planner", content: [
       { type: "tool", id: "read-call", name: tool, state: { status: "completed", input: { path: "old.txt" }, content: [text("initial")], metadata: {} } },
     ] })
-    await expect(runImplementationAttempt(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow("cancelled")
-    expect(f.calls.confirmed).toHaveLength(1)
+    await expect(implement(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow("cancelled")
+    expect(f.calls.decided).toHaveLength(1)
     expect(f.calls.switched).toEqual([])
   }
 })
 
-snapshotTest("missing, duplicate, continued, background, or substituted native child evidence stops before confirmation", async (observer) => {
+snapshotTest("missing, duplicate, continued, background, or substituted native child evidence stops before decision", async (observer) => {
   for (const mutate of [
     (f: ReturnType<typeof fake>) => { f.histories.parent[2].content.pop() },
     (f: ReturnType<typeof fake>) => { f.histories.parent[1].content.push(f.histories.parent[1].content[0]) },
@@ -290,64 +403,64 @@ snapshotTest("missing, duplicate, continued, background, or substituted native c
     (f: ReturnType<typeof fake>) => { f.histories["slot-child"].push({ type: "agent-switched", id: "early", agent: "authorized_implementer" }) },
   ]) {
     const root = snapshotFixture(observer)
-    const f = fake(root, { confirm: true })
+    const f = fake(root, { decision: true })
     mutate(f)
-    await expect(runImplementationAttempt(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow()
-    expect(f.calls.confirmed).toEqual([])
+    await expect(implement(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow()
+    expect(f.calls.decided).toEqual([])
     expect(f.calls.switched).toEqual([])
   }
 })
 
-test("dirty baseline, dismissal, changed candidate state, and revoked generation cannot admit", async () => {
-  const root = fixture()
+snapshotTest("dirty baseline, negative decision, changed worktree, and revoked generation cannot admit", async (observer) => {
+  const root = snapshotFixture(observer)
   const baseline = observeGit(root)
-  writeFileSync(path.join(root, "old.txt"), "dirty")
-  const dirty = fake(root, { confirm: true })
-  await expect(runImplementationAttempt(dirty.context, dirty.generation, baseline, "parent", { directory: root })).rejects.toThrow()
-  expect(dirty.calls.confirmed).toEqual([])
-  git(root, "reset", "--hard", "HEAD")
+  observer.configure(root, HEAD, ["old.txt"])
+  const dirty = fake(root, { decision: true })
+  await expect(implement(dirty.context, dirty.generation, baseline, "parent", { directory: root })).rejects.toThrow()
+  expect(dirty.calls.decided).toEqual([])
+  observer.configure(root)
   for (const options of [
-    { confirm: false },
-    { confirm: undefined },
-    { confirm: true, onConfirm: () => writeFileSync(path.join(root, "old.txt"), "stale") },
+    { decision: false },
+    { decision: undefined },
+    { decision: true, onDecision: () => observer.configure(root, HEAD, ["old.txt"]) },
   ]) {
     const f = fake(root, options)
-    await expect(runImplementationAttempt(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow()
+    await expect(implement(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow()
     expect(f.calls.prompted).toEqual([])
     expect(f.calls.switched).toEqual([])
-    git(root, "reset", "--hard", "HEAD")
+    observer.configure(root)
   }
-  const revoked = fake(root, { confirm: true })
+  const revoked = fake(root, { decision: true })
   revoked.generation.revoked = true
-  await expect(runImplementationAttempt(revoked.context, revoked.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow()
+  await expect(implement(revoked.context, revoked.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow()
   expect(revoked.calls.switched).toEqual([])
 })
 
 snapshotTest("after switch or ambiguous prompt, no second dispatch or child is created", async (observer) => {
   for (const options of [
-    { confirm: true, onSwitch: () => { throw new Error("switch uncertain") } },
-    { confirm: true, promptError: true },
-    { confirm: true, promptMismatch: true },
-    { confirm: true, promptIDMismatch: true },
+    { decision: true, onSwitch: () => { throw new Error("switch uncertain") } },
+    { decision: true, promptError: true },
+    { decision: true, promptMismatch: true },
+    { decision: true, promptIDMismatch: true },
   ]) {
     const root = snapshotFixture(observer)
     const f = fake(root, options)
-    await expect(runImplementationAttempt(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow()
+    await expect(implement(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow()
     expect(f.calls.switched).toEqual(["slot-child"])
     expect(f.calls.prompted.length).toBeLessThanOrEqual(1)
   }
 })
 
-snapshotTest("stale binding after confirmation or switch and revoked generation after prompt stop without redispatch", async (observer) => {
-  for (const boundary of ["confirm", "switch", "prompt"] as const) {
+snapshotTest("stale binding after decision or switch and revoked generation after prompt stop without redispatch", async (observer) => {
+  for (const boundary of ["decision", "switch", "prompt"] as const) {
     const root = snapshotFixture(observer)
     let f: ReturnType<typeof fake>
-    f = fake(root, { confirm: true,
-      onConfirm: boundary === "confirm" ? () => { f.histories["slot-child"].push(user("extra-slot", "continued")) } : undefined,
+    f = fake(root, { decision: true,
+      onDecision: boundary === "decision" ? () => { f.histories["slot-child"].push(user("extra-slot", "continued")) } : undefined,
       onSwitch: boundary === "switch" ? () => { f.histories["slot-child"].push(user("extra-slot", "continued")) } : undefined,
       onPrompt: boundary === "prompt" ? () => { f.generation.revoked = true } : undefined,
     })
-    await expect(runImplementationAttempt(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow()
+    await expect(implement(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow()
     expect(f.calls.prompted).toHaveLength(boundary === "prompt" ? 1 : 0)
   }
 })
@@ -356,7 +469,7 @@ snapshotTest("authorized result must remain in the exact slot with one successfu
   for (const mutation of ["none", "extra-input", "wrong-agent", "failed-outcome"] as const) {
     const root = snapshotFixture(observer)
     let f: ReturnType<typeof fake>
-    f = fake(root, { confirm: true,
+    f = fake(root, { decision: true,
       onPrompt: mutation === "none" ? () => observer.configure(root, HEAD, ["old.txt"]) : undefined,
       onWait: (sessionID) => {
       if (sessionID !== "slot-child") return
@@ -364,10 +477,10 @@ snapshotTest("authorized result must remain in the exact slot with one successfu
       if (mutation === "wrong-agent") f.sessions["slot-child"].agent = "planner"
       if (mutation === "failed-outcome") f.sessions["slot-child"].outcome = "failed"
     } })
-    const result = runImplementationAttempt(f.context, f.generation, observeGit(root), "parent", { directory: root })
+    const result = implement(f.context, f.generation, observeGit(root), "parent", { directory: root })
     if (mutation === "none") {
       expect(await result).toContain("Resulting paths (1): old.txt")
-      expect(observer.calls(root).map((call) => call.current.paths)).toEqual([[], [], [], [], [], ["old.txt"]])
+      expect(observer.calls(root).at(-1)!.current.paths).toEqual(["old.txt"])
     } else await expect(result).rejects.toThrow()
     expect(f.calls.prompted).toHaveLength(1)
   }
@@ -376,7 +489,7 @@ snapshotTest("authorized result must remain in the exact slot with one successfu
 test("changed HEAD and out-of-scope implementation cannot pass the Git gate", async () => {
   for (const effect of ["head", "scope"] as const) {
     const root = fixture()
-    const f = fake(root, { confirm: true, onPrompt: () => {
+    const f = fake(root, { decision: true, onPrompt: () => {
       if (effect === "scope") writeFileSync(path.join(root, "other.txt"), "outside")
       else {
         writeFileSync(path.join(root, "old.txt"), "committed")
@@ -384,7 +497,7 @@ test("changed HEAD and out-of-scope implementation cannot pass the Git gate", as
         git(root, "commit", "-qm", "changed head")
       }
     } })
-    await expect(runImplementationAttempt(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow()
+    await expect(realImplementationGate(f, observeGit(root))).rejects.toThrow()
     expect(f.calls.prompted).toHaveLength(1)
   }
 })
@@ -442,91 +555,24 @@ snapshotTest("session permission overrides and changed bound transcripts stop be
     (f: ReturnType<typeof fake>) => { f.histories["slot-child"].push(user("continuation", "again")) },
   ]) {
     const root = snapshotFixture(observer)
-    const f = fake(root, { confirm: true })
+    const f = fake(root, { decision: true })
     mutate(f)
-    await expect(runImplementationAttempt(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow()
+    await expect(implement(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow()
     expect(f.calls.switched).toEqual([])
   }
 })
 
-snapshotTest("generation revocation after confirmation or switch stops before trusted prompt", async (observer) => {
-  for (const boundary of ["confirm", "switch"] as const) {
+snapshotTest("generation revocation after decision or switch stops before trusted prompt", async (observer) => {
+  for (const boundary of ["decision", "switch"] as const) {
     const root = snapshotFixture(observer)
     let generation: Generation
     const f = fake(root, {
-      confirm: true,
-      onConfirm: boundary === "confirm" ? () => { generation.revoked = true } : undefined,
+      decision: true,
+      onDecision: boundary === "decision" ? () => { generation.revoked = true } : undefined,
       onSwitch: boundary === "switch" ? () => { generation.revoked = true } : undefined,
     })
     generation = f.generation
-    await expect(runImplementationAttempt(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow("revoked")
-    expect(f.calls.prompted).toEqual([])
-  }
-})
-
-test("TUI activation publishes only after a newly observed parent completes", async () => {
-  const root = fixture()
-  const f = fake(root)
-  const handlers = new Map<string, (event: any) => void>()
-  const host = f.context as unknown as any
-  host.data = { on: (type: string, handler: (event: any) => void) => { handlers.set(type, handler); return () => handlers.delete(type) } }
-  host.ui.dialog.alert = async () => { throw new Error("unexpected alert") }
-  const cleanup = await plugin.setup(f.context)
-  handlers.get("session.execution.succeeded")?.({ data: { sessionID: "parent" } })
-  expect(f.calls.synthetic).toEqual([])
-  handlers.get("session.created")?.({ data: { sessionID: "parent", agent: "orchestrator", location: { directory: root } } })
-  handlers.get("session.execution.succeeded")?.({ data: { sessionID: "parent" } })
-  await Promise.resolve()
-  for (let i = 0; i < 100 && !f.calls.synthetic.length; i++) await Bun.sleep(1)
-  expect(f.calls.synthetic).toHaveLength(1)
-  expect(f.calls.confirmed).toEqual([])
-  expect(f.calls.prompted).toEqual([])
-  handlers.get("session.execution.started")?.({ data: { sessionID: "parent" } })
-  expect(f.calls.toasts.at(-1)).toContain("Root execution started")
-  if (typeof cleanup === "function") await cleanup()
-  expect(handlers.size).toBe(0)
-})
-
-test("publication accepts a stable pre-existing diff but does not authorize it", async () => {
-  const root = fixture()
-  writeFileSync(path.join(root, "old.txt"), "dirty")
-  const f = fake(root, { confirm: true })
-  const handlers = new Map<string, (event: any) => void>()
-  const host = f.context as unknown as any
-  host.data = { on: (type: string, handler: (event: any) => void) => { handlers.set(type, handler); return () => handlers.delete(type) } }
-  const cleanup = await plugin.setup(f.context)
-  handlers.get("session.created")?.({ data: { sessionID: "parent", agent: "orchestrator", location: { directory: root } } })
-  handlers.get("session.execution.succeeded")?.({ data: { sessionID: "parent" } })
-  for (let i = 0; i < 100 && !f.calls.synthetic.length; i++) await Bun.sleep(1)
-  expect(f.calls.synthetic).toHaveLength(1)
-  expect(f.calls.confirmed).toEqual([])
-  expect(f.calls.switched).toEqual([])
-  if (typeof cleanup === "function") await cleanup()
-})
-
-test("candidate fit preserves complete confirmation text and terminal sizing policy", () => {
-  const root = realpathSync(mkdtempSync(path.join(tmpdir(), "opencode-agents-attempt-")))
-  roots.push(root)
-  writeFileSync(path.join(root, "old.txt"), "initial\n")
-  const candidate = makeCandidate(parseProposal('{"intent":"i","plan":"p","files":["old.txt"]}', root), root, "1".repeat(40))
-  expect(candidateFits(candidateMessage(candidate), 120, 50)).toBe(true)
-  expect(candidateFits(candidateMessage(candidate), 40, 15)).toBe(false)
-  expect(candidateFits("x".repeat(270), 36, 20)).toBe(true)
-  expect(candidateFits("x".repeat(271), 36, 20)).toBe(false)
-  expect(candidateFits("界".repeat(135), 36, 20)).toBe(true)
-  expect(candidateFits("界".repeat(136), 36, 20)).toBe(false)
-  expect(candidateFits("x", 35, 20)).toBe(false)
-  expect(candidateFits("x", 120, 18)).toBe(false)
-})
-
-snapshotTest("unreadable candidate before or during confirmation cannot switch or prompt", async (observer) => {
-  for (const boundary of ["before", "confirm"] as const) {
-    const root = snapshotFixture(observer)
-    const f = fake(root, { confirm: true, onConfirm: () => { f.context.renderer.terminalHeight = 15 } })
-    if (boundary === "before") f.context.renderer.terminalHeight = 15
-    await expect(runImplementationAttempt(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow(/fit|unreadable/)
-    expect(f.calls.confirmed).toHaveLength(boundary === "before" ? 0 : 1)
-    expect(f.calls.switched).toEqual([])
+    await expect(implement(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow("revoked")
     expect(f.calls.prompted).toEqual([])
   }
 })
@@ -537,24 +583,24 @@ snapshotTest("Planner bootstrap rejects forbidden or unfinished tools and slot r
     ["slot-child", "read", "completed"], ["slot-child", "glob", "completed"],
   ]) {
     const root = snapshotFixture(observer)
-    const f = fake(root, { confirm: true })
+    const f = fake(root, { decision: true })
     f.histories[sessionID!].splice(1, 0, { type: "assistant", id: "bootstrap-tool", agent: f.sessions[sessionID!].agent,
       content: [{ type: "tool", id: "bootstrap-call", name, state: { status, input: {}, content: [], metadata: {} } }] })
-    await expect(runImplementationAttempt(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow("disallowed tool")
-    expect(f.calls.confirmed).toEqual([])
+    await expect(implement(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow("disallowed tool")
+    expect(f.calls.decided).toEqual([])
     expect(f.calls.switched).toEqual([])
   }
   const root = snapshotFixture(observer)
-  const f = fake(root, { confirm: true })
+  const f = fake(root, { decision: true })
   f.histories["slot-child"][1].content[0].text = "READY\n"
-  await expect(runImplementationAttempt(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow("final text")
-  expect(f.calls.confirmed).toEqual([])
+  await expect(implement(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow("final text")
+  expect(f.calls.decided).toEqual([])
 })
 
 snapshotTest("repeated message cursors and duplicate IDs across pages reject native binding", async (observer) => {
   for (const mutation of ["cursor", "id"] as const) {
     const root = snapshotFixture(observer)
-    const f = fake(root, { confirm: true })
+    const f = fake(root, { decision: true })
     const host = f.context as unknown as any
     host.client.message.list = async ({ sessionID, cursor }: { sessionID: string; cursor?: string }) => {
       const all = f.histories[sessionID]
@@ -562,32 +608,32 @@ snapshotTest("repeated message cursors and duplicate IDs across pages reject nat
         ? { data: mutation === "id" ? all : [], cursor: mutation === "cursor" ? { next: "rest" } : {} }
         : { data: all.slice(0, 2), cursor: { next: "rest" } }
     }
-    await expect(runImplementationAttempt(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow(mutation === "cursor" ? "repeated a cursor" : "duplicate message ID")
-    expect(f.calls.confirmed).toEqual([])
+    await expect(implement(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow(mutation === "cursor" ? "repeated a cursor" : "duplicate message ID")
+    expect(f.calls.decided).toEqual([])
     expect(f.calls.prompted).toEqual([])
   }
 })
 
-snapshotTest("existing parent and Planner content remains immutable across confirmation and switch", async (observer) => {
-  for (const boundary of ["confirm", "switch"] as const) {
+snapshotTest("existing parent and Planner content remains immutable across decision and switch", async (observer) => {
+  for (const boundary of ["decision", "switch"] as const) {
     for (const sessionID of ["parent", "planner-child"]) {
       const root = snapshotFixture(observer)
       const mutate = () => { f.histories[sessionID][sessionID === "parent" ? 3 : 1].content[0].text += " changed" }
-      const f = fake(root, { confirm: true, onConfirm: boundary === "confirm" ? mutate : undefined,
+      const f = fake(root, { decision: true, onDecision: boundary === "decision" ? mutate : undefined,
         onSwitch: boundary === "switch" ? mutate : undefined })
-      await expect(runImplementationAttempt(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow(/transcript changed|output differs from exact child result/)
+      await expect(implement(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow(/transcript changed|output differs from exact child result/)
       expect(f.calls.prompted).toEqual([])
-      expect(f.calls.switched).toHaveLength(boundary === "confirm" ? 0 : 1)
+      expect(f.calls.switched).toHaveLength(boundary === "decision" ? 0 : 1)
     }
   }
 })
 
 snapshotTest("slot is rechecked after awaited parent verification before trusted prompt", async (observer) => {
   const root = snapshotFixture(observer)
-  const f = fake(root, { confirm: true, onGet: (sessionID) => {
+  const f = fake(root, { decision: true, onGet: (sessionID) => {
     if (sessionID === "parent" && f.calls.switched.length) f.histories["slot-child"].push(user("late-input", "continued"))
   } })
-  await expect(runImplementationAttempt(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow("before trusted prompt")
+  await expect(implement(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow("before trusted prompt")
   expect(f.calls.switched).toEqual(["slot-child"])
   expect(f.calls.prompted).toEqual([])
 })
@@ -595,10 +641,10 @@ snapshotTest("slot is rechecked after awaited parent verification before trusted
 snapshotTest("post-switch session permission overrides cannot admit the trusted prompt", async (observer) => {
   for (const sessionID of ["parent", "planner-child", "slot-child"]) {
     const root = snapshotFixture(observer)
-    const f = fake(root, { confirm: true, onSwitch: () => {
+    const f = fake(root, { decision: true, onSwitch: () => {
       f.sessions[sessionID].permissions = [{ action: "edit", resource: "*", effect: "allow" }]
     } })
-    await expect(runImplementationAttempt(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow("permissions")
+    await expect(implement(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow("permissions")
     expect(f.calls.prompted).toEqual([])
   }
 })
@@ -617,7 +663,7 @@ snapshotTest("publication preserves pretty-printed raw Planner P and rejects alt
       if (mutation !== "none") admitted.payload[mutation] += " changed"
       return admitted
     }
-    const result = publishPlan(f.context, f.generation, observeGit(root), "parent", { directory: root })
+    const result = publication(f.context, f.generation, observeGit(root), "parent", { directory: root })
     if (mutation === "none") {
       const published = await result
       expect(f.calls.synthetic[0].description).toBe(renderPlan(published.candidate))
@@ -625,42 +671,41 @@ snapshotTest("publication preserves pretty-printed raw Planner P and rejects alt
     } else await expect(result).rejects.toThrow("admission changed")
     expect(f.calls.synthetic[0].text).toBe(raw)
     expect(f.calls.synthetic[0].resume).toBe(false)
-    expect(f.calls.confirmed).toEqual([])
+    expect(f.calls.decided).toEqual([])
     expect(f.calls.prompted).toEqual([])
   }
 })
 
-snapshotTest("published candidate, hash and synthetic presentation do not relax implementation binding", async (observer) => {
+snapshotTest("a delivered Plan never relaxes the original native history binding", async (observer) => {
   const root = snapshotFixture(observer)
-  const f = fake(root, { confirm: true })
-  const baseline = observeGit(root)
-  const published = await publishPlan(f.context, f.generation, baseline, "parent", { directory: root })
-  f.histories.parent.push({ type: "synthetic", id: published.syntheticID, text: proposal,
-    description: renderPlan(published.candidate), metadata: { source: "planner", planHash: published.planHash } })
-  await expect(runImplementationAttempt(f.context, f.generation, baseline, "parent", { directory: root })).rejects.toThrow("unexpected parent input")
-  expect(f.calls.confirmed).toEqual([])
+  const f = fake(root, { decision: true })
+  const published = await publication(f.context, f.generation, observeGit(root), "parent", { directory: root })
+  f.claim(published)
+  f.histories.parent.push({ type: "synthetic", id: published.publication.id, text: proposal,
+    description: renderPlan(published.candidate), metadata: published.publication.payload.metadata })
+  await expect(authorizePublishedAttempt(f.context, published, f.guard)).rejects.toThrow("parent transcript changed")
   expect(f.calls.switched).toEqual([])
   expect(f.calls.prompted).toEqual([])
 })
 
-test("publication refuses pending inbox input and a changed publication path set", async () => {
+snapshotTest("publication refuses pending inbox input and a changed publication path set", async (observer) => {
   for (const mutation of ["inbox", "paths"] as const) {
-    const root = fixture()
-    writeFileSync(path.join(root, "old.txt"), "pre-existing")
+    const root = snapshotFixture(observer)
+    observer.configure(root, HEAD, ["old.txt"])
     const baseline = observeGit(root)
     const f = fake(root)
-    if (mutation === "paths") writeFileSync(path.join(root, "new.txt"), "new path")
+    if (mutation === "paths") observer.configure(root, HEAD, ["old.txt", "new.txt"])
     else (f.context as unknown as any).client.session.inbox.list = async () => [{ id: "pending" }]
-    await expect(publishPlan(f.context, f.generation, baseline, "parent", { directory: root })).rejects.toThrow(mutation === "paths" ? "publication worktree paths changed" : "pending input")
+    await expect(publication(f.context, f.generation, baseline, "parent", { directory: root })).rejects.toThrow(mutation === "paths" ? "publication worktree paths changed" : "pending input")
     expect(f.calls.synthetic).toEqual([])
-    expect(f.calls.confirmed).toEqual([])
+    expect(f.calls.decided).toEqual([])
   }
 })
 
 snapshotTest("trusted prompt admission rejects substituted identity or attachments without redispatch", async (observer) => {
   for (const mutation of ["sessionID", "type", "id", "files", "agents", "skills"] as const) {
     const root = snapshotFixture(observer)
-    const f = fake(root, { confirm: true })
+    const f = fake(root, { decision: true })
     const host = f.context as unknown as any
     const prompt = host.client.session.prompt
     host.client.session.prompt = async (input: any) => {
@@ -669,81 +714,469 @@ snapshotTest("trusted prompt admission rejects substituted identity or attachmen
       else returned[mutation] = mutation === "id" ? "" : "substituted"
       return returned
     }
-    await expect(runImplementationAttempt(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow("unexpected input")
+    await expect(implement(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow("unexpected input")
     expect(f.calls.switched).toEqual(["slot-child"])
     expect(f.calls.prompted).toHaveLength(1)
   }
 })
 
-snapshotTest("activation location substitution during confirmation cannot switch or dispatch", async (observer) => {
+snapshotTest("activation location substitution during decision cannot switch or dispatch", async (observer) => {
   const root = snapshotFixture(observer)
   const otherRoot = snapshotFixture(observer)
-  const f = fake(root, { confirm: true, onConfirm: () => { (f.context as unknown as any).location.directory = otherRoot } })
-  await expect(runImplementationAttempt(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow("TUI location changed")
+  const f = fake(root, { decision: true, onDecision: () => { (f.context as unknown as any).location.directory = otherRoot } })
+  await expect(implement(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow("TUI location changed")
   expect(f.calls.switched).toEqual([])
   expect(f.calls.prompted).toEqual([])
 })
 
-snapshotTest("TUI duplicate completions and failed or interrupted roots cannot start another publication", async (observer) => {
-  for (const outcome of ["succeeded", "failed", "interrupted"] as const) {
+
+async function settleUntil(done: () => boolean) {
+  for (let i = 0; i < 2000 && !done(); i++) await Promise.resolve()
+  expect(done()).toBe(true)
+}
+async function activate(f: ReturnType<typeof fake>, created?: number) {
+  const cleanup = await plugin.setup(f.context)
+  f.sessions.parent.time.created = created ?? Date.now() + 10
+  f.emit(f.created())
+  f.emit({ type: "session.execution.succeeded", id: "evt_completed", created: Date.now() + 20, data: { sessionID: "parent" } })
+  await settleUntil(() => f.slots.length > 0 || f.calls.toasts.length > 0)
+  return () => { if (typeof cleanup === "function") cleanup() }
+}
+function mount(f: ReturnType<typeof fake>, sessionID = "parent", completeLayout = true) {
+  const registration = f.slots.at(-1)!
+  expect(registration.claim.append).toBe("session.composer.top")
+  const begin = elements.length
+  let dispose!: () => void
+  const view = createRoot((release) => { dispose = release; return registration.claim.render({ sessionID }) })
+  const mounted = elements.slice(begin)
+  registration.dispose = dispose
+  if (completeLayout) f.renderer.emit("frame")
+  const buttons = mounted.filter((node) => node.onMouseUp)
+  const click = (index: number, button = 0) => buttons[index]?.onMouseUp({ button, stopPropagation() {} })
+  return { view, mounted, buttons, click, dispose }
+}
+
+snapshotTest("retained evidence is copied, deeply immutable, and coherent", async (observer) => {
+  const root = snapshotFixture(observer)
+  const f = fake(root)
+  const published = await publication(f.context, f.generation, observeGit(root), "parent", { directory: root })
+  for (const value of [published, published.activation, published.activation.location, published.activation.creation,
+    published.activation.creation.data, published.bound, published.bound.slot, published.bound.plannerChild,
+    published.publication, published.publication.payload, published.publication.payload.metadata, published.publication.time]) expect(Object.isFrozen(value)).toBe(true)
+  expect(() => { (published.bound.slot as any).childID = "replacement" }).toThrow()
+  f.sessions.parent.location.directory = "different"
+  expect(published.activation.location.directory).toBe(root)
+  assertPublishedCoherence(published)
+  for (const mutation of [
+    { ...published, candidate: { ...published.candidate, root: "different" } },
+    { ...published, bound: { ...published.bound, slot: { ...published.bound.slot, childID: "replacement" } } },
+    { ...published, publication: { ...published.publication, payload: { ...published.publication.payload, metadata: { source: "planner", planHash: "forged" } } } },
+  ]) expect(() => assertPublishedCoherence(mutation as PublishedAttempt)).toThrow()
+})
+
+snapshotTest("initial eligibility requires clean observation strictly before matching root creation", async (observer) => {
+  const root = snapshotFixture(observer)
+  const f = fake(root)
+  const baseline = observeGit(root)
+  for (const created of [undefined, NaN, 0, 1, 2]) {
+    const event = { ...f.created(), created }
+    const activation = activationEvidence(f.generation, { directory: root }, baseline, 1, event as any)
+    expect(initiallyAuthorizable(activation)).toBe(created === 2)
+  }
+  observer.configure(root, HEAD, ["old.txt"])
+  const dirty = activationEvidence(f.generation, { directory: root }, observeGit(root), 0, f.created() as any)
+  observer.configure(root)
+  expect(initiallyAuthorizable(dirty)).toBe(false)
+  const changed = await publication(f.context, f.generation, baseline, "parent", { directory: root })
+  f.sessions.parent.time.created = 20
+  await expect(verifyPublishedAttempt(f.context, changed, f.guard)).rejects.toThrow("creation identity changed")
+})
+
+snapshotTest("exact pending publication admits reordered keys and rejects every altered field or extra item", async (observer) => {
+  for (const mutation of ["keys", "id", "sessionID", "delivery", "time", "text", "description", "metadata", "payload-key", "item-key", "extra", "promotion"] as const) {
     const root = snapshotFixture(observer)
     const f = fake(root)
-    const handlers = new Map<string, (event: any) => void>()
-    const alerts: unknown[] = []
-    const host = f.context as unknown as any
-    host.data = { on: (type: string, handler: (event: any) => void) => { handlers.set(type, handler); return () => handlers.delete(type) } }
-    host.ui.dialog.alert = async (input: unknown) => { alerts.push(input) }
-    const cleanup = await plugin.setup(f.context)
-    try {
-      handlers.get("session.created")?.({ data: { sessionID: "parent", agent: "orchestrator", location: { directory: root } } })
-      handlers.get(`session.execution.${outcome}`)?.({ data: { sessionID: "parent" } })
-      handlers.get("session.execution.succeeded")?.({ data: { sessionID: "parent" } })
-      if (outcome === "succeeded") {
-        for (let i = 0; i < 100 && !f.calls.synthetic.length; i++) await Bun.sleep(1)
-      }
-      expect(f.calls.synthetic).toHaveLength(outcome === "succeeded" ? 1 : 0)
-      expect(alerts).toHaveLength(outcome === "succeeded" ? 0 : 1)
-      expect(f.calls.confirmed).toEqual([])
-      expect(f.calls.switched).toEqual([])
-      expect(f.calls.prompted).toEqual([])
-    } finally {
-      if (typeof cleanup === "function") await cleanup()
+    const published = await publication(f.context, f.generation, observeGit(root), "parent", { directory: root })
+    const item = f.inboxes.parent[0]
+    if (mutation === "keys") {
+      f.inboxes.parent[0] = Object.fromEntries(Object.entries(item).reverse())
+      expect(publishedPresentationMatches(f.context, published)).toBe(true)
+      await verifyPublishedAttempt(f.context, published, f.guard)
+    } else {
+      if (mutation === "extra") f.inboxes.parent.push({ ...item, id: "extra" })
+      else if (mutation === "promotion") { f.inboxes.parent = []; f.histories.parent.push(f.cache.parent.at(-1)) }
+      else if (mutation === "time") item.time.created++
+      else if (["text", "description"].includes(mutation)) item.payload[mutation] += " "
+      else if (mutation === "metadata") item.payload.metadata.planHash = "forged"
+      else if (mutation === "payload-key") item.payload.extra = true
+      else if (mutation === "item-key") item.extra = true
+      else item[mutation] = "different"
+      await expect(verifyPublishedAttempt(f.context, published, f.guard)).rejects.toThrow()
     }
-    expect(handlers.size).toBe(0)
+    expect(f.calls.switched).toEqual([])
+    expect(f.calls.prompted).toEqual([])
   }
 })
 
-snapshotTest("TUI cleanup revokes pending publication and a fresh activation has no inherited authority", async (observer) => {
+snapshotTest("TUI pointer authorization claims synchronously and dispatches one exact retained slot", async (observer) => {
   const root = snapshotFixture(observer)
-  let release!: () => void
-  let waited = false
-  const pending = new Promise<void>((resolve) => { release = resolve })
-  const f = fake(root, { onWait: async () => { waited = true; await pending } })
-  const handlers = new Map<string, (event: any) => void>()
-  const alerts: unknown[] = []
-  const host = f.context as unknown as any
-  host.data = { on: (type: string, handler: (event: any) => void) => { handlers.set(type, handler); return () => handlers.delete(type) } }
-  host.ui.dialog.alert = async (input: unknown) => { alerts.push(input) }
-  const cleanup = await plugin.setup(f.context)
-  handlers.get("session.created")?.({ data: { sessionID: "parent", agent: "orchestrator", location: { directory: root } } })
-  handlers.get("session.execution.succeeded")?.({ data: { sessionID: "parent" } })
-  expect(waited).toBe(true)
-  if (typeof cleanup === "function") await cleanup()
-  expect(handlers.size).toBe(0)
-  release()
-  await Bun.sleep(1)
-  expect(f.calls.synthetic).toEqual([])
-  expect(alerts).toEqual([])
-  const replacementCleanup = await plugin.setup(f.context)
-  try {
-    handlers.get("session.execution.succeeded")?.({ data: { sessionID: "parent" } })
-    await Bun.sleep(1)
-    expect(f.calls.synthetic).toEqual([])
-    expect(f.calls.confirmed).toEqual([])
+  const f = fake(root, { onPrompt: () => observer.configure(root, HEAD, ["old.txt"]) })
+  const cleanup = await activate(f)
+  const view = mount(f)
+  expect(view.buttons).toHaveLength(2)
+  view.click(0, 2)
+  expect(f.calls.switched).toEqual([])
+  view.click(0)
+  expect(f.slots[0].removed).toBe(true)
+  view.click(0)
+  view.click(1)
+  await settleUntil(() => f.calls.toasts.length > 0)
+  expect(f.calls.toasts.at(-1)).toContain("STOP before Reviewer / Commit")
+  expect(f.calls.switched).toEqual(["slot-child"])
+  expect(f.calls.prompted).toHaveLength(1)
+  expect(f.calls.prompted[0].text).toContain(`Bound HEAD: ${HEAD}`)
+  expect(f.inboxes.parent).toHaveLength(1)
+  cleanup(); view.dispose()
+  expect(f.handlers.size).toBe(0)
+  expect(f.listeners.size).toBe(0)
+})
+
+snapshotTest("Cancel wins once, keeps the Plan, and stale Authorize stays inert", async (observer) => {
+  const root = snapshotFixture(observer)
+  const f = fake(root)
+  const cleanup = await activate(f)
+  const view = mount(f)
+  const plan = structuredClone(f.cache.parent)
+  view.click(1); view.click(0); view.click(1)
+  expect(f.calls.toasts).toEqual(["Cancelled — no implementation admitted"])
+  expect(f.calls.switched).toEqual([])
+  expect(f.calls.prompted).toEqual([])
+  expect(f.cache.parent).toEqual(plan)
+  expect(f.inboxes.parent).toHaveLength(1)
+  cleanup(); view.dispose()
+})
+
+snapshotTest("initially dirty stable Plan publishes explicit inert UX and cannot become authorizable", async (observer) => {
+  const root = snapshotFixture(observer)
+  observer.configure(root, HEAD, ["old.txt"])
+  const f = fake(root)
+  const cleanup = await activate(f)
+  const view = mount(f)
+  expect(view.buttons).toEqual([])
+  expect(view.mounted.filter((node) => node.type === "literal").map((node) => String(node.value)).join(" ")).toContain("worktree was dirty")
+  observer.configure(root)
+  f.renderer.emit("resize")
+  expect(f.slots).toHaveLength(1)
+  expect(f.calls.switched).toEqual([])
+  expect(f.calls.prompted).toEqual([])
+  expect(f.calls.synthetic).toHaveLength(1)
+  cleanup(); view.dispose()
+})
+
+snapshotTest("buffered, equal, and missing Created times only publish non-authorizing status", async (observer) => {
+  for (const time of [1, undefined]) {
+    const root = snapshotFixture(observer)
+    const f = fake(root)
+    const cleanup = await plugin.setup(f.context)
+    f.emit({ ...f.created(), created: time })
+    f.emit({ type: "session.execution.succeeded", id: "evt_completed", data: { sessionID: "parent" } })
+    await settleUntil(() => f.slots.length > 0 || f.calls.toasts.length > 0)
+    const view = mount(f)
+    expect(view.buttons).toEqual([])
+    expect(view.mounted.filter((node) => node.type === "literal").map((node) => String(node.value)).join(" ")).toContain("ordering could not be proven")
+    if (typeof cleanup === "function") cleanup()
+    view.dispose()
+  }
+})
+
+snapshotTest("root wake during publication permanently stops before installing controls", async (observer) => {
+  const root = snapshotFixture(observer)
+  const f = fake(root)
+  const host = f.context as any
+  const synthetic = host.client.session.synthetic
+  host.client.session.synthetic = async (input: any) => {
+    const admitted = await synthetic(input)
+    f.emit({ type: "session.execution.started", id: "evt_wake", data: { sessionID: "parent" } })
+    return admitted
+  }
+  const cleanup = await activate(f)
+  expect(f.slots).toEqual([])
+  expect(f.calls.toasts.at(-1)).toContain("Unexpected session.execution.started")
+  expect(f.calls.switched).toEqual([])
+  cleanup()
+})
+
+snapshotTest("lost view, navigation, resize, projection mutation, and cleanup cannot restore controls", async (observer) => {
+  for (const loss of ["unmount", "navigation", "location", "resize", "projection", "wake", "cleanup"] as const) {
+    const root = snapshotFixture(observer)
+    const f = fake(root)
+    const cleanup = await activate(f)
+    const view = mount(f)
+    if (loss === "unmount") view.dispose()
+    if (loss === "navigation") (f.context.ui.router as any).current = () => ({ type: "session", sessionID: "planner-child" })
+    if (loss === "location") (f.context as any).location.directory = "different"
+    if (loss === "resize") f.renderer.terminalWidth = 40
+    if (loss === "projection") f.cache.parent.at(-1).description += " changed"
+    if (loss === "wake") f.emit({ type: "session.execution.started", id: "evt_wake", data: { sessionID: "parent" } })
+    if (loss === "cleanup") cleanup()
+    view.click(0)
     expect(f.calls.switched).toEqual([])
     expect(f.calls.prompted).toEqual([])
-  } finally {
-    if (typeof replacementCleanup === "function") await replacementCleanup()
+    f.renderer.terminalWidth = 120
+    view.click(0)
+    expect(f.calls.switched).toEqual([])
+    cleanup(); view.dispose()
   }
-  expect(handlers.size).toBe(0)
+})
+
+snapshotTest("claimed authorization still stops on view or Git drift during awaited switch", async (observer) => {
+  for (const drift of ["route", "head", "dirty", "cleanup"] as const) {
+    const root = snapshotFixture(observer)
+    let cleanup!: () => void
+    const f = fake(root, { onSwitch: () => {
+      if (drift === "route") (f.context.ui.router as any).current = () => ({ type: "home" })
+      if (drift === "head") observer.configure(root, "2".repeat(40))
+      if (drift === "dirty") observer.configure(root, HEAD, ["old.txt"])
+      if (drift === "cleanup") cleanup()
+    } })
+    cleanup = await activate(f)
+    const view = mount(f)
+    view.click(0)
+    await settleUntil(() => drift === "cleanup" ? f.calls.switched.length > 0 : f.calls.toasts.length > 0)
+    expect(f.calls.switched).toEqual(["slot-child"])
+    expect(f.calls.prompted).toEqual([])
+    view.click(0)
+    expect(f.calls.switched).toHaveLength(1)
+    cleanup(); view.dispose()
+  }
+})
+
+snapshotTest("resize during an awaited post-switch read invalidates stale layout before prompt admission", async (observer) => {
+  const root = snapshotFixture(observer)
+  const f = fake(root)
+  let release!: () => void
+  let waiting = false
+  const paused = new Promise<void>((resolve) => { release = resolve })
+  const host = f.context as any
+  const get = host.client.session.get
+  host.client.session.get = async (input: any) => {
+    const result = await get(input)
+    if (f.calls.switched.length && !waiting) {
+      waiting = true
+      await paused
+    }
+    return result
+  }
+  const cleanup = await activate(f)
+  const view = mount(f)
+  view.click(0)
+  await settleUntil(() => waiting)
+  expect(f.calls.switched).toEqual(["slot-child"])
+  expect(view.mounted[0].width).toBe(120)
+  f.renderer.terminalWidth = 80
+  f.renderer.emit("resize")
+  // No completed frame: descendants still report the old usable width.
+  expect(view.mounted[0].width).toBe(120)
+  expect(f.calls.toasts.at(-1)).toContain("layout invalidated by terminal resize")
+  expect(f.calls.prompted).toEqual([])
+  release()
+  for (let i = 0; i < 2000; i++) await Promise.resolve()
+  expect(f.calls.prompted).toEqual([])
+  expect(f.calls.toasts.at(-1)).toContain("layout")
+  f.renderer.terminalWidth = 120
+  f.renderer.emit("resize")
+  f.renderer.emit("frame")
+  view.click(0)
+  expect(f.calls.switched).toEqual(["slot-child"])
+  expect(f.calls.prompted).toEqual([])
+  cleanup(); view.dispose()
+})
+
+snapshotTest("switch identity, parent evidence, and slot results remain bound after implementation", async (observer) => {
+  for (const mutation of ["switch-id", "switch-time", "switch-metadata", "parent", "planner", "permissions"] as const) {
+    const root = snapshotFixture(observer)
+    const f = fake(root, { decision: true, onPrompt: () => {
+      const marker = f.histories["slot-child"].find((item) => item.type === "agent-switched")
+      if (mutation === "switch-id") marker.id += "different"
+      if (mutation === "switch-time") marker.time.created++
+      if (mutation === "switch-metadata") marker.metadata = { altered: true }
+      if (mutation === "parent") f.histories.parent.push(user("extra", "continued"))
+      if (mutation === "planner") f.histories["planner-child"][1].content[0].text += " changed"
+      if (mutation === "permissions") f.sessions["slot-child"].permissions = [{ action: "edit", resource: "*", effect: "allow" }]
+    } })
+    await expect(implement(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow()
+    expect(f.calls.prompted).toHaveLength(1)
+  }
+})
+
+snapshotTest("publication and authorization reject drift at read, pagination, hydration, and admission boundaries", async (observer) => {
+  for (const boundary of ["get", "active", "inbox", "messages", "pending-sync", "hydrate"] as const) {
+    const root = snapshotFixture(observer)
+    let mutated = false
+    const f = fake(root, { onRead: (kind) => {
+      if (!mutated && kind === boundary) { mutated = true; observer.configure(root, HEAD, ["old.txt"]) }
+    } })
+    await expect(publication(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow()
+    expect(f.calls.switched).toEqual([])
+    expect(f.calls.prompted).toEqual([])
+  }
+})
+
+snapshotTest("expected synthetic, switch, and implementation events reconcile before RPC responses", async (observer) => {
+  const root = snapshotFixture(observer)
+  const f = fake(root, { events: true })
+  const cleanup = await activate(f)
+  const view = mount(f)
+  view.click(0)
+  await settleUntil(() => f.calls.toasts.length > 0)
+  expect(f.calls.toasts.at(-1)).toContain("Implementation gate complete")
+  expect(f.calls.prompted).toHaveLength(1)
+  cleanup(); view.dispose()
+})
+
+snapshotTest("unexpected native events and mismatched late switch echoes permanently invalidate", async (observer) => {
+  for (const event of [
+    { type: "session.permissions", data: { sessionID: "parent", permissions: [] } },
+    { type: "session.inbox.cancelled", data: { sessionID: "parent", inboxID: "different" } },
+    { type: "session.inbox.delivery.changed", data: { sessionID: "parent", inboxID: "different", delivery: "queue" } },
+    { type: "session.deleted", data: { sessionID: "planner-child" } },
+    { type: "session.inbox.enqueued", data: { sessionID: "slot-child", inboxID: "extra", item: { type: "user", delivery: "steer", payload: { text: "extra" } } } },
+  ]) {
+    const root = snapshotFixture(observer)
+    const f = fake(root)
+    const cleanup = await activate(f)
+    const view = mount(f)
+    f.emit({ id: "evt_interference", created: 20, ...event })
+    view.click(0)
+    expect(f.calls.switched).toEqual([])
+    expect(f.calls.prompted).toEqual([])
+    cleanup(); view.dispose()
+  }
+  const root = snapshotFixture(observer)
+  let injected = false
+  const f = fake(root, { onGet: (id) => {
+    if (id === "parent" && f.calls.switched.length && !injected) {
+      injected = true
+      f.emit({ type: "session.agent.selected", id: "evt_substituted", created: 50,
+        data: { sessionID: "slot-child", agent: "authorized_implementer", previous: "implementer_slot" } })
+    }
+  } })
+  const cleanup = await activate(f)
+  const view = mount(f)
+  view.click(0)
+  await settleUntil(() => f.calls.toasts.length > 0)
+  expect(f.calls.prompted).toEqual([])
+  cleanup(); view.dispose()
+})
+
+snapshotTest("cleanup revokes an awaited publication and replacement activation cannot inherit authority", async (observer) => {
+  const root = snapshotFixture(observer)
+  let release!: () => void
+  let waiting = false
+  const paused = new Promise<void>((resolve) => { release = resolve })
+  const f = fake(root, { onWait: async () => { waiting = true; await paused } })
+  const cleanup = await plugin.setup(f.context)
+  f.emit(f.created())
+  f.emit({ type: "session.execution.succeeded", id: "evt_completed", data: { sessionID: "parent" } })
+  expect(waiting).toBe(true)
+  if (typeof cleanup === "function") cleanup()
+  release()
+  for (let i = 0; i < 100; i++) await Promise.resolve()
+  expect(f.calls.synthetic).toEqual([])
+  expect(f.calls.toasts).toEqual([])
+  const replacement = await plugin.setup(f.context)
+  f.emit({ type: "session.execution.succeeded", id: "evt_completed", data: { sessionID: "parent" } })
+  expect(f.slots).toEqual([])
+  expect(f.calls.synthetic).toEqual([])
+  if (typeof replacement === "function") replacement()
+})
+
+snapshotTest("implementation result is frozen across the final parent/Planner await barrier", async (observer) => {
+  const root = snapshotFixture(observer)
+  let parentReads = 0
+  const f = fake(root, { decision: true, onGet: (id) => {
+    if (id === "parent" && f.calls.prompted.length && ++parentReads === 2)
+      f.histories["slot-child"].find((item) => item.id === "implementer-final").content[0].text += " changed"
+  } })
+  await expect(implement(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow("result transcript changed")
+  expect(f.calls.prompted).toHaveLength(1)
+})
+
+snapshotTest("wrong or unclaimed decision ownership cannot grant or switch", async (observer) => {
+  const root = snapshotFixture(observer)
+  const f = fake(root)
+  const published = await publication(f.context, f.generation, observeGit(root), "parent", { directory: root })
+  await expect(authorizePublishedAttempt(f.context, published, f.guard)).rejects.toThrow("decision owner")
+  f.claim(published)
+  await expect(authorizePublishedAttempt(f.context, { ...published }, f.guard)).rejects.toThrow("decision owner")
+  expect(f.calls.switched).toEqual([])
+  expect(f.calls.prompted).toEqual([])
+})
+
+snapshotTest("only a fresh successful root publishes, and duplicate completions never publish again", async (observer) => {
+  for (const outcome of ["succeeded", "failed", "interrupted"] as const) {
+    const root = snapshotFixture(observer)
+    const f = fake(root)
+    const cleanup = await plugin.setup(f.context)
+    const completed = { type: "session.execution.succeeded", id: "evt_completed", data: { sessionID: "parent" } }
+    f.emit(completed)
+    expect(f.calls.synthetic).toEqual([])
+    f.sessions.parent.time.created = Date.now() + 10
+    f.emit(f.created())
+    f.emit({ ...completed, type: `session.execution.${outcome}`, id: outcome === "succeeded" ? completed.id : "evt_failed" })
+    f.emit(completed)
+    f.emit(completed)
+    await settleUntil(() => f.slots.length > 0 || f.calls.toasts.length > 0)
+    expect(f.calls.synthetic).toHaveLength(outcome === "succeeded" ? 1 : 0)
+    expect(f.calls.switched).toEqual([])
+    expect(f.calls.prompted).toEqual([])
+    if (typeof cleanup === "function") cleanup()
+  }
+})
+
+snapshotTest("pointer controls wait for completed layout and reject clipped labels or hidden surfaces", async (observer) => {
+  for (const layout of ["partial", "button-clipped", "hidden", "path-clipped"] as const) {
+    const root = snapshotFixture(observer)
+    const f = fake(root)
+    const cleanup = await activate(f)
+    const view = mount(f, "parent", false)
+    view.click(0)
+    expect(f.calls.switched).toEqual([])
+    expect(f.calls.toasts).toEqual([])
+    if (layout === "button-clipped") view.buttons[0].width = 3
+    if (layout === "hidden") view.mounted[0].visible = false
+    if (layout === "path-clipped") view.mounted.find((node) => node.type === "text" && node.wrapMode === "char").width = 1
+    f.renderer.emit("frame")
+    if (layout === "partial") {
+      view.click(1)
+      expect(f.calls.toasts).toEqual(["Cancelled — no implementation admitted"])
+    } else {
+      view.click(0)
+      expect(f.calls.toasts.at(-1)).toContain("surface")
+      expect(f.calls.switched).toEqual([])
+    }
+    cleanup(); view.dispose()
+  }
+})
+
+snapshotTest("reactive navigation loss during a publication await latches before returning to root", async (observer) => {
+  const root = snapshotFixture(observer)
+  let release!: () => void
+  let waiting = false
+  const paused = new Promise<void>((resolve) => { release = resolve })
+  const f = fake(root, { onWait: async () => { waiting = true; await paused } })
+  const [route, setRoute] = (await import("solid-js")).createSignal<any>({ type: "session", sessionID: "parent" })
+  ;(f.context.ui.router as any).current = route
+  const cleanup = await plugin.setup(f.context)
+  f.emit(f.created())
+  f.emit({ type: "session.execution.succeeded", id: "evt_completed", data: { sessionID: "parent" } })
+  expect(waiting).toBe(true)
+  setRoute({ type: "home" })
+  expect(f.calls.toasts.at(-1)).toContain("Root view")
+  setRoute({ type: "session", sessionID: "parent" })
+  release()
+  for (let i = 0; i < 100; i++) await Promise.resolve()
+  expect(f.calls.synthetic).toEqual([])
+  expect(f.calls.switched).toEqual([])
+  if (typeof cleanup === "function") cleanup()
 })

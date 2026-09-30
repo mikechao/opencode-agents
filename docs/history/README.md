@@ -46,12 +46,18 @@ Earlier contrary handoff analysis remains evidence of the rejected alternatives.
 
 ## Authorization UX
 
+[Published-Plan authorization investigation](published-plan-authorization-investigation.md)
+is accepted, non-normative authorization design evidence for the implemented
+pending-publication verifier, clean-before-bootstrap eligibility, local
+pointer decision, and same-slot implementation bridge. It is not a current
+status document or a substitute for CAP.
+
 [Question/Form reassessment](native-question-cap-reassessment.md),
 [non-modal investigation](native-nonmodal-authorization-investigation.md), and
 [hybrid decision](hybrid-authorization-ux-decision.md) record rejection of
 model-mediated Question/Form authorization, feasibility of local callbacks, and
-the selected future compact local authorization surface now summarized in
-current orchestration.
+the selected compact local authorization surface implemented in current
+orchestration.
 
 ## Plan presentation / projection
 

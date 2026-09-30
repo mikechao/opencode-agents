@@ -7,7 +7,9 @@
     "strict": true,
     "noEmit": true,
     "skipLibCheck": true,
-    "allowImportingTsExtensions": true
+    "allowImportingTsExtensions": true,
+    "jsx": "preserve",
+    "jsxImportSource": "@opentui/solid"
   },
-  "include": [".opencode/plugins/opencode-agents/**/*.ts", "src/**/*.ts", "test/**/*.ts"]
+  "include": [".opencode/plugins/opencode-agents/**/*.ts", ".opencode/plugins/opencode-agents/**/*.tsx", "src/**/*.ts", "test/**/*.ts"]
 }
