@@ -7,7 +7,7 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@opencode/plugin": "2.0.20"
+    "@opencode/plugin": "2.0.21"
   },
   "devDependencies": {
     "@opentui/core": "0.5.12",
