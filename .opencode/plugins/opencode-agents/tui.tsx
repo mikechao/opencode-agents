@@ -10,8 +10,13 @@ import {
 } from "../../../src/attempt.ts"
 
 const dirtyStatus = "Planning only — worktree was dirty when this attempt started. Start a new attempt from a clean worktree to enable implementation."
+const authorizationQuestion = "Do you authorize this plan for implementation?"
 const columns = (text: string) => [...text].reduce((size, char) => size + (char.codePointAt(0)! > 127 ? 2 : 1), 0)
 const same = (a: unknown, b: unknown) => exactEvidence(a) === exactEvidence(b)
+
+type Presentation =
+  | { kind: "pending"; published: PublishedAttempt }
+  | { kind: "status"; message: string }
 
 const plugin: Definition = {
   id: "opencode-agents",
@@ -27,6 +32,7 @@ const plugin: Definition = {
       }
     } catch { /* Publication requires a valid initial observation. */ }
     let creation: Extract<OpenCodeEvent, { type: "session.created" }> | undefined
+    let rootSessionID: string | undefined
     let attempted = false
     let closed = false
     let completionID: string | undefined
@@ -35,21 +41,17 @@ const plugin: Definition = {
     let mounted = false
     let frame: Renderable | undefined
     let layoutViewport: { width: number; height: number } | undefined
-    let removeStrip: (() => void) | undefined
+    let removePresentation: (() => void) | undefined
     let switchEcho: unknown
     let publicationEcho: unknown
     let promptEnqueued = false
     let promptDelivered = false
     let executionStarted = false
     let executionSucceeded = false
-    const [visible, setVisible] = createSignal(true)
+    const [presentation, setPresentation] = createSignal<Presentation>()
     const [layoutRevision, setLayoutRevision] = createSignal(0)
-    const removeControls = () => {
-      const remove = removeStrip
-      removeStrip = undefined
-      remove?.()
-    }
-    const discard = () => {
+    const closeAuthority = () => {
+      if (closed) return
       closed = true
       pending = undefined
       deciding = undefined
@@ -59,22 +61,27 @@ const plugin: Definition = {
       guard.switchRecord = undefined
       guard.switching = undefined
       guard.prompt = undefined
+      guard.dispatched = undefined
       switchEcho = undefined
       publicationEcho = undefined
-      setVisible(false)
-      removeControls()
+      creation = undefined
+      completionID = undefined
     }
     const present = (title: string, message: string) => {
       if (generation.revoked) return
-      try { context.ui.toast.show({ title, message, sessionID: creation?.data.sessionID, variant: title === "STOP" ? "error" : "info" }) }
-      catch { discard() }
+      try { context.ui.toast.show({ title, message, sessionID: rootSessionID, variant: title === "STOP" ? "error" : "info" }) }
+      catch { /* The persistent composer status remains the trusted outcome. */ }
     }
     const terminate = (error: unknown) => {
       if (closed || generation.revoked) return
       const mayHaveStarted = guard.dispatched
-      discard()
       const reason = error instanceof Error ? error.message : String(error)
-      present("STOP", mayHaveStarted ? `${reason}. Implementation may have started; no prompt will be resent.` : reason)
+      const message = mayHaveStarted
+        ? `STOP — Implementation may already have started; no prompt will be resent. ${reason}`
+        : `STOP — Implementation was not admitted; no implementation prompt was dispatched. ${reason}`
+      closeAuthority()
+      if (rootSessionID) showStatus(message)
+      present("STOP", message)
     }
     const rootSelected = () => {
       const route = context.ui.router.current()
@@ -88,7 +95,7 @@ const plugin: Definition = {
       for (let node: Renderable | null = frame; node; node = node.parent) if (!node.visible || node.isDestroyed) return false
       const width = frame.width
       return width <= layoutViewport.width && columns(`Worktree: ${JSON.stringify(published.candidate.root)}`) <= width * 2 &&
-        columns(labels(published)) + 23 <= width
+        columns(binding(published)) <= width && columns(authorizationQuestion) <= width
     }
     const guard: DecisionOwner = {
       assertDecision(captured) {
@@ -107,7 +114,24 @@ const plugin: Definition = {
         if (guard.publication && publicationEcho && !same(guard.publication, publicationEcho)) throw new Error("Publication echo identity changed")
       },
     }
-    const labels = (published: PublishedAttempt) => `Plan ${published.publication.payload.metadata!.planHash} · HEAD ${published.candidate.head.slice(0, 12)} · Implementation only`
+    const binding = (published: PublishedAttempt) => `Plan ${published.publication.payload.metadata!.planHash} · HEAD ${published.candidate.head.slice(0, 12)}`
+    const ensurePresentation = (sessionID: string) => {
+      rootSessionID = sessionID
+      if (removePresentation) return
+      removePresentation = context.ui.slot({ append: "session.composer.top", render: (input) =>
+        <Show when={input.sessionID === rootSessionID}>
+          <Show when={presentation()} keyed>
+            {(state) => state.kind === "pending"
+              ? <DecisionStrip published={state.published} />
+              : <text wrapMode="char">{state.message}</text>}
+          </Show>
+        </Show> })
+    }
+    const showStatus = (message: string) => {
+      if (!rootSessionID) return
+      ensurePresentation(rootSessionID)
+      setPresentation({ kind: "status", message })
+    }
     const decide = (captured: PublishedAttempt, decision: "authorize" | "cancel") => {
       if (closed || generation.revoked || pending !== captured || deciding || generation.busy) return
       try {
@@ -115,14 +139,21 @@ const plugin: Definition = {
         // Run-to-completion claims the exact object before any asynchronous work.
         pending = undefined
         deciding = captured
-        removeControls()
         if (decision === "cancel") {
-          discard()
-          present("Cancelled", "Cancelled — no implementation admitted")
+          const message = "Cancelled — no implementation admitted"
+          closeAuthority()
+          showStatus(message)
+          present("Cancelled", message)
           return
         }
+        setPresentation({ kind: "status", message: "Authorization claimed — implementation admission in progress…" })
         void authorizePublishedAttempt(context, captured, guard).then(
-          (message) => { guard.assertCurrent(); discard(); present("Implementation gate", message) },
+          (message) => {
+            guard.assertCurrent()
+            closeAuthority()
+            showStatus(message)
+            present("Implementation gate", message)
+          },
         ).catch(terminate)
       } catch (error) { terminate(error) }
     }
@@ -137,6 +168,8 @@ const plugin: Definition = {
       let authorizeButton: Renderable | undefined
       let cancelButton: Renderable | undefined
       let worktreeText: Renderable | undefined
+      let bindingText: Renderable | undefined
+      let questionText: Renderable | undefined
       const [ready, setReady] = createSignal(false)
       const [width, setWidth] = createSignal(context.renderer.terminalWidth)
       const rootLines = () => Math.min(2, Math.max(1, Math.ceil(columns(`Worktree: ${JSON.stringify(captured.candidate.root)}`) / Math.max(1, width()))))
@@ -159,8 +192,10 @@ const plugin: Definition = {
         const inViewport = (node: Renderable | undefined, height = 1) => node && !node.isDestroyed && node.visible && node.width > 0 && node.height === height &&
           node.screenX >= 0 && node.screenY >= 0 && node.screenX + node.width <= context.renderer.terminalWidth &&
           node.screenY + node.height <= context.renderer.terminalHeight
-        if (!rootSelected() || !surfaceUsable(captured) || rootLines() > 2 || surface.height > 3 ||
+        if (!rootSelected() || !surfaceUsable(captured) || rootLines() > 2 || surface.height !== rootLines() + 3 ||
             !inViewport(worktreeText, rootLines()) || columns(`Worktree: ${JSON.stringify(captured.candidate.root)}`) > worktreeText!.width * rootLines() ||
+            !inViewport(bindingText) || columns(binding(captured)) > bindingText!.width ||
+            !inViewport(questionText) || columns(authorizationQuestion) > questionText!.width ||
             !inViewport(authorizeButton) || authorizeButton!.width < 11 || !inViewport(cancelButton) || cancelButton!.width < 8) {
           terminate(new Error("Authorization surface is unreadable or unavailable"))
           return
@@ -173,18 +208,16 @@ const plugin: Definition = {
         context.renderer.off("frame", completedFrame)
         mounted = false
         if (pending === captured && !closed) {
-          // The view is already disposing. Close ownership synchronously, then
-          // unregister outside this cleanup to avoid recursive Solid disposal.
-          const unregister = removeStrip
-          removeStrip = undefined
+          // The view is already disposing. Close ownership synchronously while
+          // leaving the root-scoped status contribution registered.
           terminate(new Error("Authorization view was lost"))
-          queueMicrotask(() => unregister?.())
         }
       })
-      return <box ref={(node) => { surface = node }} flexDirection="column" flexShrink={0} height={rootLines() + 1}>
+      return <box ref={(node) => { surface = node }} flexDirection="column" flexShrink={0} height={rootLines() + 3}>
         <text ref={(node) => { worktreeText = node }} height={rootLines()} wrapMode="char">{`Worktree: ${JSON.stringify(captured.candidate.root)}`}</text>
+        <text ref={(node) => { bindingText = node }} height={1} wrapMode="char">{binding(captured)}</text>
+        <text ref={(node) => { questionText = node }} height={1} wrapMode="char">{authorizationQuestion}</text>
         <box flexDirection="row" height={1}>
-          <text>{labels(captured)} </text>
           <box ref={(node) => { authorizeButton = node }} paddingX={1}
             onMouseUp={(event) => { if (ready()) mouseDecision(captured, "authorize", event) }}>
             <text fg={context.theme.text.feedback.info.base}>Authorize</text>
@@ -200,6 +233,7 @@ const plugin: Definition = {
       if (generation.revoked || closed || !baseline || attempted || creation || event.data.parentID ||
           event.data.agent !== "orchestrator" || !same(event.data.location, location)) return
       creation = structuredClone(event)
+      rootSessionID = event.data.sessionID
     })
     const removeCompleted = context.data.on("session.execution.succeeded", (event) => {
       if (generation.revoked || closed || attempted || !baseline || !creation || event.data.sessionID !== creation.data.sessionID) return
@@ -211,17 +245,16 @@ const plugin: Definition = {
         guard.assertCurrent()
         if (!initiallyAuthorizable(activation)) {
           const message = baseline!.paths.length ? dirtyStatus : "Planning only — clean-before-bootstrap ordering could not be proven. Start a new attempt from a clean worktree to enable implementation."
-          const rootID = published.bound.parentID
-          discard()
-          removeStrip = context.ui.slot({ append: "session.composer.top", render: (input) =>
-            <Show when={input.sessionID === rootID}><text>{message}</text></Show> })
+          closeAuthority()
+          ensurePresentation(published.bound.parentID)
+          setPresentation({ kind: "status", message })
           return
         }
         requireFresh(observeGit(location.directory!, baseline), baseline!)
         pending = published
         setLayoutRevision((value) => value + 1)
-        removeStrip = context.ui.slot({ append: "session.composer.top", render: (input) =>
-          <Show when={visible() && input.sessionID === published.bound.parentID}><DecisionStrip published={published} /></Show> })
+        ensurePresentation(published.bound.parentID)
+        setPresentation({ kind: "pending", published })
       }).catch(terminate)
     })
     // Notifications revoke on receipt; server read barriers independently catch delayed events.
@@ -303,7 +336,12 @@ const plugin: Definition = {
     })
     return () => {
       generation.revoked = true
-      discard()
+      closeAuthority()
+      setPresentation(undefined)
+      const remove = removePresentation
+      removePresentation = undefined
+      remove?.()
+      rootSessionID = undefined
       creation = undefined
       frame = undefined
       removeCreated()

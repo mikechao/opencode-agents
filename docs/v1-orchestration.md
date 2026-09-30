@@ -19,8 +19,8 @@ activation Git observation + completion time
 → frozen IntentCandidate C
 → exact synthetic admission S, delivery:steer, resume:false
 → root remains idle → exact pending publication verification
-→ eligible clean-initial attempt: compact root-only Authorize / Cancel strip
-→ local Authorize claims exact PublishedAttempt synchronously
+→ eligible clean-initial attempt: root-only question, binding context, Authorize / Cancel
+→ local Authorize claims exact PublishedAttempt synchronously and shows persistent progress
 → fresh publication/native/Git/liveness verification
 → one-use intent grant
 → same retained slot switches to authorized_implementer
@@ -29,8 +29,12 @@ activation Git observation + completion time
 → consume grant → immediately dispatch one frozen implementation prompt
 → exact admitted input / switch / result binding
 → unchanged HEAD + exact Git changed-path scope gate
-→ STOP before Reviewer / Commit
+→ persistent trusted gate result: STOP before Reviewer / Commit
 ```
+
+Cancel and fail-closed STOP also leave persistent root-scoped status. The
+published Plan synthetic remains immutable retained evidence throughout; the
+separate composer-top status is presentation only and carries no CAP authority.
 
 There is one authorization path. `runImplementationAttempt()` and its independent
 modal confirmation have been removed. Reviewer, reviewed-target construction,
@@ -152,27 +156,39 @@ restoring any authority.
 ## Local decision and lifetime
 
 The plugin appends one reactive `session.composer.top` claim for the exact root.
-The strip shows the complete canonical worktree, Plan/HEAD prefixes,
-“Implementation only,” Authorize and Cancel. It occupies at most three rows:
-worktree at most two wrapped rows and controls on one row. It requires an
-80×24-or-larger terminal and visible, unclipped worktree/control geometry.
-Controls become live only after a completed renderer frame proves the layout.
-Unusable layout, lost view, or later shrink permanently ends the pending
-authorization. In the current implementation, resizing during a claimed
-pre-admission continuation also stops before prompt dispatch; restoring the
-previous size does not restore authorization. The full Plan is not duplicated
-in the strip.
+While pending, it shows the complete canonical worktree, Plan hash and bound
+HEAD prefix, the question “Do you authorize this plan for implementation?”,
+and Authorize / Cancel on separate lines. The question and controls are not
+concatenated with the binding row. The surface occupies at most five rows:
+worktree at most two wrapped rows, then one row each for binding, question, and
+controls. It requires an 80×24-or-larger terminal and visible, unclipped
+worktree, binding, question, and control geometry. Controls become live only
+after a completed renderer frame proves the layout. Unusable layout, lost view,
+or later shrink permanently ends the pending authorization. In the current
+implementation, resizing during a claimed pre-admission continuation also
+stops before prompt dispatch; restoring the previous size does not restore
+authorization. The full Plan is not duplicated in the composer surface.
 
 Direct left-pointer handlers call an unregistered closure. There is no
 keyboard authorization, Form/Question, slash/palette action, keymap command ID,
 RPC route, session message, or model-callable tool for the decision. Authorize
 and Cancel synchronously claim the exact pending object and remove controls
-before asynchronous work. Duplicates, stale handlers, and racing decisions are
-inert after the first claim. The click is a decision, not a grant.
+before asynchronous work. Authorize replaces them with persistent
+`Authorization claimed — implementation admission in progress…` status while
+the existing authorization bridge runs. This wording does not claim that the
+implementation prompt has been dispatched. Duplicates, stale handlers, and
+racing decisions are inert after the first claim. The click is a decision, not
+a grant.
 
-Cancel clears authority-capable ownership, keeps the Plan readable, and reports
-`Cancelled — no implementation admitted`; it creates no grant, switch or prompt.
-Dirty/ordering statuses retain only presentation data and have no callbacks.
+Cancel clears authority-capable ownership and leaves persistent
+`Cancelled — no implementation admitted` status; it creates no grant, switch
+or prompt. Success leaves the trusted implementation-gate result visible,
+including unchanged bound HEAD, resulting paths, and STOP before Reviewer /
+Commit. Fail-closed STOP remains visible with trusted dispatch-state wording:
+before dispatch it states that implementation was not admitted and no prompt
+was dispatched; after dispatch it states that implementation may already have
+started and no prompt will be resent. Toasts are supplemental. Dirty/ordering
+statuses retain only presentation data and have no callbacks.
 
 Observers are installed before publication. Only exact expected synthetic,
 switch and implementation events are admitted, with RPC/history reconciliation.
@@ -185,9 +201,12 @@ notifications. There is no broad busy-period event exemption.
 Every awaited operation/page is followed by owner/generation/location and fresh
 Git checks. Publication uses baseline path stability, pre-admission uses clean
 freshness, and post-dispatch preserves root/HEAD without requiring cleanliness.
-Cleanup synchronously revokes first, discards private ownership, then removes
-contributions/subscriptions. Old promises cannot grant, dispatch, or report a
-passing gate after revocation. New activations inherit no authority.
+Authority closure clears the retained attempt, decision, guard, and echo
+references independently of the status surface. The status retains only
+trusted display text, no callback or PublishedAttempt. Plugin cleanup
+synchronously revokes first, clears presentation, then removes the slot and
+subscriptions. Old promises cannot grant, dispatch, or report a passing gate
+after revocation. New activations inherit no authority.
 
 ## Same-slot implementation and terminal behavior
 
@@ -214,9 +233,10 @@ The complete result suffix is retained and compared across later parent/Planner
 awaits. Root/Planner/publication evidence remains unchanged.
 
 Fresh Git observation after result verification requires unchanged canonical
-root/HEAD and exact changed-path membership in C's file set. The terminal gate
-reports resulting paths and STOP before Reviewer / Commit. Ordinary Git limits,
-including exclusion of ignored untracked files, remain those defined by CAP.
+root/HEAD and exact changed-path membership in C's file set. The trusted gate
+result remains visible in the root composer-top surface and reports resulting
+paths and STOP before Reviewer / Commit. Ordinary Git limits, including
+exclusion of ignored untracked files, remain those defined by CAP.
 
 Any failed or ambiguous switch stops without retry/replacement; the role may
 already have switched. Ambiguous, rejected or malformed prompt admission stops
@@ -232,9 +252,9 @@ CAP/session/callback sequencing uses pure tests and test-scoped trusted host,
 observer and JSX handler doubles. Real Git remains confined to production Git
 boundary cases with immutable seed/private copies. Production freshness is not
 cached or weakened for test speed. The diagnostic profiler follows the new
-published authorization entry. After the Solid-store location snapshot fix,
-typecheck passed, the full suite passed (63 tests), and focused location-proxy
-regressions passed.
+published authorization entry. The full baseline suite had 63 tests. This
+presentation change passes typecheck, the focused attempt suite (50 tests),
+and the full suite (65 tests).
 
 ### Live PASS evidence
 
@@ -265,14 +285,6 @@ Live OpenCode 2.0.20 dogfood verified the following:
 
 ### Dogfood findings and tracked follow-ups
 
-- Issue #2, `[Feat]: Clarify published-Plan authorization strip copy`: the
-  current strip is too terse. Desired copy should explicitly ask something
-  like “Do you authorize this plan for implementation?”
-- Issue #3, `[Feat]: Show persistent post-authorization implementation status`:
-  after Authorize, Cancel, or STOP, controls disappear and a transient toast
-  carries most of the terminal state. The immutable Plan can remain visibly
-  stale, including saying that no implementation has been authorized. A
-  persistent trusted, presentation-only lifecycle/result state is desired.
 - Issue #4, `[Feat]: Allow terminal resize after authorization claim`: current
   resize behavior permanently stops a claimed attempt before prompt dispatch.
   Dogfood showed this is mechanically safe but stricter than necessary. Desired
@@ -302,6 +314,12 @@ exactly one trusted implementation prompt; exact-scope rejection for an
 out-of-scope implementation result; and longer or scrollable Plan presentation
 with a compact authorization surface under realistic content. Keyboard
 authorization is unimplemented and out of this milestone.
+
+The issue #2/#3 copy and persistent status lifecycle are covered by automated
+callback/layout doubles but have not yet been rechecked in live OpenCode 2.0.20.
+Live verification should confirm the pending question fits, the status remains
+visible after Authorize and Cancel, completion shows the trusted gate result,
+and pre-dispatch versus post-dispatch STOP copy matches the actual outcome.
 
 One fresh root and one attempt per activation remain the milestone's limit.
 Later work establishes independent Reviewer, an exact reviewed target, and

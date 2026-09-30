@@ -758,7 +758,8 @@ function mount(f: ReturnType<typeof fake>, sessionID = "parent", completeLayout 
   if (completeLayout) f.renderer.emit("frame")
   const buttons = mounted.filter((node) => node.onMouseUp)
   const click = (index: number, button = 0) => buttons[index]?.onMouseUp({ button, stopPropagation() {} })
-  return { view, mounted, buttons, click, dispose }
+  const text = () => elements.slice(begin).filter((node) => node.type === "literal").map((node) => String(node.value)).join(" ")
+  return { view, mounted, buttons, click, text, dispose }
 }
 
 test("location snapshots detach and freeze the identity fields of non-cloneable host info", () => {
@@ -825,7 +826,11 @@ snapshotTest("TUI startup location evidence survives proxy mutation and rejects 
     await settleUntil(() => f.calls.toasts.length > 0)
     expect(f.calls.toasts.at(-1)).toContain("TUI location changed")
     expect(f.calls.synthetic).toEqual([])
-    expect(f.slots).toEqual([])
+    expect(f.slots).toHaveLength(1)
+    const view = mount(f)
+    expect(view.buttons).toEqual([])
+    expect(view.text()).toContain("STOP — Implementation was not admitted")
+    view.dispose()
     expect(f.calls.switched).toEqual([])
     expect(f.calls.prompted).toEqual([])
     if (typeof cleanup === "function") cleanup()
@@ -899,19 +904,34 @@ snapshotTest("TUI pointer authorization claims synchronously and dispatches one 
   const f = fake(root, { onPrompt: () => observer.configure(root, HEAD, ["old.txt"]) })
   const cleanup = await activate(f)
   const view = mount(f)
+  const retainedCache = structuredClone(f.cache.parent)
+  const retainedPublication = structuredClone(f.inboxes.parent)
+  const planHash = f.inboxes.parent[0].payload.metadata.planHash
   expect(view.buttons).toHaveLength(2)
+  expect(view.text()).toContain("Do you authorize this plan for implementation?")
+  expect(view.text()).toContain(`Worktree: ${JSON.stringify(root)}`)
+  expect(view.text()).toContain(`Plan ${planHash} · HEAD ${HEAD.slice(0, 12)}`)
+  expect(view.text()).toContain("Authorize")
+  expect(view.text()).toContain("Cancel")
   view.click(0, 2)
   expect(f.calls.switched).toEqual([])
   view.click(0)
-  expect(f.slots[0].removed).toBe(true)
+  expect(f.slots[0].removed).toBe(false)
+  expect(view.text()).toContain("Authorization claimed — implementation admission in progress…")
   view.click(0)
   view.click(1)
   await settleUntil(() => f.calls.toasts.length > 0)
   expect(f.calls.toasts.at(-1)).toContain("STOP before Reviewer / Commit")
+  expect(view.text()).toContain("Implementation gate complete")
+  expect(view.text()).toContain(`HEAD ${HEAD} unchanged`)
+  expect(view.text()).toContain("Resulting paths (1): old.txt")
+  expect(view.text()).toContain("STOP before Reviewer / Commit")
   expect(f.calls.switched).toEqual(["slot-child"])
   expect(f.calls.prompted).toHaveLength(1)
   expect(f.calls.prompted[0].text).toContain(`Bound HEAD: ${HEAD}`)
   expect(f.inboxes.parent).toHaveLength(1)
+  expect(f.cache.parent).toEqual(retainedCache)
+  expect(f.inboxes.parent).toEqual(retainedPublication)
   cleanup(); view.dispose()
   expect(f.handlers.size).toBe(0)
   expect(f.listeners.size).toBe(0)
@@ -923,12 +943,51 @@ snapshotTest("Cancel wins once, keeps the Plan, and stale Authorize stays inert"
   const cleanup = await activate(f)
   const view = mount(f)
   const plan = structuredClone(f.cache.parent)
+  const publication = structuredClone(f.inboxes.parent)
   view.click(1); view.click(0); view.click(1)
   expect(f.calls.toasts).toEqual(["Cancelled — no implementation admitted"])
+  expect(view.text()).toContain("Cancelled — no implementation admitted")
   expect(f.calls.switched).toEqual([])
   expect(f.calls.prompted).toEqual([])
   expect(f.cache.parent).toEqual(plan)
   expect(f.inboxes.parent).toHaveLength(1)
+  expect(f.inboxes.parent).toEqual(publication)
+  cleanup(); view.dispose()
+})
+
+snapshotTest("trusted STOP status persists before dispatch and keeps the Plan unchanged", async (observer) => {
+  const root = snapshotFixture(observer)
+  const f = fake(root)
+  const cleanup = await activate(f)
+  const view = mount(f)
+  const retainedCache = structuredClone(f.cache.parent)
+  const retainedPublication = structuredClone(f.inboxes.parent)
+  f.emit({ type: "session.execution.started", id: "evt_unexpected", data: { sessionID: "parent" } })
+  expect(view.text()).toContain("STOP — Implementation was not admitted; no implementation prompt was dispatched.")
+  expect(f.calls.switched).toEqual([])
+  expect(f.calls.prompted).toEqual([])
+  expect(f.cache.parent).toEqual(retainedCache)
+  expect(f.inboxes.parent).toEqual(retainedPublication)
+  view.click(0)
+  expect(f.calls.switched).toEqual([])
+  expect(f.calls.prompted).toEqual([])
+  cleanup(); view.dispose()
+})
+
+snapshotTest("trusted STOP status after dispatch warns implementation may have started without resending", async (observer) => {
+  const root = snapshotFixture(observer)
+  const f = fake(root, { promptError: true })
+  const cleanup = await activate(f)
+  const view = mount(f)
+  const retainedCache = structuredClone(f.cache.parent)
+  const retainedPublication = structuredClone(f.inboxes.parent)
+  view.click(0)
+  expect(view.text()).toContain("Authorization claimed — implementation admission in progress…")
+  await settleUntil(() => f.calls.toasts.length > 0)
+  expect(view.text()).toContain("STOP — Implementation may already have started; no prompt will be resent.")
+  expect(f.calls.prompted).toHaveLength(1)
+  expect(f.cache.parent).toEqual(retainedCache)
+  expect(f.inboxes.parent).toEqual(retainedPublication)
   cleanup(); view.dispose()
 })
 
@@ -976,8 +1035,12 @@ snapshotTest("root wake during publication permanently stops before installing c
     return admitted
   }
   const cleanup = await activate(f)
-  expect(f.slots).toEqual([])
+  expect(f.slots).toHaveLength(1)
   expect(f.calls.toasts.at(-1)).toContain("Unexpected session.execution.started")
+  const view = mount(f)
+  expect(view.buttons).toEqual([])
+  expect(view.text()).toContain("STOP — Implementation was not admitted")
+  view.dispose()
   expect(f.calls.switched).toEqual([])
   cleanup()
 })
@@ -1054,6 +1117,7 @@ snapshotTest("resize during an awaited post-switch read invalidates stale layout
   // No completed frame: descendants still report the old usable width.
   expect(view.mounted[0].width).toBe(120)
   expect(f.calls.toasts.at(-1)).toContain("layout invalidated by terminal resize")
+  expect(view.text()).toContain("STOP — Implementation was not admitted; no implementation prompt was dispatched.")
   expect(f.calls.prompted).toEqual([])
   release()
   for (let i = 0; i < 2000; i++) await Promise.resolve()
@@ -1210,8 +1274,8 @@ snapshotTest("only a fresh successful root publishes, and duplicate completions 
   }
 })
 
-snapshotTest("pointer controls wait for completed layout and reject clipped labels or hidden surfaces", async (observer) => {
-  for (const layout of ["partial", "button-clipped", "hidden", "path-clipped"] as const) {
+snapshotTest("pointer controls wait for completed layout and reject clipped decision copy or hidden surfaces", async (observer) => {
+  for (const layout of ["partial", "button-clipped", "hidden", "path-clipped", "binding-clipped", "question-clipped"] as const) {
     const root = snapshotFixture(observer)
     const f = fake(root)
     const cleanup = await activate(f)
@@ -1221,7 +1285,10 @@ snapshotTest("pointer controls wait for completed layout and reject clipped labe
     expect(f.calls.toasts).toEqual([])
     if (layout === "button-clipped") view.buttons[0].width = 3
     if (layout === "hidden") view.mounted[0].visible = false
-    if (layout === "path-clipped") view.mounted.find((node) => node.type === "text" && node.wrapMode === "char").width = 1
+    const copy = view.mounted.filter((node) => node.type === "text" && node.wrapMode === "char")
+    if (layout === "path-clipped") copy[0].width = 1
+    if (layout === "binding-clipped") copy[1].width = 1
+    if (layout === "question-clipped") copy[2].width = 1
     f.renderer.emit("frame")
     if (layout === "partial") {
       view.click(1)
