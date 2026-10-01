@@ -9,13 +9,13 @@ invariants; [the charter](charter.md) owns purpose and scope. The accepted
 is non-normative design evidence, not current status.
 
 The live TUI implements trusted Plan publication, a direct local pointer
-decision, and same-slot implementation through the Git gate:
+decision, and post-authorization child creation through the Git gate:
 
 ```text
 activation Git observation + completion time
 → adopted fresh Orchestrator creation evidence
-→ fresh Planner child → fresh read-only implementer_slot child
-→ root completes → exact native histories H0 / HP / HS
+→ one fresh Planner child; no implementation child
+→ root completes → exact native histories H0 / HP + frozen root-selected model
 → frozen IntentCandidate C
 → exact synthetic admission S, delivery:steer, resume:false
 → root remains idle → exact pending publication verification
@@ -23,13 +23,14 @@ activation Git observation + completion time
 → exact root selected: transfer once to root-bound preparation; trusted revalidation + clean freshness
 → root-only question, binding context, Authorize / Cancel; fresh completed readable frame
 → local Authorize claims exact PublishedAttempt synchronously and shows persistent progress
-→ fresh publication/native/Git/liveness verification
+→ full pre-creation publication/native/model/policy/topology/Git/liveness verification
 → one-use intent grant
-→ same retained slot switches to authorized_implementer
-→ exact switch + unchanged parent / Planner / publication verification
+→ one empty session.import directly as authorized_implementer
+→ exact creation response + independent empty-child readback
+→ unchanged parent / Planner / publication / model / policy verification
 → final read + clean Git + liveness barrier
 → consume grant → immediately dispatch one frozen implementation prompt
-→ exact admitted input / switch / result binding
+→ exact admitted input / child identity / result binding
 → unchanged HEAD + exact Git changed-path scope gate
 → persistent trusted gate result: STOP before Reviewer / Commit
 ```
@@ -41,7 +42,7 @@ separate composer-top status is presentation only and carries no CAP authority.
 There is one authorization path. `runImplementationAttempt()` and its independent
 modal confirmation have been removed. Reviewer, reviewed-target construction,
 and Commit remain later work. Automated verification and focused live OpenCode
-2.0.20 dogfood have exercised the published-Plan authorization path; see
+2.0.20 dogfood exercised the earlier published-Plan authorization path; see
 Verification for the evidence and remaining live cases.
 
 Issue #4's pending-resize recovery, post-claim resize tolerance, and continued
@@ -55,7 +56,7 @@ the implementation HEAD recorded in [the issue #4 report](issue-4-live-dogfood.m
 | [proposal.ts](../src/proposal.ts) | Exact `{ intent, plan, files }` parsing/path validation; frozen candidate; deterministic encoding/digest and Plan rendering. |
 | [cap.ts](../src/cap.ts) | Generation liveness, process-local grant creation, and one-use consumption. |
 | [git.ts](../src/git.ts) | Canonical root/HEAD/ordinary changed-path observation; clean freshness and exact scope gates. |
-| [attempt.ts](../src/attempt.ts) | Activation/publication evidence, exact native and pending-publication verification, guarded authorization bridge, one same-slot executor, exact prompt/result binding. |
+| [attempt.ts](../src/attempt.ts) | Activation/publication evidence, exact native and pending-publication verification, guarded authorization bridge, one post-authorization empty-child executor, exact prompt/result binding. |
 
 The [TUI plugin](../.opencode/plugins/opencode-agents/tui.tsx) owns one activation,
 its private retained/pending/claimed references, local decision callbacks,
@@ -65,35 +66,47 @@ phase enum, retry counter, compatibility path, or recovery mechanism.
 
 ## Native roles and binding
 
-All four roles are host-loaded from [.opencode/agents](../.opencode/agents).
+All three roles are host-loaded from [.opencode/agents](../.opencode/agents).
 Rules start with deny-all; every binding rejects session permission overrides.
 
 | Role | Capabilities and contract |
 | --- | --- |
-| `orchestrator` | Primary; native delegation only to Planner and inert slot. No mutation, shell, session-control, MCP, question, or authorized-Implementer delegation. |
+| `orchestrator` | Primary; native delegation only to Planner. No mutation, shell, session-control, MCP, question, or authorized-Implementer delegation. |
 | `planner` | Fresh read/glob/grep-only child; returns the exact three-field JSON proposal. |
-| `implementer_slot` | Fresh read-only child; bootstrap must use no tools and return exactly `READY`. |
 | `authorized_implementer` | Hidden implementation role with read/glob/grep/edit/shell; delegation, session-control, execute, MCP and question remain denied. Explicit Git commit denials provide defense in depth. |
 
-For one plain root request, native calls are fresh, sequential, foreground
-Planner then slot. Each contains exactly `agent`, nonempty `description`, and
+For one plain root request, Orchestrator makes exactly one fresh foreground
+native Planner call. It contains exactly `agent`, nonempty `description`, and
 `prompt`; continuation, model override and background arguments are rejected.
-Planner receives `User request:\n` followed by the exact request. The slot
-receives `Reply READY only. Do not inspect or modify the repository.`
+Planner receives `User request:\n` followed by the exact request. Orchestrator
+waits, emits `Plan prepared; awaiting human authorization.`, and ends its turn.
+It makes no implementation call. Additional root native calls are rejected.
 
-Binding independently reads session identities, activity, inboxes, and complete
-paginated server histories. It requires the expected role/parent/location,
-creation identity, successful idle outcome, no fork/revert/archive, and zero
-permission overrides. Pagination rejects duplicate IDs and repeated cursors.
-The root has one first plain user input, two exact native calls, one successful
-turn, and a nonempty final. Native result wrappers must equal independently
-read child results. Planner tools are completed read/glob/grep calls; the slot
-has no tools and exact `READY`. Unpublished inboxes are empty.
+Binding independently reads root/Planner identities, activity, inboxes, and
+complete paginated server histories. It requires the expected role/parent/full
+location, project/subpath, creation identity, successful idle outcome, no
+fork/revert/archive, and zero permission overrides. Pagination rejects duplicate
+IDs and repeated cursors. The root has one first plain user input, one exact
+native call, one successful turn, and a nonempty final. The native result wrapper
+must equal the independently read Planner result. Planner tools are completed
+read/glob/grep calls. Unpublished inboxes are empty.
 
-`Bound` retains complete H0/HP/HS encodings plus immutable native call/result
-indexes and session creation times. Planner P is the untouched concatenation
-of its final text parts. Root narration never transports authority. Candidate
-construction binds P to the original canonical worktree root and HEAD.
+`Bound` retains complete H0/HP encodings, immutable Planner call/result indexes,
+creation times, root project/subpath/metadata, and the explicit server root model
+`{providerID, id, variant}`. Root assistant execution evidence must agree with
+that model, normalizing omitted variant to host `default`. Missing or changed
+model evidence fails closed; no host default model is guessed. The loaded
+implementation role must have no model override. The frozen root model is
+revalidated during publication, root return, authorization, creation barriers,
+and result verification; it is passed explicitly to the new child and must
+match each implementation assistant. Before creation and at later barriers,
+trusted role and model catalog reads must confirm unchanged policy and model
+availability. Host `default` is implicit; named variants must exist in the catalog.
+
+Planner P is the untouched concatenation of its final text parts. Root narration
+never transports authority. Candidate construction binds P to the original
+canonical worktree root and HEAD. The human authorizes this candidate/scope;
+there is no pre-existing implementation child identity in `PublishedAttempt`.
 
 ## Initial eligibility and publication
 
@@ -136,11 +149,11 @@ TUI route; original location/workspace, generation, native, publication, Git,
 and exact root projection checks remain required. Eligible publication retains
 the exact immutable `PublishedAttempt` privately while root is not selected.
 Retention is non-authoritative: it creates no decision surface or callback,
-grant, slot switch, or implementation prompt.
+grant, implementation child, or implementation prompt.
 
 ## Exact pending synthetic semantics
 
-On OpenCode 2.0.20, while S is pending:
+On pinned OpenCode 2.0.21, while S is pending:
 
 ```text
 server root message.list = H0 exactly
@@ -149,8 +162,9 @@ TUI materialization      = H0 + materialize(S)
 ```
 
 The publication-aware verifier requires inactive root, unchanged successful
-identity/creation, exact H0, exact full S, unchanged HP, and the expected slot
-history. Child inboxes remain empty. Original native parsers remain strict;
+identity/creation/model, exact H0, exact full S, and unchanged HP. Planner
+inbox remains empty. There is no implementation child before Authorize. Original native parsers remain
+strict;
 there is no extra-message filter or generalized synthetic exception.
 
 S comparisons retain all allowed fields, scalar values, array order, ID,
@@ -219,17 +233,20 @@ revoke continuation. Authorize / Cancel never return for that attempt. Cleanup
 of the replaced DecisionStrip cannot terminate its already-claimed continuation.
 
 Cancel clears authority-capable ownership and leaves persistent
-`Cancelled — no implementation admitted` status; it creates no grant, switch
+`Cancelled — no implementation admitted` status; it creates no grant, child
 or prompt. Success leaves the trusted implementation-gate result visible,
 including unchanged bound HEAD, resulting paths, and STOP before Reviewer /
 Commit. Fail-closed STOP remains visible with trusted dispatch-state wording:
-before dispatch it states that implementation was not admitted and no prompt
-was dispatched; after dispatch it states that implementation may already have
-started and no prompt will be resent. Toasts are supplemental. Dirty/ordering
+before creation it states that no child or prompt was admitted; ambiguous
+creation states that child creation outcome is unknown and no trusted prompt
+was dispatched, with no creation retry. Failed creation/readback or later
+admission states that a child may remain with no trusted prompt dispatched.
+After prompt invocation it states that implementation may already have started
+and no prompt will be resent. Toasts are supplemental. Dirty/ordering
 statuses retain only presentation data and have no callbacks.
 
 Observers are installed before publication. Only exact expected synthetic,
-switch and implementation events are admitted, with RPC/history reconciliation.
+child-created and implementation events are admitted, with RPC/history reconciliation.
 Unexpected root execution, inbox lifecycle, transcript/control mutation,
 permission/role/location changes, missing children, deletion/fork/revert/
 compaction, renderer errors, or true pending-surface loss terminate
@@ -243,7 +260,7 @@ presentation and claimed authorization before prompt dispatch. Issue #4's
 post-claim resize semantics and existing post-dispatch behavior are unchanged.
 Child navigation before preparation remains harmless selection, never an
 authority signal. Root return performs no Planner rerun, second synthetic Plan,
-replacement slot, root-model copying/resumption, retry, or recovery.
+replacement child, root-model copying/resumption, retry, or recovery.
 
 Every awaited operation/page is followed by owner/generation/location and fresh
 Git checks. Publication uses baseline path stability, pre-admission uses clean
@@ -255,41 +272,74 @@ synchronously revokes first, clears presentation, then removes the slot and
 subscriptions. Old promises cannot grant, dispatch, or report a passing gate
 after revocation. New activations inherit no authority.
 
-## Same-slot implementation and terminal behavior
+## Post-authorization creation and terminal behavior
 
-After a claimed positive decision, `authorizePublishedAttempt()` verifies exact
-publication/native evidence and fresh clean Git before granting. The executor
-switches only the bound slot; the switch creates ordinary role capability,
-not CAP authority. It retains the complete exact switch record and requires HS
-plus that single switch and no input. Parent/Planner/publication and slot are
-rechecked, followed by the final complete read barrier and synchronous fresh
-Git/owner/candidate/generation checks.
+After a claimed positive decision, `authorizePublishedAttempt()` fully verifies
+the exact immutable publication/root/Planner/candidate and fresh clean Git.
+Unsupported workspace-bound attempts stop before creation: public create/import
+cannot represent `workspaceID` in OpenCode 2.0.21. Only ordinary local sessions
+with exact supported directory identity are admitted. Location equality is never
+weakened to discard workspace identity.
 
-Consumption is adjacent to the sole `session.prompt()` invocation, without
-an await or UI operation between them. The exact frozen prompt contains the
-proposal, canonical root, bound HEAD, exact path scope and history-effect
-constraints. No Planner conversation is copied and no replacement child is
-created. The original parent subagent row remains the inert bootstrap result.
+The narrow creation seam is one `context.client.session.import` request to the
+pinned host's experimental `/api/experimental/session/import` endpoint. Public
+`session.create` cannot supply a parent in 2.0.21. This use constructs an empty
+local child, not a general transfer/session abstraction. Trusted code mints one
+fresh local session ID after the positive claim and supplies the exact root
+parent, `agent: "authorized_implementer"`, explicit frozen root model/variant,
+location/project/subpath, inherited trusted family metadata, and explicit empty
+permissions override. Cost and all token counters start at zero; messages are
+`[]`. No outcome, idle/viewed/archive, fork, or revert state is supplied. No
+bootstrap turn, role switch, copied conversation, or root resumption occurs.
+
+The response and independent host reads must match that expected identity and
+policy, prove empty paginated transcript/inbox and no active execution, and
+retain fresh stable creation evidence. Import `time.created` is trusted caller
+initialization time; `time.updated` is finite host import time at or after it.
+Created event time is separate host commit time and need not equal the supplied
+creation timestamp. Early/late Created echoes correlate only shared identity,
+model, parent, location/project/subpath, metadata and permissions fields; a
+mismatch terminates. At the project root the host projects event subpath `""`
+as absent in SessionInfo; echo comparison applies that exact normalization.
+These observations establish the one fresh operation,
+not authority. Bounded creation evidence belongs only to the claimed execution
+continuation, not `PublishedAttempt` or mutable workflow-domain model state.
+
+After awaited creation/readback, root/Planner/publication/candidate/model/policy
+and Git are revalidated, then the child is rechecked empty. The final full read
+barrier repeats those checks, followed by synchronous fresh clean Git,
+owner/generation/location/projection/candidate checks. Issue #4 resize is
+presentation-only after claim; root departure before dispatch still stops.
+
+Consumption is adjacent to the sole exact child's `session.prompt` invocation,
+without an await, UI operation or host call between them. The frozen prompt
+contains the proposal, canonical root, bound HEAD, exact path scope and
+history-effect constraints. No native root Implementer tool row is fabricated.
+Native family/picker navigation and persistent trusted composer-top status
+provide inspection and lifecycle presentation.
 
 Prompt admission binds exact trusted ID, child/type/text/delivery and empty
-attachments. After dispatch, editing may already be underway, so cleanliness
-is no longer required. Completion independently requires the same slot/role/
-parent/creation, inactive empty inbox, unchanged bootstrap and switch record,
-one exact trusted input, one successful authorized turn, and nonempty result.
-The complete result suffix is retained and compared across later parent/Planner
-awaits. Root/Planner/publication evidence remains unchanged.
+attachments/metadata. After invocation editing may already be underway, so
+cleanliness is no longer required. Completion independently requires the same
+child/role/model/parent/location/creation/policy, inactive empty inbox, exactly
+one trusted input, one successful authorized turn, and nonempty result, without
+extra input/control records. The complete result is frozen and compared across
+later root/Planner/publication/policy awaits.
 
-Fresh Git observation after result verification requires unchanged canonical
-root/HEAD and exact changed-path membership in C's file set. The trusted gate
-result remains visible in the root composer-top surface and reports resulting
-paths and STOP before Reviewer / Commit. Ordinary Git limits, including
-exclusion of ignored untracked files, remain those defined by CAP.
+Fresh Git observation requires unchanged canonical root/HEAD and exact changed-
+path membership in C's file set. The trusted composer result reports resulting
+paths and STOP before Reviewer / Commit. Ordinary Git limits remain those
+specified by CAP.
 
-Any failed or ambiguous switch stops without retry/replacement; the role may
-already have switched. Ambiguous, rejected or malformed prompt admission stops
-without redispatch and reports that implementation may have started. Later
-failure grants no passing gate. There is no rollback, automatic role restoration,
-review, commit, recovery, or retry.
+Every creation failure or ambiguity is terminal, including rejection, timeout,
+collision, malformed response or independent-read mismatch. There is no retry,
+same-ID replay, replacement, adoption of a different/late-discovered child,
+deletion, role restoration, or resurrection of an unused grant. A created child
+may remain empty and editing-capable after failed admission. That ordinary host
+capability is not surviving CAP authority: no trusted prompt was dispatched,
+no grant can be reused, and manual/external prompting remains outside CAP.
+Prompt ambiguity consumes the grant and stops without resend; implementation
+may already have started. Result/Git failure admits no passing gate or retry.
 
 ## Verification and remaining work
 
@@ -309,17 +359,28 @@ The issue #4 implementation passes typecheck, the focused attempt suite (55
 tests), and the full suite (70 tests).
 
 Issue #5 adds publication during child inspection, same-object root-return
-verification and fresh-frame authorization, one-publication/one-slot uniqueness,
+verification and fresh-frame authorization, one-publication/one-owned-continuation uniqueness,
 stale preparation, and genuine retained invalidation regressions using the same
 test-scoped doubles. Existing pending/claimed navigation and issue #4 layout
 regressions remain in place. The issue #5 implementation passes typecheck,
 the focused attempt suite (58 tests), and the full suite (73 tests).
 
+Issue #6 replaces worker bootstrap/switch cases with Planner-only fixtures and
+post-authorization import regressions. Coverage includes no child for publication,
+Cancel, dirty/planning-only and stale decisions; topology/model/policy rejection;
+one exact import; response and independent-read mismatch matrices; empty initial
+state; early/late Created echoes; creation ambiguity/no retry; final barrier drift;
+adjacent grant consumption/prompt invocation; and preserved exact result/Git
+and issue #4/#5 behavior. The real-Git cases use private seed copies only at the
+final result barrier and scope/HEAD gate; host and policy sequencing uses the
+existing trusted doubles. No live OpenCode was launched for this pass.
+
 ### Live PASS evidence
 
-Live OpenCode 2.0.20 dogfood verified the following:
+Historical OpenCode 2.0.20 dogfood verified the earlier authorization path below.
+It does not verify post-authorization creation on 2.0.21:
 
-- A clean fresh attempt ran Orchestrator → Planner → inert implementer slot.
+- A clean fresh attempt ran the earlier native planning/bootstrap path.
   The readable trusted Plan appeared in the root TUI, and the composer-top
   authorization surface appeared only after publication and readability checks.
 - Before Authorize, `git status` stayed clean and `README.md` stayed unchanged.
@@ -387,19 +448,24 @@ Live OpenCode 2.0.20 dogfood verified the following:
 The following live cases remain unverified: reload/restart during a pending
 authorization attempt fails closed; location/workspace identity changes during
 an attempt; unexpected root wake or additional root input after publication;
-direct inspection that the exact same retained implementer slot receives
-exactly one trusted implementation prompt; exact-scope rejection for an
+direct inspection that no implementation child exists before Authorize and
+exactly one empty imported child receives the sole trusted prompt afterward; exact-scope rejection for an
 out-of-scope implementation result; and longer or scrollable Plan presentation
 with a compact authorization surface under realistic content. Keyboard
 authorization is unimplemented and out of this milestone.
 
 Issue #5 still needs a fresh Planner-inspection-through-publication attempt that
-returns to root and authorizes the same retained slot, plus a retained Git
+returns to root and authorizes the same candidate before one child creation, plus a retained Git
 mutation case that stops on root return without rearming. Live dogfood has not
-been run for this implementation pass.
+been run for this implementation pass. The issue #6 live plan in the committed
+[investigation](issue-6-post-authorization-implementer-creation-investigation.md)
+requires positive and Cancel child-list inspection, exact model/variant and
+family navigation/status verification, and a safely scoped ambiguous-creation
+case if available. Experimental import event timing and inactive child visibility
+remain live validation concerns.
 
 The issue #2/#3 copy and persistent status lifecycle are covered by automated
-callback/layout doubles but have not yet been rechecked in live OpenCode 2.0.20.
+callback/layout doubles but have not yet been rechecked in live OpenCode 2.0.21.
 Live verification should confirm the pending question fits, the status remains
 visible after Authorize and Cancel, completion shows the trusted gate result,
 and pre-dispatch versus post-dispatch STOP copy matches the actual outcome.

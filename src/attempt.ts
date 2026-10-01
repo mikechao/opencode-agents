@@ -1,5 +1,5 @@
 import type { Context } from "@opencode/plugin/tui/context"
-import type { LocationRef, OpenCodeEvent, SessionInboxInfo, SessionInfo, SessionMessageInfo } from "@opencode/client"
+import type { LocationRef, OpenCodeEvent, SessionInboxInfo, SessionInfo, SessionMessageInfo, AgentInfo, ModelRef } from "@opencode/client"
 import { createHash, randomUUID } from "node:crypto"
 import { assertLive, consumeIntent, grantIntent, type Generation } from "./cap.ts"
 import { observeGit, requireFresh, requireInScope, type GitSnapshot } from "./git.ts"
@@ -21,7 +21,6 @@ export function implementerPrompt(candidate: IntentCandidate): string {
   ].join("\n")
 }
 
-export const SLOT_PROMPT = "Reply READY only. Do not inspect or modify the repository."
 export const plannerInput = (request: string) => `User request:\n${request}`
 const prefix = "You are a subagent spawned by another session.\n"
 
@@ -34,15 +33,14 @@ export function snapshotLocation(location: LocationRef): Readonly<LocationRef> {
   const { directory, workspaceID } = location
   return Object.freeze({ directory, ...(workspaceID === undefined ? {} : { workspaceID }) })
 }
-type Call = Readonly<{ messageID: string; toolID: string; childID: string; prompt: string; agent: "planner" | "implementer_slot" }>
+type Call = Readonly<{ messageID: string; toolID: string; childID: string; prompt: string; agent: "planner" }>
 type Child = Readonly<{ inputID: string; finalID: string; text: string }>
-export type Bound = Readonly<{ parentID: string; userID: string; request: string; planner: Call; slot: Call; plannerChild: Child; slotChild: Child;
-  parentHistory: string; plannerHistory: string; slotHistory: string;
-  parentCreatedAt: number; plannerCreatedAt: number; slotCreatedAt: number }>
+export type Bound = Readonly<{ parentID: string; userID: string; request: string; planner: Call; plannerChild: Child;
+  parentHistory: string; plannerHistory: string; parentCreatedAt: number; plannerCreatedAt: number;
+  model: Readonly<Required<ModelRef>>; projectID: string; subpath?: string; metadata?: SessionInfo["metadata"] }>
 
 type Created = Extract<OpenCodeEvent, { type: "session.created" }>
 type Synthetic = Extract<SessionInboxInfo, { type: "synthetic" }>
-type Switch = Extract<SessionMessageInfo, { type: "agent-switched" }>
 // Runtime copying/freezing is recursive; metadata types can themselves be recursive JSON.
 type Frozen<T> = Readonly<T>
 
@@ -66,8 +64,9 @@ export interface AttemptGuard {
   bound?: Bound
   publishing?: Readonly<{ id: string; text: string; description: string; metadata: { source: string; planHash: string } }>
   publication?: Frozen<Synthetic>
-  switching?: string
-  switchRecord?: Frozen<Switch>
+  child?: Frozen<SessionInfo>
+  creationAttempted?: boolean
+  creationReturned?: boolean
   prompt?: Readonly<{ id: string; text: string }>
   dispatched?: boolean
 }
@@ -191,7 +190,7 @@ function completedCall(messageID: string, tool: Tool, agent: Call["agent"]): Cal
   }
   return { messageID, toolID: tool.id, childID, prompt: input.prompt, agent }
 }
-function parentCalls(history: SessionMessageInfo[], expectedUserID?: string): { userID: string; request: string; planner: Call; slot: Call } {
+function parentCalls(history: SessionMessageInfo[], expectedUserID?: string): { userID: string; request: string; planner: Call } {
   const users = history.filter((message) => message.type === "user")
   if (users.length !== 1 || users[0]?.type !== "user" || history[0] !== users[0] || !plain(users[0]) || !users[0].text ||
       (expectedUserID !== undefined && users[0].id !== expectedUserID)) stop("parent does not have one exact plain user input")
@@ -202,15 +201,10 @@ function parentCalls(history: SessionMessageInfo[], expectedUserID?: string): { 
   if (!finalText(final) || history.at(-1)?.type !== "idle") stop("parent final result is missing")
   const tools = history.flatMap((message) => message.type === "assistant"
     ? message.content.filter((part): part is Tool => part.type === "tool").map((part) => ({ messageID: message.id, part })) : [])
-  if (tools.length !== 2 || tools[0]?.part.name !== "subagent" || tools[1]?.part.name !== "subagent" ||
-      tools[0].part.id === tools[1].part.id) stop("parent did not make exactly two native subagent calls")
+  if (tools.length !== 1 || tools[0]?.part.name !== "subagent") stop("parent did not make exactly one native Planner call")
   const planner = completedCall(tools[0].messageID, tools[0].part, "planner")
-  const slot = completedCall(tools[1].messageID, tools[1].part, "implementer_slot")
-  if (planner.childID === slot.childID || planner.messageID === slot.messageID ||
-      planner.prompt !== plannerInput(users[0].text) || slot.prompt !== SLOT_PROMPT) {
-    stop("native child prompts or identities differ from contract")
-  }
-  return { userID: users[0].id, request: users[0].text, planner, slot }
+  if (planner.prompt !== plannerInput(users[0].text)) stop("native Planner prompt or identity differs from contract")
+  return { userID: users[0].id, request: users[0].text, planner }
 }
 function verifyChildHistory(history: SessionMessageInfo[], agent: Call["agent"], prompt: string): Child {
   const users = history.filter((message) => message.type === "user")
@@ -222,11 +216,11 @@ function verifyChildHistory(history: SessionMessageInfo[], agent: Call["agent"],
   }
   const final = oneFinal(history, agent)
   if (history.some((message) => message.type === "assistant" && message.content.some((part) =>
-    part.type === "tool" && (agent === "implementer_slot" || !["read", "glob", "grep"].includes(part.name) || part.state.status !== "completed")))) {
+    part.type === "tool" && (!["read", "glob", "grep"].includes(part.name) || part.state.status !== "completed")))) {
     stop(`${agent} used a disallowed tool during bootstrap`)
   }
   const text = finalText(final)
-  if (!text || (agent === "implementer_slot" && text !== "READY")) stop(`unexpected ${agent} final text`)
+  if (!text) stop(`unexpected ${agent} final text`)
   return { inputID: users[0].id, finalID: final.id, text }
 }
 function resultMatches(history: SessionMessageInfo[], call: Call, child: Child): void {
@@ -238,36 +232,41 @@ function resultMatches(history: SessionMessageInfo[], call: Call, child: Child):
     stop("parent native output differs from exact child result")
   }
 }
+function selectedModel(model: ModelRef | undefined): Readonly<Required<ModelRef>> {
+  if (!model || typeof model.providerID !== "string" || !model.providerID || typeof model.id !== "string" || !model.id ||
+      (model.variant !== undefined && (typeof model.variant !== "string" || !model.variant))) stop("explicit root-selected model evidence is missing")
+  return immutable({ providerID: model.providerID, id: model.id, variant: model.variant ?? "default" })
+}
+function executionModel(history: SessionMessageInfo[], model: Readonly<Required<ModelRef>>): void {
+  if (history.some((message) => message.type === "assistant" && !same(selectedModel(message.model), model))) stop("assistant execution model differs from frozen root model")
+}
+function rootEvidence(parent: SessionInfo, bound: Bound): void {
+  if (!same(selectedModel(parent.model), bound.model) || parent.projectID !== bound.projectID || parent.subpath !== bound.subpath ||
+      !same(parent.metadata, bound.metadata)) stop("root model, project, subpath, or metadata changed")
+}
 async function bindNativeAttempt(context: Context, check: () => void, parentID: string, location: Location, expected?: Bound): Promise<Bound> {
   const parent = await after(check, context.client.session.get({ sessionID: parentID }))
   successful(parent, parentID, "orchestrator", location)
+  const model = selectedModel(parent.model)
+  if (!parent.projectID) stop("root project identity missing")
+  if (expected) rootEvidence(parent, expected)
   await idle(context, parentID, check)
   const parentHistory = await messages(context, parentID, check)
+  executionModel(parentHistory, model)
   if (expected && JSON.stringify(parentHistory) !== expected.parentHistory) stop("parent transcript changed")
   const calls = parentCalls(parentHistory, expected?.userID)
-  if (expected && (calls.request !== expected.request || JSON.stringify(calls.planner) !== JSON.stringify(expected.planner) ||
-      JSON.stringify(calls.slot) !== JSON.stringify(expected.slot))) stop("parent native invocation changed")
-  const children: Child[] = []
-  const histories: string[] = []
-  const created: number[] = []
-  for (const call of [calls.planner, calls.slot]) {
-    const session = await after(check, context.client.session.get({ sessionID: call.childID }))
-    successful(session, call.childID, call.agent, location, parentID)
-    await idle(context, call.childID, check)
-    const childHistory = await messages(context, call.childID, check)
-    histories.push(JSON.stringify(childHistory))
-    created.push(session.time.created)
-    const child = verifyChildHistory(childHistory, call.agent, call.prompt)
-    resultMatches(parentHistory, call, child)
-    children.push(child)
-  }
-  const bound = { parentID, ...calls, plannerChild: children[0]!, slotChild: children[1]!,
-    parentHistory: JSON.stringify(parentHistory), plannerHistory: histories[0]!, slotHistory: histories[1]!,
-    parentCreatedAt: parent.time.created, plannerCreatedAt: created[0]!, slotCreatedAt: created[1]! }
-  if (expected && (JSON.stringify(bound.plannerChild) !== JSON.stringify(expected.plannerChild) ||
-      JSON.stringify(bound.slotChild) !== JSON.stringify(expected.slotChild) ||
-      bound.plannerHistory !== expected.plannerHistory || bound.slotHistory !== expected.slotHistory || bound.parentCreatedAt !== expected.parentCreatedAt ||
-      bound.plannerCreatedAt !== expected.plannerCreatedAt || bound.slotCreatedAt !== expected.slotCreatedAt)) stop("native child transcript changed")
+  if (calls.planner.childID === parentID) stop("Planner is not a fresh child")
+  const planner = await after(check, context.client.session.get({ sessionID: calls.planner.childID }))
+  successful(planner, calls.planner.childID, "planner", location, parentID)
+  if (planner.projectID !== parent.projectID || planner.subpath !== parent.subpath) stop("Planner project or subpath changed")
+  await idle(context, planner.id, check)
+  const history = await messages(context, planner.id, check)
+  const plannerChild = verifyChildHistory(history, "planner", calls.planner.prompt)
+  resultMatches(parentHistory, calls.planner, plannerChild)
+  const bound = { parentID, ...calls, plannerChild, parentHistory: JSON.stringify(parentHistory), plannerHistory: JSON.stringify(history),
+    parentCreatedAt: parent.time.created, plannerCreatedAt: planner.time.created, model, projectID: parent.projectID,
+    ...(parent.subpath === undefined ? {} : { subpath: parent.subpath }), ...(parent.metadata === undefined ? {} : { metadata: parent.metadata }) }
+  if (expected && !same(bound, expected)) stop("native child transcript changed")
   return immutable(bound)
 }
 function checkedPublication(publication: Synthetic | Frozen<Synthetic>, bound: Bound, candidate: IntentCandidate): void {
@@ -283,11 +282,10 @@ export function assertPublishedCoherence(published: PublishedAttempt): void {
   const { activation, bound, candidate, publication } = published
   const h0: SessionMessageInfo[] = JSON.parse(bound.parentHistory)
   const calls = parentCalls(h0, bound.userID)
-  if (!same(calls, { userID: bound.userID, request: bound.request, planner: bound.planner, slot: bound.slot }) ||
-      !same(verifyChildHistory(JSON.parse(bound.plannerHistory), "planner", bound.planner.prompt), bound.plannerChild) ||
-      !same(verifyChildHistory(JSON.parse(bound.slotHistory), "implementer_slot", bound.slot.prompt), bound.slotChild)) stop("retained native evidence is incoherent")
+  if (!same(calls, { userID: bound.userID, request: bound.request, planner: bound.planner }) ||
+      !same(verifyChildHistory(JSON.parse(bound.plannerHistory), "planner", bound.planner.prompt), bound.plannerChild)) stop("retained native evidence is incoherent")
   resultMatches(h0, bound.planner, bound.plannerChild)
-  resultMatches(h0, bound.slot, bound.slotChild)
+  executionModel(h0, bound.model)
   if (bound.parentID !== activation.creation.data.sessionID ||
       (Number.isFinite(activation.creation.created) && bound.parentCreatedAt !== activation.creation.created) ||
       !candidateIntact(candidate) || candidate.root !== activation.baseline.root || candidate.head !== activation.baseline.head ||
@@ -304,6 +302,7 @@ async function verifyParentPlanner(context: Context, published: PublishedAttempt
   const { bound, activation, publication } = published
   const parent = await after(check, context.client.session.get({ sessionID: bound.parentID }))
   successful(parent, bound.parentID, "orchestrator", activation.location)
+  rootEvidence(parent, bound)
   if (parent.time.created !== bound.parentCreatedAt) stop("root creation identity changed")
   const active = await after(check, context.client.session.active())
   const inbox = await after(check, context.client.session.inbox.list({ sessionID: bound.parentID }))
@@ -311,9 +310,10 @@ async function verifyParentPlanner(context: Context, published: PublishedAttempt
   const parentHistory = await messages(context, bound.parentID, check)
   if (JSON.stringify(parentHistory) !== bound.parentHistory) stop("parent transcript changed")
   const calls = parentCalls(parentHistory, bound.userID)
-  if (!same(calls.planner, bound.planner) || !same(calls.slot, bound.slot)) stop("parent call binding changed")
+  if (!same(calls.planner, bound.planner)) stop("parent call binding changed")
   const planner = await after(check, context.client.session.get({ sessionID: bound.planner.childID }))
   successful(planner, bound.planner.childID, "planner", activation.location, bound.parentID)
+  if (planner.projectID !== bound.projectID || planner.subpath !== bound.subpath) stop("Planner project or subpath changed")
   if (planner.time.created !== bound.plannerCreatedAt) stop("Planner creation identity changed")
   await idle(context, bound.planner.childID, check)
   const history = await messages(context, bound.planner.childID, check)
@@ -321,57 +321,89 @@ async function verifyParentPlanner(context: Context, published: PublishedAttempt
   const child = verifyChildHistory(history, "planner", bound.planner.prompt)
   if (!same(child, bound.plannerChild)) stop("Planner result changed")
   resultMatches(parentHistory, bound.planner, child)
-  resultMatches(parentHistory, bound.slot, bound.slotChild)
 }
 export async function verifyPublishedAttempt(context: Context, published: PublishedAttempt, guard: AttemptGuard): Promise<void> {
   assertPublishedCoherence(published)
   const check = checks(context, published.activation, guard, "publication")
   check()
   await verifyParentPlanner(context, published, check)
-  const { bound, activation } = published
-  const slot = await after(check, context.client.session.get({ sessionID: bound.slot.childID }))
-  successful(slot, bound.slot.childID, "implementer_slot", activation.location, bound.parentID)
-  if (slot.time.created !== bound.slotCreatedAt) stop("slot creation identity changed")
-  await idle(context, bound.slot.childID, check)
-  if (JSON.stringify(await messages(context, bound.slot.childID, check)) !== bound.slotHistory) stop("native child transcript changed")
   check()
 }
-async function switchedSlot(context: Context, check: () => void, bound: Bound, location: Location, expected?: Frozen<Switch>, input?: { id: string; text: string }, expectedResult?: string): Promise<Readonly<{ switchRecord: Frozen<Switch>; resultHistory: string }>> {
-  const session = await after(check, context.client.session.get({ sessionID: bound.slot.childID }))
-  successful(session, bound.slot.childID, "authorized_implementer", location, bound.parentID)
-  if (session.time.created !== bound.slotCreatedAt) stop("slot creation identity changed")
-  await idle(context, bound.slot.childID, check)
-  const history = await messages(context, bound.slot.childID, check)
-  const switches = history.filter((message) => message.type === "agent-switched")
-  if (switches.length !== 1 || switches[0]?.type !== "agent-switched" || switches[0].agent !== "authorized_implementer" ||
-      switches[0].previous !== "implementer_slot") stop("slot role switch is missing or ambiguous")
-  if (expected && !same(switches[0], expected)) stop("retained slot switch identity changed")
-  const before = history.slice(0, history.indexOf(switches[0]))
-  if (JSON.stringify(before) !== bound.slotHistory) stop("slot bootstrap transcript changed")
-  const bootstrap = verifyChildHistory(before, "implementer_slot", bound.slot.prompt)
-  if (JSON.stringify(bootstrap) !== JSON.stringify(bound.slotChild)) stop("slot bootstrap changed")
-  const afterSwitch = history.slice(history.indexOf(switches[0]) + 1)
-  const resultHistory = JSON.stringify(afterSwitch)
+
+// Only the policy suffix after the last deny-all determines this role's tool contract.
+// Host defaults/global rules may precede it; freeze the whole loaded definition too.
+const implementerRules = [
+  { action: "*", resource: "*", effect: "deny" },
+  ...["read", "glob", "grep", "edit", "shell"].map((action) => ({ action, resource: "*", effect: "allow" })),
+  { action: "shell", resource: "git commit", effect: "deny" },
+  { action: "shell", resource: "git commit *", effect: "deny" },
+]
+function supportedTopology(location: Location): void {
+  if ("workspaceID" in location) stop("unsupported workspace-bound topology: public session.import cannot preserve workspaceID")
+}
+async function creationPolicy(context: Context, published: PublishedAttempt, check: () => void, expected?: Frozen<AgentInfo>): Promise<Frozen<AgentInfo>> {
+  const { location } = published.activation
+  supportedTopology(location)
+  const loaded = await after(check, context.client.agent.get({ agentID: "authorized_implementer", location }))
+  const role = loaded.data
+  if (!role || !Array.isArray(role.permissions)) stop("loaded authorized Implementer policy is unavailable")
+  const reset = role.permissions.reduce((last, rule, index) => rule.action === "*" && rule.resource === "*" && rule.effect === "deny" ? index : last, -1)
+  if (!same(loaded.location, location) || role.id !== "authorized_implementer" || role.mode !== "subagent" || !role.hidden || role.model !== undefined ||
+      reset < 0 || !same(role.permissions.slice(reset), implementerRules) || (expected && !same(role, expected))) stop("loaded authorized Implementer policy or model override changed")
+  const catalog = await after(check, context.client.model.list({ location }))
+  const model = published.bound.model
+  const available = catalog.data.filter((item) => item.id === model.id && item.providerID === model.providerID && item.enabled)
+  if (!same(catalog.location, location) || available.length !== 1 || (model.variant !== "default" && !available[0]!.variants.some((variant) => variant.id === model.variant))) stop("frozen root model or variant is unavailable")
+  return immutable(role)
+}
+const zeroTokens = { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }
+// Created event time is host commit time; imported time.created is caller initialization time.
+export function childCreatedMatches(event: Created, expected: Frozen<SessionInfo>): boolean {
+  const data = event.data
+  // The Created event carries "" at the project root; SessionInfo.fromRow omits it.
+  const subpath = data.subpath === "" ? undefined : data.subpath
+  return Number.isFinite(event.created) && data.sessionID === expected.id && data.parentID === expected.parentID && data.agent === expected.agent &&
+    !!data.model && same({ ...data.model, variant: data.model.variant ?? "default" }, expected.model) && same(data.location, expected.location) && data.projectID === expected.projectID &&
+    subpath === expected.subpath && same(data.metadata, expected.metadata) && same(data.permissions, expected.permissions) && data.title === expected.title
+}
+function childIdentity(session: SessionInfo, expected: Frozen<SessionInfo>, emptyState: boolean): void {
+  if (!session || !session.time || session.id !== expected.id || session.parentID !== expected.parentID || session.agent !== "authorized_implementer" ||
+      !same(selectedModel(session.model), expected.model) || !same(session.location, expected.location) || session.projectID !== expected.projectID ||
+      session.subpath !== expected.subpath || !same(session.metadata, expected.metadata) || !same(session.permissions, []) ||
+      session.title !== expected.title || session.fork !== undefined || session.revert !== undefined || session.time.archived !== undefined ||
+      session.time.created !== expected.time.created || !Number.isFinite(session.time.updated) || session.time.updated < expected.time.created ||
+      (emptyState && (session.outcome !== undefined || session.time.idle !== undefined || session.time.viewed !== undefined ||
+        session.cost !== 0 || !same(session.tokens, zeroTokens)))) stop("created child identity, model, location, permissions, timestamps, or state is unverified")
+}
+async function verifiedChild(context: Context, check: () => void, child: Frozen<SessionInfo>, input?: { id: string; text: string }, expectedResult?: string): Promise<string> {
+  const session = await after(check, context.client.session.get({ sessionID: child.id }))
+  childIdentity(session, child, !input)
+  if (input) successful(session, child.id, "authorized_implementer", child.location, child.parentID)
+  await idle(context, child.id, check)
+  const history = await messages(context, child.id, check)
+  const resultHistory = JSON.stringify(history)
   if (expectedResult !== undefined && resultHistory !== expectedResult) stop("implementation result transcript changed")
   if (!input) {
-    if (afterSwitch.length) stop("slot received input before trusted prompt")
-    return Object.freeze({ switchRecord: immutable(switches[0]), resultHistory })
+    if (history.length) stop("created child received input or history before trusted prompt")
+    return resultHistory
   }
-  const users = afterSwitch.filter((message) => message.type === "user")
-  const idles = afterSwitch.filter((message) => message.type === "idle")
-  if (users.length !== 1 || users[0]?.type !== "user" || afterSwitch[0] !== users[0] ||
-      users[0].id !== input.id || users[0].text !== input.text || !plain(users[0]) ||
-      idles.length !== 1 || idles[0]?.type !== "idle" || idles[0].outcome !== "succeeded" || afterSwitch.at(-1)?.type !== "idle" ||
-      afterSwitch.some((message) => !["user", "assistant", "idle"].includes(message.type))) stop("authorized slot input/result mismatch")
-  const final = oneFinal(afterSwitch, "authorized_implementer")
+  const users = history.filter((message) => message.type === "user")
+  const idles = history.filter((message) => message.type === "idle")
+  if (users.length !== 1 || users[0]?.type !== "user" || history[0] !== users[0] ||
+      users[0].id !== input.id || users[0].text !== input.text || !plain(users[0]) || users[0].metadata !== undefined ||
+      idles.length !== 1 || idles[0]?.type !== "idle" || idles[0].outcome !== "succeeded" || history.at(-1)?.type !== "idle" ||
+      history.some((message) => !["user", "assistant", "idle"].includes(message.type))) stop("authorized child input/result mismatch")
+  executionModel(history, selectedModel(child.model))
+  const final = oneFinal(history, "authorized_implementer")
   if (!finalText(final)) stop("authorized Implementer returned no text")
-  return Object.freeze({ switchRecord: immutable(switches[0]), resultHistory })
+  return resultHistory
 }
 
 // One publication per activation; no implementation authority is created here.
 export async function publishPlan(context: Context, activation: ActivationEvidence, guard: AttemptGuard): Promise<PublishedAttempt> {
   const { generation, baseline, location, creation } = activation
   const parentID = creation.data.sessionID
+  supportedTopology(location)
   assertLive(generation)
   if (generation.busy) stop("another CAP attempt is already running")
   generation.busy = true
@@ -414,6 +446,8 @@ export async function authorizePublishedAttempt(context: Context, published: Pub
   const { activation } = published
   assertLive(activation.generation)
   owner.assertDecision(published)
+  supportedTopology(activation.location)
+  if (owner.creationAttempted || owner.dispatched) stop("claimed attempt cannot retry creation or prompt")
   if (!initiallyAuthorizable(activation)) stop("initial clean-before-bootstrap evidence is unavailable")
   if (activation.generation.busy) stop("another CAP attempt is already running")
   activation.generation.busy = true
@@ -435,38 +469,56 @@ async function executeBoundImplementation(context: Context, published: Published
   const { generation, baseline, location } = activation
   const frozenText = implementerPrompt(candidate)
   const prompt = Object.freeze({ id: `msg_${randomUUID()}`, text: frozenText })
-  const grant = grantIntent(candidate, true, generation)
-  owner.switching = bound.slot.childID
-  check()
-  await after(check, context.client.session.switchAgent({ sessionID: bound.slot.childID, agent: "authorized_implementer" }))
-  const { switchRecord: switched } = await switchedSlot(context, check, bound, location)
-  owner.switchRecord = switched
+  const role = await creationPolicy(context, published, check)
+  // Policy/catalog reads are awaits: independently revalidate publication before creation.
   await verifyParentPlanner(context, published, check)
-  await switchedSlot(context, check, bound, location, switched)
+  if (!publishedPresentationMatches(context, published)) stop("published Plan view changed")
+  check()
+  const grant = grantIntent(candidate, true, generation)
+  const initializedAt = Date.now()
+  const child = immutable<SessionInfo>({ id: `ses_${randomUUID()}`, parentID: bound.parentID, agent: "authorized_implementer",
+    model: bound.model, location, projectID: bound.projectID, subpath: bound.subpath, metadata: bound.metadata, permissions: [],
+    cost: 0, tokens: zeroTokens, time: { created: initializedAt, updated: initializedAt } })
+  owner.child = child
+  owner.creationAttempted = true
+  // No retry, including same-ID replay, after any result or transport ambiguity.
+  const returnedChild = await context.client.session.import({ info: child, messages: [], location })
+  owner.creationReturned = true
+  check()
+  childIdentity(returnedChild, child, true)
+  const created = immutable(returnedChild)
+  owner.child = created
+  await verifiedChild(context, check, created)
+  await verifyParentPlanner(context, published, check)
+  await creationPolicy(context, published, check, role)
+  await verifiedChild(context, check, created)
   // Final full read barrier, followed by fresh synchronous Git and local checks.
   await verifyParentPlanner(context, published, check)
-  await switchedSlot(context, check, bound, location, switched)
+  await creationPolicy(context, published, check, role)
+  await verifiedChild(context, check, created)
   if (!publishedPresentationMatches(context, published)) stop("published Plan view changed")
   check()
   assertPublishedCoherence(published)
   owner.prompt = prompt
   owner.dispatched = true
   consumeIntent(grant, candidate, generation)
-  const admission = context.client.session.prompt({ sessionID: bound.slot.childID, ...prompt, delivery: "steer" })
+  const admission = context.client.session.prompt({ sessionID: created.id, ...prompt, delivery: "steer" })
   // Never require cleanliness after invocation: the child may already be editing.
   const freshResult = checks(context, activation, owner, "implemented")
   const resultCheck = () => { owner.assertDecision(published); freshResult() }
   const returned = await after(resultCheck, admission)
-  if (returned.sessionID !== bound.slot.childID || returned.type !== "user" || returned.id !== prompt.id ||
+  if (returned.sessionID !== created.id || returned.type !== "user" || returned.id !== prompt.id ||
       returned.payload.text !== frozenText || returned.delivery !== "steer" || !Number.isFinite(returned.time.created) ||
       returned.payload.metadata !== undefined || Object.keys(returned.payload).some((key) => !["text", "files", "agents", "skills", "metadata"].includes(key)) ||
       !plain(returned.payload)) stop("trusted prompt returned an unexpected input")
   await verifyParentPlanner(context, published, resultCheck)
-  await after(resultCheck, context.client.session.wait({ sessionID: bound.slot.childID }))
-  const implementation = await switchedSlot(context, resultCheck, bound, location, switched, prompt)
+  await after(resultCheck, context.client.session.wait({ sessionID: created.id }))
+  await creationPolicy(context, published, resultCheck, role)
+  const implementation = await verifiedChild(context, resultCheck, created, prompt)
   await verifyParentPlanner(context, published, resultCheck)
   // Recheck the result after parent/Planner awaits as well.
-  await switchedSlot(context, resultCheck, bound, location, switched, prompt, implementation.resultHistory)
+  await creationPolicy(context, published, resultCheck, role)
+  await verifiedChild(context, resultCheck, created, prompt, implementation)
   resultCheck()
   const result = observeGit(requireActivationLocation(context, location), baseline)
   const paths = requireInScope(result, baseline, candidate.proposal.files)

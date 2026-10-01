@@ -11,7 +11,7 @@ import { observeGit, type GitSnapshot } from "../src/git.ts"
 import { makeCandidate, parseProposal, candidateMessage, renderPlan } from "../src/proposal.ts"
 import { activationEvidence, initiallyAuthorizable, assertPublishedCoherence, exactEvidence, publishedPresentationMatches,
   authorizePublishedAttempt, implementerPrompt, plannerInput, publishPlan as publish, snapshotLocation, verifyPublishedAttempt,
-  type DecisionOwner, type PublishedAttempt, SLOT_PROMPT } from "../src/attempt.ts"
+  type DecisionOwner, type PublishedAttempt } from "../src/attempt.ts"
 import { createRoot, createEffect, createMemo, createComponent, createSignal } from "solid-js"
 import { createStore } from "solid-js/store"
 import { EventEmitter } from "node:events"
@@ -132,7 +132,8 @@ const request = "Change the file"
 const prefix = "You are a subagent spawned by another session.\n"
 const text = (value: string) => ({ type: "text", text: value })
 const user = (id: string, value: string) => ({ type: "user", id, text: value, files: [], agents: [], skills: [] })
-const answer = (id: string, agent: string, value: string) => ({ type: "assistant", id, agent, finish: "stop", content: [text(value)] })
+const model = { providerID: "provider", id: "model", variant: "default" }
+const answer = (id: string, agent: string, value: string) => ({ type: "assistant", id, agent, model: { ...model }, finish: "stop", content: [text(value)] })
 const idle = (id: string) => ({ type: "idle", id, outcome: "succeeded" })
 function call(id: string, agent: string, prompt: string, childID: string, result: string) {
   return { type: "tool", id, name: "subagent", state: {
@@ -147,7 +148,7 @@ type FakeOptions = {
   wakeOnSynthetic?: boolean
   decision?: boolean | undefined
   onDecision?: () => void
-  onSwitch?: () => void
+  onImport?: () => void
   onPrompt?: (value: string) => void
   onWait?: (sessionID: string) => void | Promise<void>
   onGet?: (sessionID: string) => void
@@ -159,26 +160,25 @@ type FakeOptions = {
 const fakes = new WeakMap<Context, ReturnType<typeof fake>>()
 function fake(root: string, options: FakeOptions = {}) {
   const generation: Generation = { revoked: false, busy: false }
+  const frontmatter = Bun.YAML.parse(readFileSync(path.join(import.meta.dir, "../.opencode/agents/authorized_implementer.md"), "utf8").split("---\n")[1]!) as any
+  const role = { ...frontmatter, id: "authorized_implementer", name: "authorized_implementer", request: {} }
   const histories: Record<string, any[]> = {
     parent: [user("parent-user", request),
-      { type: "assistant", id: "planner-tool-message", agent: "orchestrator", content: [call("planner-call", "planner", plannerInput(request), "planner-child", proposal)] },
-      { type: "assistant", id: "slot-tool-message", agent: "orchestrator", content: [call("slot-call", "implementer_slot", SLOT_PROMPT, "slot-child", "READY")] },
-      answer("parent-final", "orchestrator", "Ready for trusted handoff"), idle("parent-idle")],
+      { type: "assistant", id: "planner-tool-message", agent: "orchestrator", model: { ...model }, content: [call("planner-call", "planner", plannerInput(request), "planner-child", proposal)] },
+      answer("parent-final", "orchestrator", "Plan prepared; awaiting human authorization."), idle("parent-idle")],
     "planner-child": [user("planner-user", prefix + plannerInput(request)), answer("planner-final", "planner", proposal), idle("planner-idle")],
-    "slot-child": [user("slot-user", prefix + SLOT_PROMPT), answer("slot-final", "implementer_slot", "READY"), idle("slot-idle")],
   }
   const sessions: Record<string, any> = {
-    parent: { id: "parent", agent: "orchestrator", location: { directory: root }, outcome: "succeeded", time: { created: 1, idle: 2 } },
-    "planner-child": { id: "planner-child", parentID: "parent", agent: "planner", location: { directory: root }, outcome: "succeeded", time: { created: 1, idle: 2 } },
-    "slot-child": { id: "slot-child", parentID: "parent", agent: "implementer_slot", location: { directory: root }, outcome: "succeeded", time: { created: 1, idle: 2 } },
+    parent: { id: "parent", agent: "orchestrator", model: { ...model }, projectID: "project", metadata: { policy: "family" }, location: { directory: root }, outcome: "succeeded", time: { created: 1, idle: 2 } },
+    "planner-child": { id: "planner-child", parentID: "parent", agent: "planner", model: { ...model }, projectID: "project", location: { directory: root }, outcome: "succeeded", time: { created: 1, idle: 2 } },
   }
-  const inboxes: Record<string, any[]> = { parent: [], "planner-child": [], "slot-child": [] }
+  const inboxes: Record<string, any[]> = { parent: [], "planner-child": [] }
   const cache: Record<string, any[]> = structuredClone(histories)
   const handlers = new Map<string, (event: any) => void>()
   const listeners = new Set<(event: any) => void>()
   const slots: any[] = []
   const renderer = Object.assign(new EventEmitter(), { terminalWidth: 120, terminalHeight: 60, isDestroyed: false })
-  const calls = { switched: [] as string[], prompted: [] as Array<{ sessionID: string; text: string }>, decided: [] as string[],
+  const calls = { created: [] as string[], imported: [] as any[], prompted: [] as Array<{ sessionID: string; text: string }>, decided: [] as string[],
     synthetic: [] as any[], toasts: [] as string[] }
   const syncCache = (sessionID: string) => {
     cache[sessionID] = structuredClone([...histories[sessionID], ...inboxes[sessionID].filter((item) => item.type === "synthetic")
@@ -191,7 +191,7 @@ function fake(root: string, options: FakeOptions = {}) {
       listen: (listener: (event: any) => void) => { listeners.add(listener); return () => listeners.delete(listener) },
       location: { default: () => ({ directory: root }) },
       session: {
-        message: { list: (id: string) => cache[id], invalidate: () => {}, sync: async (id: string) => { options.onRead?.("hydrate", id); syncCache(id) } },
+      message: { list: (id: string) => cache[id], invalidate: () => {}, sync: async (id: string) => { options.onRead?.("hydrate", id); syncCache(id) } },
         pending: { list: (id: string) => inboxes[id], invalidate: () => {}, sync: async (id: string) => { options.onRead?.("pending-sync", id) } },
       },
     },
@@ -211,13 +211,19 @@ function fake(root: string, options: FakeOptions = {}) {
             data: { sessionID: input.sessionID, inboxID: input.id, item: { type: admitted.type, payload: admitted.payload, delivery: admitted.delivery } } })
           return admitted
         },
-        switchAgent: async ({ sessionID, agent }: { sessionID: string; agent: string }) => {
-          calls.switched.push(sessionID)
-          sessions[sessionID].agent = agent
-          histories[sessionID].push({ type: "agent-switched", id: "msg_switch", agent, previous: "implementer_slot", time: { created: 4 } })
-          if (options.events) emit({ type: "session.agent.selected", id: "evt_switch", created: 4,
-            data: { sessionID, agent, previous: "implementer_slot" } })
-          options.onSwitch?.()
+        import: async (input: any) => {
+          calls.imported.push(structuredClone(input))
+          const info = structuredClone(input.info)
+          if (sessions[info.id]) throw new Error("import collision")
+          calls.created.push(info.id)
+          sessions[info.id] = info
+          histories[info.id] = []
+          inboxes[info.id] = []
+          if (options.events) emit({ type: "session.created", id: "evt_child_created", created: info.time.created + 1,
+            data: { sessionID: info.id, parentID: info.parentID, agent: info.agent, model: info.model, projectID: info.projectID,
+              subpath: info.subpath ?? "", location: info.location, metadata: info.metadata, permissions: info.permissions } })
+          options.onImport?.()
+          return structuredClone(info)
         },
         prompt: async ({ sessionID, text: value, id }: { sessionID: string; text: string; id: string }) => {
           calls.prompted.push({ sessionID, text: value })
@@ -230,13 +236,19 @@ function fake(root: string, options: FakeOptions = {}) {
               emit({ type, id: `evt_${type}`, data: { sessionID } })
           }
           options.onPrompt?.(value)
-          if (options.promptError) throw new Error("ambiguous prompt transport failure")
-          histories[sessionID].push(user(id, value), answer("implementer-final", "authorized_implementer", "Done"), idle("implementer-idle"))
+          sessions[sessionID].outcome = "succeeded"
+          sessions[sessionID].time.idle = sessions[sessionID].time.created + 1
+          const final = answer("implementer-final", "authorized_implementer", "Done")
+          final.model = structuredClone(sessions[sessionID].model)
+          histories[sessionID].push(user(id, value), final, idle("implementer-idle"))
           if (options.events) emit({ type: "session.execution.succeeded", id: "evt_implemented", created: 8, data: { sessionID } })
+          if (options.promptError) throw new Error("ambiguous prompt transport failure")
           return { type: "user", id: options.promptIDMismatch ? "different-id" : id, sessionID, delivery: "steer", time: { created: 5 },
             payload: { text: options.promptMismatch ? "different" : value, files: [], agents: [], skills: [] } }
         },
       },
+      agent: { get: async () => { options.onRead?.("role"); return { location: { directory: root }, data: role } } },
+      model: { list: async () => { options.onRead?.("catalog"); return { location: { directory: root }, data: [{ ...model, enabled: true, variants: [] }] } } },
       message: { list: async ({ sessionID, cursor }: { sessionID: string; cursor?: string }) => {
         options.onRead?.("messages", sessionID)
         const all = histories[sessionID]
@@ -261,10 +273,16 @@ function fake(root: string, options: FakeOptions = {}) {
   const created = () => ({ type: "session.created", id: "evt_created", created: sessions.parent.time.created,
     data: { sessionID: "parent", agent: "orchestrator", location: { directory: root } } })
   const emit = (event: any) => { handlers.get(event.type)?.(event); for (const listener of listeners) listener({ details: event }) }
-  const f = { context, generation, histories, sessions, inboxes, cache, slots, handlers, listeners, calls, options, guard, claim, created, emit, renderer }
+  const f = { context, generation, role, get childID(): string { return calls.created[0]! }, histories, sessions, inboxes, cache, slots, handlers, listeners, calls, options, guard, claim, created, emit, renderer }
   fakes.set(context, f)
   return f
 }
+function expectNoImplementation(f: ReturnType<typeof fake>) {
+  expect(f.calls.imported).toHaveLength(0)
+  expect(f.calls.created).toHaveLength(0)
+  expect(Object.keys(f.sessions).sort()).toEqual(["parent", "planner-child"])
+}
+
 function evidence(context: Context, generation: Generation, baseline: GitSnapshot, location: { directory: string }) {
   return activationEvidence(generation, location, baseline, 0, fakes.get(context)!.created() as any)
 }
@@ -283,18 +301,18 @@ async function implement(context: Context, generation: Generation, baseline: Git
   return authorizePublishedAttempt(context, published, f.guard)
 }
 
-// Native/CAP sequencing is doubled. Only post-dispatch Git boundary observations
-// use the real repository in these two integration cases.
+// Native/CAP sequencing is doubled. The final result-read barrier and Git gate
+// observe the real repository; unrelated host/policy reads use the snapshot double.
 async function realImplementationGate(f: ReturnType<typeof fake>, baseline: GitSnapshot) {
-  // These small histories fit one real API page. Pagination invariants are
-  // proved with doubles; do not multiply Git observations for artificial pages.
   f.options.singlePage = true
   const observer = new SnapshotObserver()
   observer.configure(baseline.root, baseline.head, baseline.paths)
-  const onPrompt = f.options.onPrompt
-  f.options.onPrompt = (value) => {
-    mock.module(gitModulePath, () => realGit)
-    onPrompt?.(value)
+  const onRead = f.options.onRead
+  let resultReads = 0
+  f.options.onRead = (kind, id) => {
+    onRead?.(kind, id)
+    if (kind === "messages" && id === f.childID && f.calls.prompted.length && ++resultReads === 2)
+      mock.module(gitModulePath, () => realGit)
   }
   mock.module(gitModulePath, () => ({ ...realGit, observeGit: observer.observe }))
   try { return await implement(f.context, f.generation, baseline, "parent", { directory: baseline.root }) }
@@ -312,7 +330,7 @@ snapshotTest("post-idle publication binds exact Planner P and publishes it witho
     metadata: { source: "planner", planHash: result.publication.payload.metadata!.planHash }, resume: false }])
   expect(f.calls.toasts[0]).toBe("root wait returned")
   expect(f.calls.decided).toEqual([])
-  expect(f.calls.switched).toEqual([])
+  expectNoImplementation(f)
   expect(f.calls.prompted).toEqual([])
   expect(observer.calls(root).slice(1).every((call) => call.baseline !== undefined)).toBe(true)
 
@@ -349,14 +367,15 @@ snapshotTest("publication reports an immediate root wake after synthetic admissi
   expect(f.calls.prompted).toEqual([])
 })
 
-test("binds native calls and exact Planner result, authorizes the published candidate, switches and prompts exact slot once", async () => {
+test("binds native calls and exact Planner result, authorizes the published candidate, creates and prompts exact child once", async () => {
   const root = fixture()
   const f = fake(root, { decision: true, onPrompt: () => writeFileSync(path.join(root, "old.txt"), "implemented\n") })
   const baseline = observeGit(root)
   const candidate = makeCandidate(parseProposal(proposal, baseline.root), baseline.root, baseline.head)
   expect(await realImplementationGate(f, baseline)).toContain("Implementation gate complete")
   expect(f.calls.decided).toEqual([candidateMessage(candidate)])
-  expect(f.calls.switched).toEqual(["slot-child"])
+  expect(f.calls.imported).toHaveLength(1)
+  expect(f.calls.created).toEqual([f.childID])
   const trustedPrompt = [
     "You are the Implementer for one authorized implementation attempt.",
     "Implement the frozen proposal below. Modify only its exact authorized repository paths; do not add, edit, or delete any other repository path.",
@@ -370,11 +389,11 @@ test("binds native calls and exact Planner result, authorizes the published cand
     JSON.stringify(candidate.proposal),
   ].join("\n")
   expect(implementerPrompt(candidate)).toBe(trustedPrompt)
-  expect(f.calls.prompted).toEqual([{ sessionID: "slot-child", text: trustedPrompt }])
+  expect(f.calls.prompted).toEqual([{ sessionID: f.childID, text: trustedPrompt }])
   expect(f.calls.prompted[0].text).toContain(`Bound HEAD: ${baseline.head}`)
 })
 
-snapshotTest("Planner may complete read and search tools while the slot remains inert", async (observer) => {
+snapshotTest("Planner may complete read and search tools while the implementation child does not exist", async (observer) => {
   for (const tool of ["read", "glob", "grep"]) {
     const root = snapshotFixture(observer)
     const f = fake(root, { decision: false })
@@ -383,33 +402,29 @@ snapshotTest("Planner may complete read and search tools while the slot remains 
     ] })
     await expect(implement(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow("cancelled")
     expect(f.calls.decided).toHaveLength(1)
-    expect(f.calls.switched).toEqual([])
+    expectNoImplementation(f)
   }
 })
 
 snapshotTest("missing, duplicate, continued, background, or substituted native child evidence stops before decision", async (observer) => {
   for (const mutate of [
-    (f: ReturnType<typeof fake>) => { f.histories.parent[2].content.pop() },
+    (f: ReturnType<typeof fake>) => { f.histories.parent[1].content.pop() },
     (f: ReturnType<typeof fake>) => { f.histories.parent[1].content.push(f.histories.parent[1].content[0]) },
-    (f: ReturnType<typeof fake>) => { f.histories.parent[2].content[0].state.input.sessionID = "old-child" },
+    (f: ReturnType<typeof fake>) => { f.histories.parent[1].content[0].state.input.sessionID = "old-child" },
     (f: ReturnType<typeof fake>) => { f.histories.parent[1].content[0].state.input.background = false },
     (f: ReturnType<typeof fake>) => { f.histories.parent[1].content[0].state.input.model = "other" },
     (f: ReturnType<typeof fake>) => { f.histories.parent[1].content[0].state.input.prompt += " " },
-    (f: ReturnType<typeof fake>) => { f.histories.parent[2].content[0].state.input.prompt += " " },
-    (f: ReturnType<typeof fake>) => { f.histories.parent[2].id = f.histories.parent[1].id },
-    (f: ReturnType<typeof fake>) => { f.histories.parent[2].content[0].state.metadata.sessionID = "planner-child" },
     (f: ReturnType<typeof fake>) => { f.histories.parent[1].content[0].state.metadata.status = "running" },
-    (f: ReturnType<typeof fake>) => { f.sessions["slot-child"].parentID = "other" },
+    (f: ReturnType<typeof fake>) => { f.sessions["planner-child"].parentID = "other" },
     (f: ReturnType<typeof fake>) => { f.histories.parent[1].content[0].state.content[0].text = "paraphrase" },
     (f: ReturnType<typeof fake>) => { f.histories["planner-child"].push(user("extra", "extra")) },
-    (f: ReturnType<typeof fake>) => { f.histories["slot-child"].push({ type: "agent-switched", id: "early", agent: "authorized_implementer" }) },
   ]) {
     const root = snapshotFixture(observer)
     const f = fake(root, { decision: true })
     mutate(f)
     await expect(implement(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow()
     expect(f.calls.decided).toEqual([])
-    expect(f.calls.switched).toEqual([])
+    expectNoImplementation(f)
   }
 })
 
@@ -429,18 +444,18 @@ snapshotTest("dirty baseline, negative decision, changed worktree, and revoked g
     const f = fake(root, options)
     await expect(implement(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow()
     expect(f.calls.prompted).toEqual([])
-    expect(f.calls.switched).toEqual([])
+    expectNoImplementation(f)
     observer.configure(root)
   }
   const revoked = fake(root, { decision: true })
   revoked.generation.revoked = true
   await expect(implement(revoked.context, revoked.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow()
-  expect(revoked.calls.switched).toEqual([])
+  expectNoImplementation(revoked)
 })
 
-snapshotTest("after switch or ambiguous prompt, no second dispatch or child is created", async (observer) => {
+snapshotTest("after creation or ambiguous prompt, no second dispatch or child is created", async (observer) => {
   for (const options of [
-    { decision: true, onSwitch: () => { throw new Error("switch uncertain") } },
+    { decision: true, onImport: () => { throw new Error("creation uncertain") } },
     { decision: true, promptError: true },
     { decision: true, promptMismatch: true },
     { decision: true, promptIDMismatch: true },
@@ -448,18 +463,19 @@ snapshotTest("after switch or ambiguous prompt, no second dispatch or child is c
     const root = snapshotFixture(observer)
     const f = fake(root, options)
     await expect(implement(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow()
-    expect(f.calls.switched).toEqual(["slot-child"])
+    expect(f.calls.imported).toHaveLength(1)
+    expect(f.calls.created).toEqual([f.childID])
     expect(f.calls.prompted.length).toBeLessThanOrEqual(1)
   }
 })
 
-snapshotTest("stale binding after decision or switch and revoked generation after prompt stop without redispatch", async (observer) => {
-  for (const boundary of ["decision", "switch", "prompt"] as const) {
+snapshotTest("stale binding after decision or creation and revoked generation after prompt stop without redispatch", async (observer) => {
+  for (const boundary of ["decision", "creation", "prompt"] as const) {
     const root = snapshotFixture(observer)
     let f: ReturnType<typeof fake>
     f = fake(root, { decision: true,
-      onDecision: boundary === "decision" ? () => { f.histories["slot-child"].push(user("extra-slot", "continued")) } : undefined,
-      onSwitch: boundary === "switch" ? () => { f.histories["slot-child"].push(user("extra-slot", "continued")) } : undefined,
+      onDecision: boundary === "decision" ? () => { f.histories["planner-child"].push(user("extra-planner", "continued")) } : undefined,
+      onImport: boundary === "creation" ? () => { f.histories[f.childID].push(user("extra-child", "continued")) } : undefined,
       onPrompt: boundary === "prompt" ? () => { f.generation.revoked = true } : undefined,
     })
     await expect(implement(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow()
@@ -467,17 +483,22 @@ snapshotTest("stale binding after decision or switch and revoked generation afte
   }
 })
 
-snapshotTest("authorized result must remain in the exact slot with one successful trusted input", async (observer) => {
-  for (const mutation of ["none", "extra-input", "wrong-agent", "failed-outcome"] as const) {
+snapshotTest("authorized result must remain in the exact child with one successful trusted input", async (observer) => {
+  for (const mutation of ["none", "extra-input", "wrong-agent", "failed-outcome", "wrong-execution-model", "extra-control", "input-metadata", "wrong-input-id", "wrong-input-text"] as const) {
     const root = snapshotFixture(observer)
     let f: ReturnType<typeof fake>
     f = fake(root, { decision: true,
       onPrompt: mutation === "none" ? () => observer.configure(root, HEAD, ["old.txt"]) : undefined,
       onWait: (sessionID) => {
-      if (sessionID !== "slot-child") return
-      if (mutation === "extra-input") f.histories["slot-child"].push(user("extra", "more"))
-      if (mutation === "wrong-agent") f.sessions["slot-child"].agent = "planner"
-      if (mutation === "failed-outcome") f.sessions["slot-child"].outcome = "failed"
+      if (sessionID !== f.childID) return
+      if (mutation === "extra-input") f.histories[f.childID].push(user("extra", "more"))
+      if (mutation === "wrong-agent") f.sessions[f.childID].agent = "planner"
+      if (mutation === "failed-outcome") f.sessions[f.childID].outcome = "failed"
+      if (mutation === "wrong-execution-model") f.histories[f.childID][1].model.id = "different"
+      if (mutation === "extra-control") f.histories[f.childID].push({ type: "location-switched", id: "external" })
+      if (mutation === "input-metadata") f.histories[f.childID][0].metadata = { altered: true }
+      if (mutation === "wrong-input-id") f.histories[f.childID][0].id = "different"
+      if (mutation === "wrong-input-text") f.histories[f.childID][0].text += " changed"
     } })
     const result = implement(f.context, f.generation, observeGit(root), "parent", { directory: root })
     if (mutation === "none") {
@@ -516,7 +537,7 @@ test("native role files deny mutation and delegation through ordered effective r
   }
   const effect = (rules: Rule[], action: string, resource = "*") =>
     rules.filter((rule) => (rule.action === "*" || rule.action === action) && (rule.resource === "*" || rule.resource === resource)).at(-1)?.effect
-  for (const name of ["orchestrator", "planner", "implementer_slot", "authorized_implementer"]) {
+  for (const name of ["orchestrator", "planner", "authorized_implementer"]) {
     const rules = load(name)
     expect(rules[0]).toEqual({ action: "*", resource: "*", effect: "deny" })
     for (const action of ["execute", "session_move", "session_rename", "opencode", "mcp", "question"]) {
@@ -527,16 +548,14 @@ test("native role files deny mutation and delegation through ordered effective r
   }
   const orchestrator = load("orchestrator")
   expect(effect(orchestrator, "subagent", "planner")).toBe("allow")
-  expect(effect(orchestrator, "subagent", "implementer_slot")).toBe("allow")
+  expect(effect(orchestrator, "subagent", "authorized_implementer")).toBe("deny")
   expect(effect(orchestrator, "edit")).toBe("deny")
   expect(effect(orchestrator, "shell", "git status")).toBe("deny")
-  for (const name of ["planner", "implementer_slot"]) {
+  for (const name of ["planner"]) {
     const rules = load(name)
     for (const action of ["read", "glob", "grep"]) expect(effect(rules, action)).toBe("allow")
     for (const action of ["edit", "shell", "subagent", "write", "patch"]) expect(effect(rules, action)).toBe("deny")
   }
-  const slot = load("implementer_slot")
-  expect(effect(slot, "execute")).toBe("deny")
   const authorized = load("authorized_implementer")
   expect(effect(authorized, "edit")).toBe("allow")
   expect(effect(authorized, "shell", "git status")).toBe("allow")
@@ -548,30 +567,28 @@ test("native role files deny mutation and delegation through ordered effective r
   expect(instructions).toContain("Do not intentionally manipulate Git configuration, index metadata, ignore rules, repository metadata, or other shell accessible state to conceal changes or evade ordinary Git changed-path scope observation.")
 })
 
-snapshotTest("session permission overrides and changed bound transcripts stop before role switch", async (observer) => {
+snapshotTest("session permission overrides and changed bound transcripts stop before child creation", async (observer) => {
   for (const mutate of [
-    (f: ReturnType<typeof fake>) => { f.sessions["slot-child"].permissions = [{ action: "edit", resource: "*", effect: "allow" }] },
     (f: ReturnType<typeof fake>) => { f.sessions.parent.permissions = [{ action: "shell", resource: "*", effect: "allow" }] },
     (f: ReturnType<typeof fake>) => { f.sessions["planner-child"].permissions = [{ action: "edit", resource: "*", effect: "allow" }] },
     (f: ReturnType<typeof fake>) => { f.histories.parent.push(user("extra-parent", "another request")) },
-    (f: ReturnType<typeof fake>) => { f.histories["slot-child"].push(user("continuation", "again")) },
   ]) {
     const root = snapshotFixture(observer)
     const f = fake(root, { decision: true })
     mutate(f)
     await expect(implement(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow()
-    expect(f.calls.switched).toEqual([])
+    expectNoImplementation(f)
   }
 })
 
-snapshotTest("generation revocation after decision or switch stops before trusted prompt", async (observer) => {
-  for (const boundary of ["decision", "switch"] as const) {
+snapshotTest("generation revocation after decision or creation stops before trusted prompt", async (observer) => {
+  for (const boundary of ["decision", "creation"] as const) {
     const root = snapshotFixture(observer)
     let generation: Generation
     const f = fake(root, {
       decision: true,
       onDecision: boundary === "decision" ? () => { generation.revoked = true } : undefined,
-      onSwitch: boundary === "switch" ? () => { generation.revoked = true } : undefined,
+      onImport: boundary === "creation" ? () => { generation.revoked = true } : undefined,
     })
     generation = f.generation
     await expect(implement(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow("revoked")
@@ -579,24 +596,16 @@ snapshotTest("generation revocation after decision or switch stops before truste
   }
 })
 
-snapshotTest("Planner bootstrap rejects forbidden or unfinished tools and slot rejects any tool or non-READY result", async (observer) => {
-  for (const [sessionID, name, status] of [
-    ["planner-child", "edit", "completed"], ["planner-child", "read", "running"],
-    ["slot-child", "read", "completed"], ["slot-child", "glob", "completed"],
-  ]) {
+snapshotTest("Planner rejects forbidden or unfinished tools", async (observer) => {
+  for (const [name, status] of [["edit", "completed"], ["read", "running"]]) {
     const root = snapshotFixture(observer)
     const f = fake(root, { decision: true })
-    f.histories[sessionID!].splice(1, 0, { type: "assistant", id: "bootstrap-tool", agent: f.sessions[sessionID!].agent,
-      content: [{ type: "tool", id: "bootstrap-call", name, state: { status, input: {}, content: [], metadata: {} } }] })
+    f.histories["planner-child"].splice(1, 0, { type: "assistant", id: "planner-tool", agent: "planner", model,
+      content: [{ type: "tool", id: "planner-call", name, state: { status, input: {}, content: [], metadata: {} } }] })
     await expect(implement(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow("disallowed tool")
     expect(f.calls.decided).toEqual([])
-    expect(f.calls.switched).toEqual([])
+    expectNoImplementation(f)
   }
-  const root = snapshotFixture(observer)
-  const f = fake(root, { decision: true })
-  f.histories["slot-child"][1].content[0].text = "READY\n"
-  await expect(implement(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow("final text")
-  expect(f.calls.decided).toEqual([])
 })
 
 snapshotTest("repeated message cursors and duplicate IDs across pages reject native binding", async (observer) => {
@@ -616,35 +625,36 @@ snapshotTest("repeated message cursors and duplicate IDs across pages reject nat
   }
 })
 
-snapshotTest("existing parent and Planner content remains immutable across decision and switch", async (observer) => {
-  for (const boundary of ["decision", "switch"] as const) {
+snapshotTest("existing parent and Planner content remains immutable across decision and creation", async (observer) => {
+  for (const boundary of ["decision", "creation"] as const) {
     for (const sessionID of ["parent", "planner-child"]) {
       const root = snapshotFixture(observer)
-      const mutate = () => { f.histories[sessionID][sessionID === "parent" ? 3 : 1].content[0].text += " changed" }
+      const mutate = () => { f.histories[sessionID][sessionID === "parent" ? 2 : 1].content[0].text += " changed" }
       const f = fake(root, { decision: true, onDecision: boundary === "decision" ? mutate : undefined,
-        onSwitch: boundary === "switch" ? mutate : undefined })
+        onImport: boundary === "creation" ? mutate : undefined })
       await expect(implement(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow(/transcript changed|output differs from exact child result/)
       expect(f.calls.prompted).toEqual([])
-      expect(f.calls.switched).toHaveLength(boundary === "decision" ? 0 : 1)
+      expect(f.calls.created).toHaveLength(boundary === "decision" ? 0 : 1)
     }
   }
 })
 
-snapshotTest("slot is rechecked after awaited parent verification before trusted prompt", async (observer) => {
+snapshotTest("child is rechecked after awaited parent verification before trusted prompt", async (observer) => {
   const root = snapshotFixture(observer)
   const f = fake(root, { decision: true, onGet: (sessionID) => {
-    if (sessionID === "parent" && f.calls.switched.length) f.histories["slot-child"].push(user("late-input", "continued"))
+    if (sessionID === "parent" && f.calls.created.length) f.histories[f.childID].push(user("late-input", "continued"))
   } })
   await expect(implement(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow("before trusted prompt")
-  expect(f.calls.switched).toEqual(["slot-child"])
+  expect(f.calls.imported).toHaveLength(1)
+  expect(f.calls.created).toEqual([f.childID])
   expect(f.calls.prompted).toEqual([])
 })
 
-snapshotTest("post-switch session permission overrides cannot admit the trusted prompt", async (observer) => {
-  for (const sessionID of ["parent", "planner-child", "slot-child"]) {
+snapshotTest("post-creation session permission overrides cannot admit the trusted prompt", async (observer) => {
+  for (const target of ["parent", "planner-child", "child"]) {
     const root = snapshotFixture(observer)
-    const f = fake(root, { decision: true, onSwitch: () => {
-      f.sessions[sessionID].permissions = [{ action: "edit", resource: "*", effect: "allow" }]
+    const f = fake(root, { decision: true, onImport: () => {
+      f.sessions[target === "child" ? f.childID : target].permissions = [{ action: "edit", resource: "*", effect: "allow" }]
     } })
     await expect(implement(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow("permissions")
     expect(f.calls.prompted).toEqual([])
@@ -686,7 +696,7 @@ snapshotTest("a delivered Plan never relaxes the original native history binding
   f.histories.parent.push({ type: "synthetic", id: published.publication.id, text: proposal,
     description: renderPlan(published.candidate), metadata: published.publication.payload.metadata })
   await expect(authorizePublishedAttempt(f.context, published, f.guard)).rejects.toThrow("parent transcript changed")
-  expect(f.calls.switched).toEqual([])
+  expectNoImplementation(f)
   expect(f.calls.prompted).toEqual([])
 })
 
@@ -705,7 +715,7 @@ snapshotTest("publication refuses pending inbox input and a changed publication 
 })
 
 snapshotTest("trusted prompt admission rejects substituted identity or attachments without redispatch", async (observer) => {
-  for (const mutation of ["sessionID", "type", "id", "files", "agents", "skills"] as const) {
+  for (const mutation of ["sessionID", "type", "id", "files", "agents", "skills", "metadata", "delivery", "time", "payload-extra"] as const) {
     const root = snapshotFixture(observer)
     const f = fake(root, { decision: true })
     const host = f.context as unknown as any
@@ -713,16 +723,20 @@ snapshotTest("trusted prompt admission rejects substituted identity or attachmen
     host.client.session.prompt = async (input: any) => {
       const returned = await prompt(input)
       if (["files", "agents", "skills"].includes(mutation)) returned.payload[mutation] = ["attachment"]
+      else if (mutation === "metadata") returned.payload.metadata = { altered: true }
+      else if (mutation === "payload-extra") returned.payload.unexpected = true
+      else if (mutation === "time") returned.time.created = NaN
       else returned[mutation] = mutation === "id" ? "" : "substituted"
       return returned
     }
     await expect(implement(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow("unexpected input")
-    expect(f.calls.switched).toEqual(["slot-child"])
+    expect(f.calls.imported).toHaveLength(1)
+    expect(f.calls.created).toEqual([f.childID])
     expect(f.calls.prompted).toHaveLength(1)
   }
 })
 
-snapshotTest("activation location substitution during decision cannot switch or dispatch", async (observer) => {
+snapshotTest("activation location substitution during decision cannot create or dispatch", async (observer) => {
   for (const field of ["directory", "workspaceID"] as const) {
     const root = snapshotFixture(observer)
     const [location, setLocation] = createStore({ directory: root, workspaceID: undefined as string | undefined,
@@ -730,7 +744,7 @@ snapshotTest("activation location substitution during decision cannot switch or 
     const f = fake(root, { decision: true, onDecision: () => { setLocation(field, "changed") } })
     Object.defineProperty(f.context, "location", { get: () => location })
     await expect(implement(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow("TUI location changed")
-    expect(f.calls.switched).toEqual([])
+    expectNoImplementation(f)
     expect(f.calls.prompted).toEqual([])
   }
 })
@@ -805,7 +819,8 @@ snapshotTest("TUI startup accepts non-cloneable synchronized location info and d
     view.click(0)
     await settleUntil(() => f.calls.toasts.length > 0)
     expect(f.calls.toasts.at(-1)).toContain("Implementation gate complete")
-    expect(f.calls.switched).toEqual(["slot-child"])
+    expect(f.calls.imported).toHaveLength(1)
+    expect(f.calls.created).toEqual([f.childID])
     expect(f.calls.prompted).toHaveLength(1)
     if (typeof cleanup === "function") cleanup()
     view.dispose()
@@ -832,7 +847,7 @@ snapshotTest("TUI startup location evidence survives proxy mutation and rejects 
     expect(view.buttons).toEqual([])
     expect(view.text()).toContain("STOP — Implementation was not admitted")
     view.dispose()
-    expect(f.calls.switched).toEqual([])
+    expectNoImplementation(f)
     expect(f.calls.prompted).toEqual([])
     if (typeof cleanup === "function") cleanup()
   }
@@ -843,15 +858,15 @@ snapshotTest("retained evidence is copied, deeply immutable, and coherent", asyn
   const f = fake(root)
   const published = await publication(f.context, f.generation, observeGit(root), "parent", { directory: root })
   for (const value of [published, published.activation, published.activation.location, published.activation.creation,
-    published.activation.creation.data, published.bound, published.bound.slot, published.bound.plannerChild,
+    published.activation.creation.data, published.bound, published.bound.planner, published.bound.plannerChild,
     published.publication, published.publication.payload, published.publication.payload.metadata, published.publication.time]) expect(Object.isFrozen(value)).toBe(true)
-  expect(() => { (published.bound.slot as any).childID = "replacement" }).toThrow()
+  expect(() => { (published.bound.planner as any).childID = "replacement" }).toThrow()
   f.sessions.parent.location.directory = "different"
   expect(published.activation.location.directory).toBe(root)
   assertPublishedCoherence(published)
   for (const mutation of [
     { ...published, candidate: { ...published.candidate, root: "different" } },
-    { ...published, bound: { ...published.bound, slot: { ...published.bound.slot, childID: "replacement" } } },
+    { ...published, bound: { ...published.bound, planner: { ...published.bound.planner, childID: "replacement" } } },
     { ...published, publication: { ...published.publication, payload: { ...published.publication.payload, metadata: { source: "planner", planHash: "forged" } } } },
   ]) expect(() => assertPublishedCoherence(mutation as PublishedAttempt)).toThrow()
 })
@@ -895,12 +910,12 @@ snapshotTest("exact pending publication admits reordered keys and rejects every 
       else item[mutation] = "different"
       await expect(verifyPublishedAttempt(f.context, published, f.guard)).rejects.toThrow()
     }
-    expect(f.calls.switched).toEqual([])
+    expectNoImplementation(f)
     expect(f.calls.prompted).toEqual([])
   }
 })
 
-snapshotTest("TUI pointer authorization claims synchronously and dispatches one exact retained slot", async (observer) => {
+snapshotTest("TUI pointer authorization claims synchronously and dispatches one exact created child", async (observer) => {
   const root = snapshotFixture(observer)
   const f = fake(root, { onPrompt: () => observer.configure(root, HEAD, ["old.txt"]) })
   const cleanup = await activate(f)
@@ -915,7 +930,7 @@ snapshotTest("TUI pointer authorization claims synchronously and dispatches one 
   expect(view.text()).toContain("Authorize")
   expect(view.text()).toContain("Cancel")
   view.click(0, 2)
-  expect(f.calls.switched).toEqual([])
+  expectNoImplementation(f)
   view.click(0)
   expect(f.slots[0].removed).toBe(false)
   expect(view.text()).toContain("Authorization claimed — implementation admission in progress…")
@@ -927,7 +942,8 @@ snapshotTest("TUI pointer authorization claims synchronously and dispatches one 
   expect(view.text()).toContain(`HEAD ${HEAD} unchanged`)
   expect(view.text()).toContain("Resulting paths (1): old.txt")
   expect(view.text()).toContain("STOP before Reviewer / Commit")
-  expect(f.calls.switched).toEqual(["slot-child"])
+  expect(f.calls.imported).toHaveLength(1)
+  expect(f.calls.created).toEqual([f.childID])
   expect(f.calls.prompted).toHaveLength(1)
   expect(f.calls.prompted[0].text).toContain(`Bound HEAD: ${HEAD}`)
   expect(f.inboxes.parent).toHaveLength(1)
@@ -948,7 +964,7 @@ snapshotTest("Cancel wins once, keeps the Plan, and stale Authorize stays inert"
   view.click(1); view.click(0); view.click(1)
   expect(f.calls.toasts).toEqual(["Cancelled — no implementation admitted"])
   expect(view.text()).toContain("Cancelled — no implementation admitted")
-  expect(f.calls.switched).toEqual([])
+  expectNoImplementation(f)
   expect(f.calls.prompted).toEqual([])
   expect(f.cache.parent).toEqual(plan)
   expect(f.inboxes.parent).toHaveLength(1)
@@ -964,13 +980,13 @@ snapshotTest("trusted STOP status persists before dispatch and keeps the Plan un
   const retainedCache = structuredClone(f.cache.parent)
   const retainedPublication = structuredClone(f.inboxes.parent)
   f.emit({ type: "session.execution.started", id: "evt_unexpected", data: { sessionID: "parent" } })
-  expect(view.text()).toContain("STOP — Implementation was not admitted; no implementation prompt was dispatched.")
-  expect(f.calls.switched).toEqual([])
+  expect(view.text()).toContain("STOP — Implementation was not admitted; no child created or implementation prompt was dispatched.")
+  expectNoImplementation(f)
   expect(f.calls.prompted).toEqual([])
   expect(f.cache.parent).toEqual(retainedCache)
   expect(f.inboxes.parent).toEqual(retainedPublication)
   view.click(0)
-  expect(f.calls.switched).toEqual([])
+  expectNoImplementation(f)
   expect(f.calls.prompted).toEqual([])
   cleanup(); view.dispose()
 })
@@ -1003,7 +1019,7 @@ snapshotTest("initially dirty stable Plan publishes explicit inert UX and cannot
   observer.configure(root)
   f.renderer.emit("resize")
   expect(f.slots).toHaveLength(1)
-  expect(f.calls.switched).toEqual([])
+  expectNoImplementation(f)
   expect(f.calls.prompted).toEqual([])
   expect(f.calls.synthetic).toHaveLength(1)
   cleanup(); view.dispose()
@@ -1042,7 +1058,7 @@ snapshotTest("root wake during publication permanently stops before installing c
   expect(view.buttons).toEqual([])
   expect(view.text()).toContain("STOP — Implementation was not admitted")
   view.dispose()
-  expect(f.calls.switched).toEqual([])
+  expectNoImplementation(f)
   cleanup()
 })
 
@@ -1059,14 +1075,14 @@ snapshotTest("lost view, navigation, projection mutation, and cleanup cannot res
     if (loss === "wake") f.emit({ type: "session.execution.started", id: "evt_wake", data: { sessionID: "parent" } })
     if (loss === "cleanup") cleanup()
     view.click(0)
-    expect(f.calls.switched).toEqual([])
+    expectNoImplementation(f)
     expect(f.calls.prompted).toEqual([])
     if (loss === "unmount") expect(f.calls.toasts.at(-1)).toContain("Authorization view was lost")
     f.renderer.terminalWidth = 120
     f.renderer.emit("resize")
     f.renderer.emit("frame")
     view.click(0)
-    expect(f.calls.switched).toEqual([])
+    expectNoImplementation(f)
     expect(f.calls.prompted).toEqual([])
     if (loss === "unmount") {
       const later = mount(f)
@@ -1078,28 +1094,29 @@ snapshotTest("lost view, navigation, projection mutation, and cleanup cannot res
   }
 })
 
-snapshotTest("claimed authorization still stops on non-layout drift during awaited switch", async (observer) => {
+snapshotTest("claimed authorization still stops on non-layout drift during awaited creation", async (observer) => {
   for (const drift of ["route", "location", "head", "dirty", "projection", "native", "permissions", "cleanup"] as const) {
     const root = snapshotFixture(observer)
     let cleanup!: () => void
-    const f = fake(root, { onSwitch: () => {
+    const f = fake(root, { onImport: () => {
       if (drift === "route") (f.context.ui.router as any).current = () => ({ type: "home" })
       if (drift === "location") (f.context as any).location.workspaceID = "different"
       if (drift === "head") observer.configure(root, "2".repeat(40))
       if (drift === "dirty") observer.configure(root, HEAD, ["old.txt"])
       if (drift === "projection") f.cache.parent.at(-1).description += " changed"
       if (drift === "native") f.histories["planner-child"][1].content[0].text += " changed"
-      if (drift === "permissions") f.sessions["slot-child"].permissions = [{ action: "edit", resource: "*", effect: "allow" }]
+      if (drift === "permissions") f.sessions[f.childID].permissions = [{ action: "edit", resource: "*", effect: "allow" }]
       if (drift === "cleanup") cleanup()
     } })
     cleanup = await activate(f)
     const view = mount(f)
     view.click(0)
-    await settleUntil(() => drift === "cleanup" ? f.calls.switched.length > 0 : f.calls.toasts.length > 0)
-    expect(f.calls.switched).toEqual(["slot-child"])
+    await settleUntil(() => drift === "cleanup" ? f.calls.created.length > 0 : f.calls.toasts.length > 0)
+    expect(f.calls.imported).toHaveLength(1)
+    expect(f.calls.created).toEqual([f.childID])
     expect(f.calls.prompted).toEqual([])
     view.click(0)
-    expect(f.calls.switched).toHaveLength(1)
+    expect(f.calls.created).toHaveLength(1)
     cleanup(); view.dispose()
   }
 })
@@ -1118,7 +1135,7 @@ snapshotTest("pending resize rejects stale callbacks and resize back needs a fre
   f.renderer.terminalWidth = 120
   f.renderer.emit("resize")
   view.click(0); view.click(1)
-  expect(f.calls.switched).toEqual([])
+  expectNoImplementation(f)
   expect(f.calls.prompted).toEqual([])
   expect(f.calls.toasts).toEqual([])
   expect(view.text()).not.toContain("Authorization claimed")
@@ -1128,7 +1145,8 @@ snapshotTest("pending resize rejects stale callbacks and resize back needs a fre
   expect(view.text()).toContain("Authorization claimed")
   await settleUntil(() => f.calls.toasts.length > 0)
   expect(f.calls.toasts.at(-1)).toContain("Implementation gate complete")
-  expect(f.calls.switched).toEqual(["slot-child"])
+  expect(f.calls.imported).toHaveLength(1)
+  expect(f.calls.created).toEqual([f.childID])
   expect(f.calls.prompted).toHaveLength(1)
   expect(f.calls.synthetic).toHaveLength(1)
   cleanup(); view.dispose()
@@ -1155,7 +1173,7 @@ snapshotTest("pending invalid frames clear the entire proof and recover only on 
     if (invalid === "viewport") view.buttons[1].screenY = 60
     f.renderer.emit("frame")
     view.click(0); view.click(1)
-    expect(f.calls.switched).toEqual([])
+    expectNoImplementation(f)
     expect(f.calls.prompted).toEqual([])
     expect(f.calls.toasts).toEqual([])
     // Repair all geometry without a completed frame. This is still inert.
@@ -1166,14 +1184,15 @@ snapshotTest("pending invalid frames clear the entire proof and recover only on 
     for (const node of copy) { node.height = 1; node.width = 120 }
     for (const node of view.buttons) { node.width = 13; node.screenY = 0 }
     view.click(0); view.click(1)
-    expect(f.calls.switched).toEqual([])
+    expectNoImplementation(f)
     expect(f.calls.prompted).toEqual([])
     expect(f.calls.toasts).toEqual([])
     f.renderer.emit("frame")
     view.click(0)
     await settleUntil(() => f.calls.toasts.length > 0)
     expect(f.calls.toasts.at(-1)).toContain("Implementation gate complete")
-    expect(f.calls.switched).toEqual(["slot-child"])
+    expect(f.calls.imported).toHaveLength(1)
+    expect(f.calls.created).toEqual([f.childID])
     expect(f.calls.prompted).toHaveLength(1)
     expect(f.calls.synthetic).toHaveLength(1)
     cleanup(); view.dispose()
@@ -1196,7 +1215,7 @@ snapshotTest("pending resize remeasures current wrapping and waits for the follo
   f.renderer.emit("frame")
   view.click(0); view.click(1)
   expect(f.calls.toasts).toEqual([])
-  expect(f.calls.switched).toEqual([])
+  expectNoImplementation(f)
   expect(f.calls.prompted).toEqual([])
   const rows = Math.ceil([...`Worktree: ${JSON.stringify(root)}`].length / 80)
   expect(rows).toBeLessThanOrEqual(2)
@@ -1206,7 +1225,8 @@ snapshotTest("pending resize remeasures current wrapping and waits for the follo
   view.click(0)
   await settleUntil(() => f.calls.toasts.length > 0)
   expect(f.calls.toasts.at(-1)).toContain("Implementation gate complete")
-  expect(f.calls.switched).toEqual(["slot-child"])
+  expect(f.calls.imported).toHaveLength(1)
+  expect(f.calls.created).toEqual([f.childID])
   expect(f.calls.prompted).toHaveLength(1)
   cleanup(); view.dispose()
 })
@@ -1220,17 +1240,17 @@ snapshotTest("the synchronous decision boundary rechecks detailed geometry again
   view.buttons[1].screenX = 120
   view.click(0)
   expect(f.calls.toasts).toEqual([])
-  expect(f.calls.switched).toEqual([])
+  expectNoImplementation(f)
   expect(f.calls.prompted).toEqual([])
   view.buttons[1].screenX = 0
   view.click(0); view.click(1)
   expect(f.calls.toasts).toEqual([])
-  expect(f.calls.switched).toEqual([])
+  expectNoImplementation(f)
   expect(f.calls.prompted).toEqual([])
   f.renderer.emit("frame")
   view.click(1)
   expect(f.calls.toasts).toEqual(["Cancelled — no implementation admitted"])
-  expect(f.calls.switched).toEqual([])
+  expectNoImplementation(f)
   expect(f.calls.prompted).toEqual([])
   cleanup(); view.dispose()
 })
@@ -1244,18 +1264,18 @@ snapshotTest("sub-minimum pending geometry before mount can recover without repl
   const view = mount(f)
   view.click(0); view.click(1)
   expect(f.calls.toasts).toEqual([])
-  expect(f.calls.switched).toEqual([])
+  expectNoImplementation(f)
   expect(f.calls.prompted).toEqual([])
   f.renderer.terminalWidth = 120
   f.renderer.terminalHeight = 60
   f.renderer.emit("resize")
   view.click(0)
-  expect(f.calls.switched).toEqual([])
+  expectNoImplementation(f)
   f.renderer.emit("frame")
   view.click(1)
   expect(f.calls.toasts).toEqual(["Cancelled — no implementation admitted"])
   expect(f.calls.synthetic).toHaveLength(1)
-  expect(f.calls.switched).toEqual([])
+  expectNoImplementation(f)
   expect(f.calls.prompted).toEqual([])
   cleanup(); view.dispose()
 })
@@ -1270,7 +1290,7 @@ snapshotTest("post-claim resize and DecisionStrip replacement cleanup preserve t
   const get = host.client.session.get
   host.client.session.get = async (input: any) => {
     const result = await get(input)
-    if (f.calls.switched.length && !waiting) {
+    if (f.calls.created.length && !waiting) {
       waiting = true
       await paused
     }
@@ -1284,7 +1304,8 @@ snapshotTest("post-claim resize and DecisionStrip replacement cleanup preserve t
   // Keyed status replacement disposed the DecisionStrip frame subscription.
   expect(f.renderer.listenerCount("frame")).toBe(1)
   await settleUntil(() => waiting)
-  expect(f.calls.switched).toEqual(["slot-child"])
+  expect(f.calls.imported).toHaveLength(1)
+  expect(f.calls.created).toEqual([f.childID])
   expect(view.mounted[0].width).toBe(120)
   f.renderer.emit("frame")
   for (const width of [80, 40, 160]) {
@@ -1307,33 +1328,39 @@ snapshotTest("post-claim resize and DecisionStrip replacement cleanup preserve t
   await settleUntil(() => f.calls.toasts.length > 0)
   expect(status.text()).toContain("Implementation gate complete")
   expect(f.calls.toasts.at(-1)).toContain("STOP before Reviewer / Commit")
-  expect(f.calls.switched).toEqual(["slot-child"])
+  expect(f.calls.imported).toHaveLength(1)
+  expect(f.calls.created).toEqual([f.childID])
   expect(f.calls.prompted).toHaveLength(1)
-  expect(f.calls.prompted[0]).toEqual({ sessionID: "slot-child", text: implementerPrompt(makeCandidate(parseProposal(proposal, root), root, HEAD)) })
-  expect(Object.keys(f.sessions).sort()).toEqual(["parent", "planner-child", "slot-child"])
+  expect(f.calls.prompted[0]).toEqual({ sessionID: f.childID, text: implementerPrompt(makeCandidate(parseProposal(proposal, root), root, HEAD)) })
+  expect(Object.keys(f.sessions).sort()).toEqual(["parent", "planner-child", f.childID])
   view.click(0); view.click(1)
   f.renderer.emit("resize")
   f.renderer.emit("frame")
   expect(status.buttons).toEqual([])
-  expect(f.calls.switched).toHaveLength(1)
+  expect(f.calls.created).toHaveLength(1)
   expect(f.calls.prompted).toHaveLength(1)
   cleanup(); status.dispose()
 })
 
-snapshotTest("switch identity, parent evidence, and slot results remain bound after implementation", async (observer) => {
-  for (const mutation of ["switch-id", "switch-time", "switch-metadata", "parent", "planner", "permissions"] as const) {
+snapshotTest("creation identity, parent evidence, and child results remain bound after implementation", async (observer) => {
+  for (const mutation of ["created", "model", "metadata", "parent", "planner", "permissions"] as const) {
     const root = snapshotFixture(observer)
-    const f = fake(root, { decision: true, onPrompt: () => {
-      const marker = f.histories["slot-child"].find((item) => item.type === "agent-switched")
-      if (mutation === "switch-id") marker.id += "different"
-      if (mutation === "switch-time") marker.time.created++
-      if (mutation === "switch-metadata") marker.metadata = { altered: true }
-      if (mutation === "parent") f.histories.parent.push(user("extra", "continued"))
+    const f = fake(root, { onPrompt: () => {
+      if (mutation === "created") f.sessions[f.childID].time.created++
+      if (mutation === "model") f.sessions[f.childID].model.id += "different"
+      if (mutation === "metadata") f.sessions[f.childID].metadata = { altered: true }
+      if (mutation === "parent") f.histories.parent[2].content[0].text += " changed"
       if (mutation === "planner") f.histories["planner-child"][1].content[0].text += " changed"
-      if (mutation === "permissions") f.sessions["slot-child"].permissions = [{ action: "edit", resource: "*", effect: "allow" }]
+      if (mutation === "permissions") f.sessions[f.childID].permissions = [{ action: "edit", resource: "*", effect: "allow" }]
     } })
-    await expect(implement(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow()
+    const cleanup = await activate(f)
+    const view = mount(f)
+    view.click(0)
+    await settleUntil(() => f.calls.toasts.length > 0)
+    expect(f.calls.toasts.at(-1)).toContain("STOP")
     expect(f.calls.prompted).toHaveLength(1)
+    expect(f.calls.created).toHaveLength(1)
+    cleanup(); view.dispose()
   }
 })
 
@@ -1345,12 +1372,12 @@ snapshotTest("publication and authorization reject drift at read, pagination, hy
       if (!mutated && kind === boundary) { mutated = true; observer.configure(root, HEAD, ["old.txt"]) }
     } })
     await expect(publication(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow()
-    expect(f.calls.switched).toEqual([])
+    expectNoImplementation(f)
     expect(f.calls.prompted).toEqual([])
   }
 })
 
-snapshotTest("expected synthetic, switch, and implementation events reconcile before RPC responses", async (observer) => {
+snapshotTest("expected synthetic, creation, and implementation events reconcile before RPC responses", async (observer) => {
   const root = snapshotFixture(observer)
   const f = fake(root, { events: true })
   const cleanup = await activate(f)
@@ -1362,13 +1389,13 @@ snapshotTest("expected synthetic, switch, and implementation events reconcile be
   cleanup(); view.dispose()
 })
 
-snapshotTest("unexpected native events and mismatched late switch echoes permanently invalidate", async (observer) => {
+snapshotTest("unexpected native events and mismatched late creation echoes permanently invalidate", async (observer) => {
   for (const event of [
     { type: "session.permissions", data: { sessionID: "parent", permissions: [] } },
     { type: "session.inbox.cancelled", data: { sessionID: "parent", inboxID: "different" } },
     { type: "session.inbox.delivery.changed", data: { sessionID: "parent", inboxID: "different", delivery: "queue" } },
     { type: "session.deleted", data: { sessionID: "planner-child" } },
-    { type: "session.inbox.enqueued", data: { sessionID: "slot-child", inboxID: "extra", item: { type: "user", delivery: "steer", payload: { text: "extra" } } } },
+    { type: "session.inbox.enqueued", data: { sessionID: "planner-child", inboxID: "extra", item: { type: "user", delivery: "steer", payload: { text: "extra" } } } },
   ]) {
     const root = snapshotFixture(observer)
     const f = fake(root)
@@ -1376,17 +1403,17 @@ snapshotTest("unexpected native events and mismatched late switch echoes permane
     const view = mount(f)
     f.emit({ id: "evt_interference", created: 20, ...event })
     view.click(0)
-    expect(f.calls.switched).toEqual([])
+    expectNoImplementation(f)
     expect(f.calls.prompted).toEqual([])
     cleanup(); view.dispose()
   }
   const root = snapshotFixture(observer)
   let injected = false
   const f = fake(root, { onGet: (id) => {
-    if (id === "parent" && f.calls.switched.length && !injected) {
+    if (id === "parent" && f.calls.created.length && !injected) {
       injected = true
-      f.emit({ type: "session.agent.selected", id: "evt_substituted", created: 50,
-        data: { sessionID: "slot-child", agent: "authorized_implementer", previous: "implementer_slot" } })
+      f.emit({ type: "session.created", id: "evt_substituted", created: Date.now(),
+        data: { sessionID: f.childID, agent: "authorized_implementer", parentID: "wrong" } })
     }
   } })
   const cleanup = await activate(f)
@@ -1424,20 +1451,20 @@ snapshotTest("implementation result is frozen across the final parent/Planner aw
   let parentReads = 0
   const f = fake(root, { decision: true, onGet: (id) => {
     if (id === "parent" && f.calls.prompted.length && ++parentReads === 2)
-      f.histories["slot-child"].find((item) => item.id === "implementer-final").content[0].text += " changed"
+      f.histories[f.childID].find((item) => item.id === "implementer-final").content[0].text += " changed"
   } })
   await expect(implement(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow("result transcript changed")
   expect(f.calls.prompted).toHaveLength(1)
 })
 
-snapshotTest("wrong or unclaimed decision ownership cannot grant or switch", async (observer) => {
+snapshotTest("wrong or unclaimed decision ownership cannot grant or create", async (observer) => {
   const root = snapshotFixture(observer)
   const f = fake(root)
   const published = await publication(f.context, f.generation, observeGit(root), "parent", { directory: root })
   await expect(authorizePublishedAttempt(f.context, published, f.guard)).rejects.toThrow("decision owner")
   f.claim(published)
   await expect(authorizePublishedAttempt(f.context, { ...published }, f.guard)).rejects.toThrow("decision owner")
-  expect(f.calls.switched).toEqual([])
+  expectNoImplementation(f)
   expect(f.calls.prompted).toEqual([])
 })
 
@@ -1456,7 +1483,7 @@ snapshotTest("only a fresh successful root publishes, and duplicate completions 
     f.emit(completed)
     await settleUntil(() => f.slots.length > 0 || f.calls.toasts.length > 0)
     expect(f.calls.synthetic).toHaveLength(outcome === "succeeded" ? 1 : 0)
-    expect(f.calls.switched).toEqual([])
+    expectNoImplementation(f)
     expect(f.calls.prompted).toEqual([])
     if (typeof cleanup === "function") cleanup()
   }
@@ -1469,7 +1496,7 @@ snapshotTest("pointer controls wait for completed layout and reject clipped deci
     const cleanup = await activate(f)
     const view = mount(f, "parent", false)
     view.click(0)
-    expect(f.calls.switched).toEqual([])
+    expectNoImplementation(f)
     expect(f.calls.toasts).toEqual([])
     if (layout === "button-clipped") view.buttons[0].width = 3
     if (layout === "hidden") view.mounted[0].visible = false
@@ -1485,7 +1512,7 @@ snapshotTest("pointer controls wait for completed layout and reject clipped deci
       view.click(0)
       if (layout === "hidden") expect(f.calls.toasts.at(-1)).toContain("surface")
       else expect(f.calls.toasts).toEqual([])
-      expect(f.calls.switched).toEqual([])
+      expectNoImplementation(f)
       expect(f.calls.prompted).toEqual([])
     }
     cleanup(); view.dispose()
@@ -1561,11 +1588,11 @@ snapshotTest("Planner inspection before completion or during publication retains
         description: renderPlan(published.candidate), metadata: published.publication.payload.metadata, delivery: "steer", resume: false })
       f.emit(attempt.completed); f.emit(attempt.completed)
       f.renderer.emit("frame"); f.renderer.emit("resize")
-      attempt.select("slot-child")
+      attempt.select("planner-child")
       attempt.select("unrelated-root")
       expect(f.slots).toEqual([])
       expect(f.calls.toasts).toEqual([])
-      expect(f.calls.switched).toEqual([])
+      expectNoImplementation(f)
       expect(f.calls.prompted).toEqual([])
       attempt.select("parent")
       await settleUntil(() => f.slots.length > 0)
@@ -1576,7 +1603,7 @@ snapshotTest("Planner inspection before completion or during publication retains
       view.click(1)
       expect(f.calls.toasts).toEqual(["Cancelled — no implementation admitted"])
       expect(f.calls.synthetic).toHaveLength(1)
-      expect(f.calls.switched).toEqual([])
+      expectNoImplementation(f)
       expect(f.calls.prompted).toEqual([])
       view.dispose()
     } finally { release(); attempt.cleanup() }
@@ -1617,12 +1644,12 @@ snapshotTest("root return revalidates the same retained object and needs a fresh
     }
     // Completed child and earlier root frames carry no decision proof.
     f.renderer.emit("frame")
-    attempt.select("slot-child")
+    attempt.select("planner-child")
     attempt.select("parent")
     await settleUntil(() => waiting)
     f.emit(attempt.completed); f.renderer.emit("frame"); f.renderer.emit("resize")
     expect(f.slots).toEqual([])
-    expect(f.calls.switched).toEqual([])
+    expectNoImplementation(f)
     expect(f.calls.prompted).toEqual([])
     release()
     await settleUntil(() => f.slots.length > 0)
@@ -1652,13 +1679,14 @@ snapshotTest("root return revalidates the same retained object and needs a fresh
     expect(authorized[0]!.publication).toBe(published.publication)
     await settleUntil(() => f.calls.toasts.length > 0)
     expect(f.calls.toasts.at(-1)).toContain("Implementation gate complete")
-    expect(f.calls.switched).toEqual([published.bound.slot.childID])
-    expect(f.calls.prompted).toEqual([{ sessionID: published.bound.slot.childID, text: implementerPrompt(published.candidate) }])
+    expect(f.calls.imported).toHaveLength(1)
+    expect(f.calls.created).toEqual([f.childID])
+    expect(f.calls.prompted).toEqual([{ sessionID: f.childID, text: implementerPrompt(published.candidate) }])
     expect(f.calls.synthetic).toHaveLength(1)
-    expect(Object.keys(f.sessions).sort()).toEqual(Object.keys(evidence.sessions).sort())
+    expect(Object.keys(f.sessions).sort()).toEqual([...Object.keys(evidence.sessions), f.childID].sort())
     expect(f.histories.parent).toEqual(evidence.histories.parent)
     expect(f.histories["planner-child"]).toEqual(evidence.histories["planner-child"])
-    expect(f.histories["slot-child"].slice(0, evidence.histories["slot-child"].length)).toEqual(evidence.histories["slot-child"])
+    expect(f.histories[f.childID]).toHaveLength(3)
     expect(f.inboxes.parent).toEqual(evidence.inbox)
     expect(f.cache.parent).toEqual(evidence.cache)
     expect(observer.calls(root).at(-1)!.current).toEqual({ root, head: HEAD, paths: ["old.txt"] })
@@ -1719,7 +1747,7 @@ snapshotTest("stale root preparation cannot install a surface after navigation, 
         status.dispose()
       }
       expect(f.calls.synthetic).toHaveLength(1)
-      expect(f.calls.switched).toEqual([])
+      expectNoImplementation(f)
       expect(f.calls.prompted).toEqual([])
     } finally { release(); restore?.(); attempt.cleanup(); if (typeof replacement === "function") replacement() }
   }
@@ -1795,12 +1823,441 @@ snapshotTest("genuine retained evidence, Git, location, session, and generation 
       for (let i = 0; i < 100; i++) await Promise.resolve()
       expect(published.candidate.proposal.intent).toBe("Change old file")
       expect(f.calls.synthetic).toHaveLength(1)
-      expect(f.calls.switched).toEqual([])
+      expectNoImplementation(f)
       expect(f.calls.prompted).toEqual([])
       if (mutation === "cleanup") {
         expect(f.slots).toEqual([])
         expect(published.activation.generation.revoked).toBe(true)
       } else expect(f.calls.toasts).toHaveLength(1)
     } finally { attempt.cleanup(); view?.dispose() }
+  }
+})
+
+snapshotTest("root model evidence is required, normalized, immutable, and revalidated before creation", async (observer) => {
+  const root = snapshotFixture(observer)
+  for (const mutation of ["missing", "execution", "changed", "changed-variant"] as const) {
+    const f = fake(root)
+    if (mutation === "missing") delete f.sessions.parent.model
+    if (mutation === "execution") f.histories.parent[1].model.id = "different"
+    if (mutation === "missing" || mutation === "execution") {
+      await expect(publication(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow("model")
+    } else {
+      const published = await publication(f.context, f.generation, observeGit(root), "parent", { directory: root })
+      expect(Object.isFrozen(published.bound.model)).toBe(true)
+      f.claim(published)
+      if (mutation === "changed") delete f.sessions.parent.model
+      else f.sessions.parent.model.variant = "other"
+      await expect(authorizePublishedAttempt(f.context, published, f.guard)).rejects.toThrow("model")
+    }
+    expectNoImplementation(f)
+    expect(f.calls.prompted).toHaveLength(0)
+  }
+  const f = fake(root, { decision: true })
+  delete f.sessions.parent.model.variant
+  for (const message of f.histories.parent) if (message.type === "assistant") delete message.model.variant
+  expect(await implement(f.context, f.generation, observeGit(root), "parent", { directory: root })).toContain("Implementation gate complete")
+  expect(f.calls.imported[0].info.model).toEqual(model)
+})
+
+snapshotTest("an available named root variant is passed exactly and binds every implementation assistant", async (observer) => {
+  const root = snapshotFixture(observer)
+  const f = fake(root, { decision: true })
+  f.sessions.parent.model.variant = "high"
+  for (const message of f.histories.parent) if (message.type === "assistant") message.model.variant = "high"
+  ;(f.context as any).client.model.list = async () => ({ location: { directory: root }, data: [{ ...model, enabled: true, variants: [{ id: "high" }] }] })
+  expect(await implement(f.context, f.generation, observeGit(root), "parent", { directory: root })).toContain("Implementation gate complete")
+  expect(f.calls.imported[0].info.model).toEqual({ ...model, variant: "high" })
+  expect(f.histories[f.childID].find((message) => message.type === "assistant").model).toEqual({ ...model, variant: "high" })
+})
+
+snapshotTest("unsupported workspace topology and unavailable model or altered loaded role stop before import", async (observer) => {
+  const root = snapshotFixture(observer)
+  for (const mutation of ["workspace", "missing-model", "disabled", "variant", "catalog-location", "role-missing", "role-model", "role-mode", "role-hidden", "role-policy", "role-location"] as const) {
+    const f = fake(root)
+    const published = await publication(f.context, f.generation, observeGit(root), "parent", { directory: root })
+    const captured = mutation === "workspace" ? { ...published, activation: { ...published.activation, location: { directory: root, workspaceID: "workspace" } } } : published
+    f.claim(captured)
+    const host = f.context as any
+    if (mutation === "missing-model") host.client.model.list = async () => ({ location: { directory: root }, data: [] })
+    if (mutation === "disabled") host.client.model.list = async () => ({ location: { directory: root }, data: [{ ...model, enabled: false, variants: [] }] })
+    if (mutation === "variant") {
+      // A named variant in valid initial execution evidence must exist in the catalog.
+      const fresh = fake(root)
+      fresh.sessions.parent.model.variant = "high"
+      for (const message of fresh.histories.parent) if (message.type === "assistant") message.model.variant = "high"
+      const plan = await publication(fresh.context, fresh.generation, observeGit(root), "parent", { directory: root })
+      fresh.claim(plan)
+      await expect(authorizePublishedAttempt(fresh.context, plan, fresh.guard)).rejects.toThrow("variant is unavailable")
+      expectNoImplementation(fresh)
+      continue
+    }
+    if (mutation === "catalog-location") host.client.model.list = async () => ({ location: { directory: root + "/other" }, data: [{ ...model, enabled: true, variants: [] }] })
+    if (mutation === "role-missing") host.client.agent.get = async () => ({ location: { directory: root }, data: undefined })
+    if (mutation === "role-model") (f.role as any).model = model
+    if (mutation === "role-mode") f.role.mode = "primary"
+    if (mutation === "role-hidden") f.role.hidden = false
+    if (mutation === "role-policy") f.role.permissions.push({ action: "subagent", resource: "*", effect: "allow" })
+    if (mutation === "role-location") host.client.agent.get = async () => ({ location: { directory: root + "/other" }, data: f.role })
+    await expect(authorizePublishedAttempt(f.context, captured, f.guard)).rejects.toThrow(mutation === "workspace" ? "cannot preserve workspaceID" : /model|policy/)
+    expectNoImplementation(f)
+    expect(f.calls.prompted).toHaveLength(0)
+  }
+  const f = fake(root)
+  ;(f.context as any).location.workspaceID = "workspace"
+  await expect(publication(f.context, f.generation, observeGit(root), "parent", { directory: root, workspaceID: "workspace" } as any)).rejects.toThrow("unsupported workspace-bound topology")
+  expectNoImplementation(f)
+})
+
+snapshotTest("one Authorize imports an exact fresh empty child with frozen root model and family policy", async (observer) => {
+  const root = snapshotFixture(observer)
+  const f = fake(root)
+  f.sessions.parent.subpath = "local/subpath"
+  f.sessions["planner-child"].subpath = "local/subpath"
+  const published = await publication(f.context, f.generation, observeGit(root), "parent", { directory: root })
+  expectNoImplementation(f)
+  f.claim(published)
+  const startedAt = Date.now()
+  let release!: () => void
+  let importing = false
+  const paused = new Promise<void>((resolve) => { release = resolve })
+  const host = f.context as any
+  const importChild = host.client.session.import
+  host.client.session.import = async (input: any) => {
+    const returned = await importChild(input)
+    importing = true
+    await paused
+    // Host import time is distinct from caller-created time.
+    returned.time.updated += 7
+    f.sessions[f.childID].time.updated = returned.time.updated
+    return returned
+  }
+  const execution = authorizePublishedAttempt(f.context, published, f.guard)
+  await settleUntil(() => importing)
+  try {
+    expect(f.calls.imported).toHaveLength(1)
+    expect(f.childID).toMatch(/^ses_[0-9a-f-]{36}$/)
+    expect(f.childID).not.toBe("parent")
+    expect(f.childID).not.toBe("planner-child")
+    const time = f.calls.imported[0].info.time
+    expect(Number.isFinite(time.created)).toBe(true)
+    expect(time.created).toBeGreaterThanOrEqual(startedAt)
+    expect(f.calls.imported[0]).toEqual({ location: { directory: root }, messages: [], info: {
+      id: f.childID, parentID: "parent", agent: "authorized_implementer", model,
+      location: { directory: root }, projectID: "project", subpath: "local/subpath", metadata: { policy: "family" }, permissions: [],
+      cost: 0, tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }, time: { created: time.created, updated: time.created },
+    } })
+    expect(f.histories[f.childID]).toEqual([])
+    expect(f.inboxes[f.childID]).toEqual([])
+    expect(f.sessions[f.childID].outcome).toBeUndefined()
+    expect(f.guard.creationAttempted).toBe(true)
+    expect(f.guard.creationReturned).toBeUndefined()
+    expect(f.calls.prompted).toHaveLength(0)
+    await expect(authorizePublishedAttempt(f.context, published, f.guard)).rejects.toThrow("cannot retry")
+  } finally { release() }
+  expect(await execution).toContain("Implementation gate complete")
+  expect(f.calls.imported).toHaveLength(1)
+  expect(f.calls.prompted).toEqual([{ sessionID: f.childID, text: implementerPrompt(published.candidate) }])
+  expect(Object.isFrozen(f.guard.child)).toBe(true)
+  await expect(authorizePublishedAttempt(f.context, published, f.guard)).rejects.toThrow("cannot retry")
+  expect(f.calls.imported).toHaveLength(1)
+})
+
+snapshotTest("creation response and independent readback reject every identity and initial-state mismatch", async (observer) => {
+  const root = snapshotFixture(observer)
+  const mutations: Array<(info: any) => void> = [
+    (info) => { info.id = "ses_wrong" }, (info) => { info.parentID = "different" },
+    (info) => { info.agent = "planner" }, (info) => { delete info.model },
+    (info) => { info.model.id = "different" }, (info) => { info.model.providerID = "different" }, (info) => { info.model.variant = "different" },
+    (info) => { info.location.directory += "/other" }, (info) => { info.location.workspaceID = "workspace" },
+    (info) => { info.projectID = "different" }, (info) => { info.subpath = "different" },
+    (info) => { info.metadata = { policy: "different" } }, (info) => { info.title = "unexpected" },
+    (info) => { info.permissions = [{ action: "edit", resource: "*", effect: "allow" }] }, (info) => { delete info.permissions },
+    (info) => { info.time.created-- }, (info) => { info.time.created = NaN }, (info) => { info.time.updated = NaN },
+    (info) => { info.time.updated = info.time.created - 1 }, (info) => { info.time.idle = info.time.created },
+    (info) => { info.time.viewed = info.time.created }, (info) => { info.time.archived = info.time.created },
+    (info) => { info.outcome = "succeeded" }, (info) => { info.fork = { sessionID: "other", boundary: {} } },
+    (info) => { info.revert = { messageID: "other" } }, (info) => { info.cost = 1 },
+    ...["input", "output", "reasoning"].map((field) => (info: any) => { info.tokens[field] = 1 }),
+    ...["read", "write"].map((field) => (info: any) => { info.tokens.cache[field] = 1 }),
+  ]
+  for (const boundary of ["response", "readback"] as const) for (const mutate of mutations) {
+    const f = fake(root, { decision: true })
+    const host = f.context as any
+    const importChild = host.client.session.import
+    host.client.session.import = async (input: any) => {
+      const returned = await importChild(input)
+      mutate(boundary === "response" ? returned : f.sessions[f.childID])
+      return returned
+    }
+    await expect(implement(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow()
+    expect(f.calls.imported).toHaveLength(1)
+    expect(f.calls.created).toHaveLength(1)
+    expect(f.calls.prompted).toHaveLength(0)
+  }
+})
+
+snapshotTest("an active child or any inbox or transcript content before prompt fails admission", async (observer) => {
+  const root = snapshotFixture(observer)
+  for (const mutation of ["active", "inbox", "user", "synthetic", "control"] as const) {
+    const f = fake(root, { decision: true, onImport: () => {
+      if (mutation === "active") (f.context as any).client.session.active = async () => ({ [f.childID]: { type: "running" } })
+      if (mutation === "inbox") f.inboxes[f.childID].push({ type: "user", id: "external" })
+      if (mutation === "user") f.histories[f.childID].push(user("external", "input"))
+      if (mutation === "synthetic") f.histories[f.childID].push({ type: "synthetic", id: "external", text: "input" })
+      if (mutation === "control") f.histories[f.childID].push({ type: "model-switched", id: "external", model })
+    } })
+    await expect(implement(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow()
+    expect(f.calls.imported).toHaveLength(1)
+    expect(f.calls.created).toHaveLength(1)
+    expect(f.calls.prompted).toHaveLength(0)
+  }
+})
+
+snapshotTest("creation rejection, timeout, lost response, collision, and malformed response never retry or adopt", async (observer) => {
+  const root = snapshotFixture(observer)
+  for (const failure of ["uncommitted", "committed", "timeout", "collision", "malformed"] as const) {
+    const f = fake(root)
+    const host = f.context as any
+    const importChild = host.client.session.import
+    host.client.session.import = async (input: any) => {
+      if (failure === "uncommitted") { f.calls.imported.push(structuredClone(input)); throw new Error("transport rejected") }
+      if (failure === "collision") f.sessions[input.info.id] = { ...input.info, parentID: "external" }
+      const returned = await importChild(input)
+      if (failure === "malformed") return undefined
+      if (failure === "committed" || failure === "timeout") throw new Error(failure === "timeout" ? "creation timed out" : "response lost")
+      return returned
+    }
+    const cleanup = await activate(f)
+    const view = mount(f)
+    view.click(0)
+    await settleUntil(() => f.calls.toasts.length > 0)
+    const message = f.calls.toasts.at(-1)!
+    expect(message).toContain(failure === "malformed" ? "Child admission failed" : "Child creation outcome unknown")
+    expect(message).toContain("no trusted implementation prompt was dispatched; no creation retry")
+    expect(view.text()).toContain(message)
+    expect(f.calls.imported).toHaveLength(1)
+    expect(f.calls.prompted).toHaveLength(0)
+    const id = f.calls.imported[0].info.id
+    // Discovering a child later never supplies permission to continue.
+    if (!f.sessions[id]) f.sessions[id] = structuredClone(f.calls.imported[0].info)
+    f.emit({ type: "session.created", id: "evt_late", created: Date.now(), data: { sessionID: id, parentID: "parent" } })
+    f.renderer.emit("frame"); f.renderer.emit("resize")
+    view.click(0); view.click(1)
+    await Promise.resolve()
+    expect(f.calls.imported).toHaveLength(1)
+    expect(f.calls.prompted).toHaveLength(0)
+    expect(f.sessions[id]).toBeDefined()
+    cleanup(); view.dispose()
+  }
+})
+
+snapshotTest("creation and final barriers revalidate model, policy, native evidence, publication, and Git", async (observer) => {
+  const root = snapshotFixture(observer)
+  for (const boundary of ["creation", "after-readback", "final"] as const) {
+    for (const evidence of ["root", "planner", "publication", "model", "role", "catalog", "location", "head", "dirty", "child"] as const) {
+      const f = fake(root)
+      let parentReads = 0
+      const mutate = () => {
+        if (evidence === "root") f.histories.parent[2].content[0].text += " changed"
+        if (evidence === "planner") f.histories["planner-child"][1].content[0].text += " changed"
+        if (evidence === "publication") f.inboxes.parent[0].payload.text += " changed"
+        if (evidence === "model") f.sessions.parent.model.id = "other"
+        if (evidence === "role") f.role.system = "changed policy"
+        if (evidence === "catalog") (f.context as any).client.model.list = async () => ({ location: { directory: root }, data: [] })
+        if (evidence === "location") (f.context as any).location.workspaceID = "workspace"
+        if (evidence === "head") observer.configure(root, "2".repeat(40))
+        if (evidence === "dirty") observer.configure(root, HEAD, ["old.txt"])
+        if (evidence === "child") f.histories[f.childID].push(user("external", "input"))
+      }
+      if (boundary === "creation") f.options.onImport = mutate
+      else f.options.onGet = (id) => {
+        if (id === "parent" && f.calls.created.length && ++parentReads === (boundary === "final" ? 2 : 1)) mutate()
+      }
+      const cleanup = await activate(f)
+      const view = mount(f)
+      view.click(0)
+      await settleUntil(() => f.calls.toasts.length > 0)
+      expect(f.calls.toasts.at(-1)).toContain("Child admission failed; child may remain")
+      expect(f.calls.imported).toHaveLength(1)
+      expect(f.calls.created).toHaveLength(1)
+      expect(f.calls.prompted).toHaveLength(0)
+      expect(f.sessions[f.childID].agent).toBe("authorized_implementer")
+      // Failed admission leaves ordinary host capability, never a CAP prompt/retry.
+      view.click(0); f.renderer.emit("frame")
+      expect(f.calls.imported).toHaveLength(1)
+      cleanup(); view.dispose()
+      observer.configure(root)
+    }
+  }
+})
+
+snapshotTest("Created echoes correlate shared fields, tolerate distinct host time, and reject early or late mismatch", async (observer) => {
+  const root = snapshotFixture(observer)
+  for (const boundary of ["early", "late"] as const) for (const mismatch of ["id", "parent", "model", "project", "subpath", "time"] as const) {
+    const f = fake(root)
+    const emit = () => {
+      const info = f.sessions[f.childID]
+      const event = { type: "session.created", id: "evt_created_child", created: info.time.created + 20,
+        data: { sessionID: info.id, parentID: info.parentID, agent: info.agent, model: structuredClone(info.model), projectID: info.projectID,
+          location: info.location, subpath: info.subpath, metadata: info.metadata, permissions: info.permissions } }
+      if (mismatch === "id") event.data.sessionID = "ses_unexpected"
+      if (mismatch === "parent") event.data.parentID = "wrong"
+      if (mismatch === "model") event.data.model.id = "wrong"
+      if (mismatch === "project") event.data.projectID = "wrong"
+      if (mismatch === "subpath") event.data.subpath = "wrong"
+      if (mismatch === "time") event.created = NaN
+      f.emit(event)
+    }
+    if (boundary === "early") f.options.onImport = emit
+    else f.options.onGet = (id) => { if (id === "parent" && f.calls.created.length) emit() }
+    const cleanup = await activate(f)
+    const view = mount(f)
+    view.click(0)
+    await settleUntil(() => f.calls.toasts.length > 0)
+    expect(f.calls.imported).toHaveLength(1)
+    expect(f.calls.prompted).toHaveLength(0)
+    cleanup(); view.dispose()
+  }
+  const f = fake(root, { events: true })
+  let seen = false
+  let childEvent: any
+  f.context.data.listen(({ details }) => { if (details.type === "session.created" && details.data.parentID === "parent") childEvent = structuredClone(details) })
+  f.options.onImport = () => {
+    seen = true
+    expect(childEvent.created).not.toBe(f.sessions[f.childID].time.created)
+    expect(childEvent.data.subpath).toBe("")
+    f.emit(childEvent); f.emit(childEvent)
+    f.renderer.emit("frame")
+  }
+  const cleanup = await activate(f)
+  const view = mount(f)
+  view.click(0)
+  await settleUntil(() => f.calls.toasts.length > 0)
+  expect(seen).toBe(true)
+  expect(f.calls.toasts.at(-1)).toContain("Implementation gate complete")
+  expect(f.calls.imported).toHaveLength(1)
+  cleanup(); view.dispose()
+})
+
+snapshotTest("grant consumption is adjacent to one exact prompt and cannot be replayed after dispatch ambiguity", async (observer) => {
+  const root = snapshotFixture(observer)
+  const cap = await import("../src/cap.ts")
+  const original = { ...cap }
+  const modulePath = path.resolve(import.meta.dir, "../src/cap.ts")
+  for (const ambiguous of [false, true]) {
+    const operations: string[] = []
+    let queued = false
+    let used: Parameters<typeof cap.consumeIntent> | undefined
+    const f = fake(root, { decision: true, promptError: ambiguous, onRead: () => operations.push("read") })
+    const prompt = f.context.client.session.prompt
+    ;(f.context.client.session as any).prompt = (input: any) => {
+      expect(operations.at(-1)).toBe("consume")
+      expect(queued).toBe(false)
+      expect(f.guard.dispatched).toBe(true)
+      expect(input).toEqual({ sessionID: f.childID, id: f.guard.prompt!.id, text: f.guard.prompt!.text, delivery: "steer" })
+      expect(f.histories[f.childID]).toHaveLength(0)
+      operations.push("prompt")
+      return prompt(input)
+    }
+    mock.module(modulePath, () => ({ ...original, consumeIntent: (...args: Parameters<typeof cap.consumeIntent>) => {
+      original.consumeIntent(...args)
+      used = args
+      operations.push("consume")
+      queueMicrotask(() => { queued = true })
+    } }))
+    try {
+      const published = await publication(f.context, f.generation, observeGit(root), "parent", { directory: root })
+      f.claim(published)
+      const execution = authorizePublishedAttempt(f.context, published, f.guard)
+      if (ambiguous) await expect(execution).rejects.toThrow("ambiguous prompt")
+      else expect(await execution).toContain("Implementation gate complete")
+      expect(used).toBeDefined()
+      expect(() => original.consumeIntent(...used!)).toThrow("consumed")
+      expect(f.calls.imported).toHaveLength(1)
+      expect(f.calls.prompted).toHaveLength(1)
+      await expect(authorizePublishedAttempt(f.context, published, f.guard)).rejects.toThrow("cannot retry")
+      expect(f.calls.prompted).toHaveLength(1)
+    } finally { mock.module(modulePath, () => original) }
+  }
+})
+
+test("active definitions and CAP source contain no retained worker bootstrap or agent-switch path", () => {
+  const agents = path.join(import.meta.dir, "../.opencode/agents")
+  expect(() => readFileSync(path.join(agents, "implementer_slot.md"))).toThrow()
+  for (const file of ["../src/attempt.ts", "../.opencode/plugins/opencode-agents/tui.tsx", "../.opencode/agents/orchestrator.md"]) {
+    const source = readFileSync(path.join(import.meta.dir, file), "utf8")
+    expect(source).not.toMatch(/implementer_slot|SLOT_PROMPT|READY|switchAgent|switchRecord|switching|agent-switched/)
+  }
+})
+
+snapshotTest("relevant registry updates during final awaited child verification block admission without another child", async (observer) => {
+  const root = snapshotFixture(observer)
+  for (const type of ["agent.updated", "model.updated"] as const) {
+    const f = fake(root, { singlePage: true })
+    const host = f.context as any
+    const list = host.client.message.list
+    let childReads = 0
+    let waiting = false
+    let release!: () => void
+    const paused = new Promise<void>((resolve) => { release = resolve })
+    host.client.message.list = async (input: any) => {
+      const page = await list(input)
+      // The third empty-child history read is after the final loaded policy/catalog reads.
+      if (input.sessionID === f.childID && ++childReads === 3) {
+        waiting = true
+        await paused
+      }
+      return page
+    }
+    const cleanup = await activate(f)
+    const view = mount(f)
+    try {
+      view.click(0)
+      await settleUntil(() => waiting)
+      expect(f.calls.imported).toHaveLength(1)
+      expect(f.calls.prompted).toHaveLength(0)
+      if (type === "agent.updated") f.role.permissions.push({ action: "subagent", resource: "*", effect: "allow" })
+      else host.client.model.list = async () => ({ location: { directory: root }, data: [] })
+      // Actual 2.0.21 registry events have empty data and an envelope Location.Ref.
+      f.emit({ type, id: `evt_${type}`, created: Date.now(), location: { directory: root }, data: {} })
+      release()
+      await settleUntil(() => f.calls.toasts.length > 0)
+      expect(f.calls.prompted).toHaveLength(0)
+      expect(f.calls.toasts.at(-1)).toContain(`Unexpected ${type}`)
+      expect(view.text()).toContain("no trusted implementation prompt was dispatched; no creation retry")
+      // Let the failed continuation finish, then repeat events and stale decisions.
+      for (let i = 0; i < 10; i++) await Promise.resolve()
+      f.emit({ type, id: `evt_late_${type}`, created: Date.now(), location: { directory: root }, data: {} })
+      view.click(0); view.click(1)
+      f.renderer.emit("resize"); f.renderer.emit("frame")
+      expect(f.calls.imported).toHaveLength(1)
+      expect(f.calls.created).toEqual([f.childID])
+      expect(Object.keys(f.sessions).sort()).toEqual(["parent", "planner-child", f.childID].sort())
+      expect(f.histories[f.childID]).toEqual([])
+      expect(f.inboxes[f.childID]).toEqual([])
+      expect(f.calls.prompted).toHaveLength(0)
+    } finally { release(); cleanup(); view.dispose() }
+  }
+})
+
+snapshotTest("registry updates for other locations or workspaces do not invalidate the governed local attempt", async (observer) => {
+  const root = snapshotFixture(observer)
+  for (const type of ["agent.updated", "model.updated"] as const) {
+    const f = fake(root, { singlePage: true })
+    let childReads = 0
+    f.options.onRead = (kind, id) => {
+      if (kind !== "messages" || id !== f.childID || ++childReads !== 3) return
+      for (const location of [{ directory: root + "/other-project" }, { directory: root, workspaceID: "other-workspace" }])
+        f.emit({ type, id: `evt_other_${location.directory}`, created: Date.now(), location, data: {} })
+    }
+    const cleanup = await activate(f)
+    const view = mount(f)
+    try {
+      view.click(0)
+      await settleUntil(() => f.calls.toasts.length > 0)
+      expect(f.calls.toasts.at(-1)).toContain("Implementation gate complete")
+      expect(f.calls.imported).toHaveLength(1)
+      expect(f.calls.prompted).toHaveLength(1)
+    } finally { cleanup(); view.dispose() }
   }
 })

@@ -7,11 +7,11 @@ This document owns the normative coding-authority contract for
 [Orchestration](v1-orchestration.md) owns actual host/runtime sequencing;
 [the charter](charter.md) owns project goals and non-goals.
 
-The live TUI currently publishes a trusted Plan and remains idle, without
-implementation authority. The retained, tested `runImplementationAttempt()`
-has no production caller and is not wired from publication. Published-plan
-authorization is future work; the requirements below MUST be preserved by
-that integration. Reviewer and Commit contracts are future obligations.
+The live TUI publishes an exact trusted Plan, accepts only the direct local
+human Authorize/Cancel decision, and on Authorize creates one empty authorized
+implementation child before final one-use prompt admission. The result must
+pass unchanged HEAD and exact changed-path scope checks and STOP before
+Reviewer / Commit. Reviewer and Commit contracts below remain future obligations.
 
 ## Authority and trust
 
@@ -100,41 +100,43 @@ clean implementation admission. A retained candidate is not an approved one.
 
 For an authority-seeking implementation attempt, trusted code MUST establish
 canonical root, current HEAD and a clean initial ordinary Git baseline
-**before launching the Planner or native implementer slot**. Clean means no
-staged changed paths, unstaged tracked changed paths, or ordinary untracked
+**before launching the Planner**. Clean means no staged changed paths, unstaged tracked changed paths, or ordinary untracked
 paths; ignored untracked files are excluded. Observation MUST be read-only
 with respect to repository content and Git history. CAP does not prescribe
 snapshot, tree-construction or index-parsing machinery.
 
-After proposal/bootstrap work and before authorization presentation, trusted
+After planning and before authorization presentation, trusted
 code MUST recheck the original root, HEAD and cleanliness. After the positive
 human decision and immediately before implementation admission, it MUST
 recheck candidate integrity, exact invocation/child binding, the same root and
 HEAD, and continued cleanliness. No stale decision may be rebound to changed
 evidence or a replacement candidate.
 
-Current publication deliberately permits a stable dirty baseline. The retained
-implementation function checks current cleanliness after native bootstrap;
-`requireFresh()` does not require the supplied activation baseline itself to
-have been clean. These later checks cannot retrospectively prove the required
-pre-bootstrap cleanliness. Future published-plan authorization integration
-MUST establish that stronger initial condition and preserve final freshness;
-it MUST NOT weaken CAP to reuse publication's stable-delta policy.
+Current publication permits a stable dirty baseline for planning only. Initial
+eligibility requires empty baseline paths and trusted root Created time strictly
+after activation Git observation completed, rebound to exact root creation
+identity. Dirty or ambiguous-initial attempts MUST create no implementation
+child, expose no Authorize controls, and never become eligible by later cleaning.
+Final fresh clean checks MUST remain independent of that initial proof.
 
 ## Human decision and process-local grant
 
 Authorization requires an explicit affirmative trusted human decision for the
-exact candidate. In the retained modal path, only `ui.dialog.confirm` returning
-strictly `true` is eligible. Opening a dialog grants nothing. Cancel (`false`),
-dismissal (`undefined`), interruption, timeout, error, missing or ambiguous
-results grant no authority; none may be coerced into an affirmative decision.
-The complete candidate MUST be readable, including after terminal resizing.
+exact immutable candidate/scope, not a pre-existing worker identity. Before that
+decision there MUST be no implementation child or Implementer native row. Cancel,
+missing/ambiguous decisions, and stale or invalid decisions caught before
+creation MUST create no implementation child and dispatch no prompt.
 
-Future direct TUI-local Authorize/Cancel callbacks MUST preserve exact
-candidate/result binding, readability, liveness and freshness. They are
-unimplemented. Model-mediated affirmative authorization, conversation replies,
-model-callable Form/Question responses and generic permissions MUST NOT serve
-as CAP authorization.
+The live decision is a root-only unregistered local pointer closure for
+Authorize/Cancel. It MUST require exact pending ownership, trusted revalidation,
+and a fresh completed readable-frame proof. The Plan can publish while Planner
+is inspected; exact-root return MUST prepare the same retained object once and
+require a fresh root frame. Pending resize invalidates readiness until a fresh
+valid frame. An exact positive claim synchronously removes decision callbacks;
+post-claim resize is presentation-only, while route/location/evidence/liveness
+guards remain enforced. Duplicate/stale callbacks MUST NOT admit another child.
+Model-mediated affirmation, conversation replies, model-callable Form/Question
+responses and generic permissions MUST NOT serve as CAP authorization.
 
 All candidates, decision bindings and usable capabilities MUST remain in the
 active installed TUI plugin generation's activation-private process state.
@@ -159,14 +161,17 @@ A later attempt inherits no approval, review, validation or repair authority.
 
 Orchestrator, Planner and Implementer MUST have distinct role contexts;
 handoffs use explicit artifacts and trusted references, not another role's
-conversation or reasoning context. The native slot bootstrap is read-only
-and grants no authority. Its later role switch is not itself admission.
+conversation or reasoning context. The root MUST make exactly one fresh native
+Planner call and end its turn. It MUST NOT make an implementation call or be
+resumed after trusted Plan publication. No Planner conversation is copied into
+root or Implementer.
+
 Trusted code MUST bind the exact child, admitted input and result; the
 Implementer receives the frozen proposal directly without Planner context.
 
 The Orchestrator MUST allow only the intended read-only native delegation
-targets and MUST NOT create or continue an authorized Implementer or expose
-model-callable mutation/session-control routes. Read-only roles MUST deny
+target (Planner) and MUST NOT create or continue an authorized Implementer or
+expose model-callable mutation/session-control routes. Read-only roles MUST deny
 mutation routes. The authorized Implementer MUST deny delegation, `execute`,
 session-control and equivalent exposed tools that could admit another
 model-controlled turn or switch roles. These role permissions do not grant
@@ -181,11 +186,50 @@ Permissions SHOULD deny obvious direct reserved operations as defense in
 depth. Agent compliance is not trusted evidence; these controls are not an
 adversarial shell containment boundary.
 
-Implementation may use ordinary editing, testing and development shell
-capability; CAP does not authorize every transient filesystem mutation.
-Persistent editing capability after an admitted turn does not restore its
-consumed grant. A later manual prompt by a local human or trusted client is
-outside the governed CAP admission.
+After exact positive claim and full pre-creation validation, trusted code MUST
+invoke exactly one empty `context.client.session.import` directly as
+`authorized_implementer`. This is the narrow experimental empty-child seam on
+pinned OpenCode 2.0.21, whose public `session.create` cannot represent parenting.
+It MUST use a fresh locally generated ID, exact root parent, frozen explicit
+server-root-selected model/variant, exact supported local location/project/subpath,
+trusted inherited family metadata, empty permission overrides, zero cost/tokens,
+no terminal/idle/viewed/archive/fork/revert state, and `messages: []`.
+
+Only ordinary local topology is supported. Workspace-bound attempts MUST fail
+closed before creation with a precise reason: public create/import cannot
+represent `workspaceID`. Trusted code MUST NOT cast away or partially compare
+workspace/location identity. Root explicit model evidence MUST agree with root
+assistant execution evidence, with host `default` variant normalization. Missing
+or changed evidence MUST fail closed; no model fallback is allowed. Loaded
+implementation role model overrides or policy drift MUST be rejected; trusted
+catalog reads MUST establish availability and named variant support.
+
+Response and independent host reads MUST verify exact child identity, parent,
+role/model/location/project/subpath/metadata/permissions, fresh stable creation
+identity, empty inbox/history and no active execution. Import `time.created` is
+caller initialization evidence, not host timestamp attestation; host import
+`time.updated` MUST be finite and at or after initialization. Created echoes
+MUST match shared fields with exact host projection normalization (implicit
+`default` variant and empty project-root subpath), without equating event commit
+time with supplied creation time. Bounded worker evidence belongs to this claimed continuation,
+not durable workflow state or the authority-bearing candidate.
+
+After creation/readback, trusted code MUST fully revalidate root, Planner,
+publication, candidate, model/policy, location and fresh clean Git, recheck the
+empty child, and cross the final complete trusted barrier. Only then may it
+consume the candidate-bound one-use grant immediately adjacent to the sole
+exact child's prompt invocation, with no intervening await, host call or UI action.
+Exact admitted input and complete successful result/model/identity evidence MUST
+be independently verified and frozen across later evidence reads.
+
+Implementation may use ordinary editing, testing and development shell capability;
+CAP does not authorize every transient filesystem mutation. A direct-created
+child may possess editing capability even if a later barrier fails while it is
+still empty. That host capability is not surviving CAP authority: no trusted
+prompt was dispatched, no grant may be reused, and no replacement may be created.
+Persistent editing capability after an admitted turn likewise cannot restore
+its consumed grant. A later manual/external prompt by a local human or trusted
+client is outside the governed CAP admission.
 
 HEAD MUST remain the bound baseline through implementation. After completion,
 trusted code MUST independently verify canonical root and unchanged HEAD and
@@ -202,11 +246,22 @@ of physical mutations. Ordinary shell access can conceal mutations or cause
 unauthorized history effects; CAP claims neither exhaustive detection nor
 physical prevention of those effects.
 
-Ordinary failures terminate the attempt. Cancellation/dismissal MUST NOT cause
-automatic re-prompting. Ambiguous binding, role switch or prompt admission MUST
-fail closed without replay, replacement-child dispatch or recovery of the old
-decision. A later explicit attempt derives current repository reality and
-requires a fresh Planner proposal and fresh authorization.
+Ordinary failures terminate the claimed attempt irreversibly. Creation rejection,
+timeout, transport ambiguity, collision, malformed/mismatched response, empty-
+state failure, or later evidence drift MUST cause no trusted prompt and no retry,
+same-ID replay, replacement, adoption, deletion, or role restoration. Discovery
+of a child after ambiguous creation MUST NOT permit continuation. An unused
+grant MUST NOT be resurrected. Final-barrier failure may leave one empty child
+and zero trusted prompts. Prompt ambiguity MUST consume the grant and never
+resend. Result/Git failure MUST admit no passing gate or retry.
+
+Persistent trusted status MUST distinguish pre-creation failure (no child or
+prompt), unknown creation outcome (child may remain, no prompt/no creation retry),
+failed child admission (child may remain, no prompt/no creation retry), and
+post-prompt ambiguity (implementation may have started, no resend). Status and
+native child navigation MUST NOT fabricate a root Implementer tool row or resume
+the root model. A later explicit attempt derives current repository reality and
+requires a fresh Planner proposal and fresh trusted human authorization.
 
 ## Future Reviewer and separate Commit contract
 
