@@ -160,8 +160,21 @@ type FakeOptions = {
 const fakes = new WeakMap<Context, ReturnType<typeof fake>>()
 function fake(root: string, options: FakeOptions = {}) {
   const generation: Generation = { revoked: false, busy: false }
-  const frontmatter = Bun.YAML.parse(readFileSync(path.join(import.meta.dir, "../.opencode/agents/authorized_implementer.md"), "utf8").split("---\n")[1]!) as any
-  const role = { ...frontmatter, id: "authorized_implementer", name: "authorized_implementer", request: {} }
+  const source = readFileSync(path.join(import.meta.dir, "../.opencode/agents/authorized_implementer.md"), "utf8").split("---\n")
+  const frontmatter = Bun.YAML.parse(source[1]!) as any
+  // OpenCode 2.0.21 Agent.Info.default + Agent.Service prefix, with isolated
+  // stand-ins for global paths; config appends the exact authored rules in order.
+  const defaults = [
+    { action: "*", resource: "*", effect: "allow" },
+    { action: "external_directory", resource: "*", effect: "ask" },
+    { action: "read", resource: "*.env", effect: "ask" },
+    { action: "read", resource: "*.env.*", effect: "ask" },
+    { action: "read", resource: "*.env.example", effect: "allow" },
+    ...["data/shell/*/*", "data/tool-output/*", "tmp/*", "config/*"].map((resource) =>
+      ({ action: "external_directory", resource: `/test/opencode-global/${resource}`, effect: "allow" })),
+  ]
+  const role = { ...frontmatter, id: "authorized_implementer", name: "authorized_implementer",
+    request: { settings: {}, headers: {}, body: {} }, system: source[2]!.trim(), permissions: [...defaults, ...frontmatter.permissions] }
   const histories: Record<string, any[]> = {
     parent: [user("parent-user", request),
       { type: "assistant", id: "planner-tool-message", agent: "orchestrator", model: { ...model }, content: [call("planner-call", "planner", plannerInput(request), "planner-child", proposal)] },
@@ -1859,53 +1872,182 @@ snapshotTest("root model evidence is required, normalized, immutable, and revali
   expect(f.calls.imported[0].info.model).toEqual(model)
 })
 
-snapshotTest("an available named root variant is passed exactly and binds every implementation assistant", async (observer) => {
+snapshotTest("realistic host defaults, absent or undefined role model, and xhigh variant admit the exact prompt", async (observer) => {
   const root = snapshotFixture(observer)
-  const f = fake(root, { decision: true })
-  f.sessions.parent.model.variant = "high"
-  for (const message of f.histories.parent) if (message.type === "assistant") message.model.variant = "high"
-  ;(f.context as any).client.model.list = async () => ({ location: { directory: root }, data: [{ ...model, enabled: true, variants: [{ id: "high" }] }] })
-  expect(await implement(f.context, f.generation, observeGit(root), "parent", { directory: root })).toContain("Implementation gate complete")
-  expect(f.calls.imported[0].info.model).toEqual({ ...model, variant: "high" })
-  expect(f.histories[f.childID].find((message) => message.type === "assistant").model).toEqual({ ...model, variant: "high" })
+  for (const modelState of ["absent", "undefined"] as const) {
+    const f = fake(root, { decision: true })
+    expect(Object.hasOwn(f.role, "model")).toBe(false)
+    if (modelState === "undefined") f.role.model = undefined
+    const authored = Bun.YAML.parse(readFileSync(path.join(import.meta.dir, "../.opencode/agents/authorized_implementer.md"), "utf8").split("---\n")[1]!) as any
+    expect(f.role.permissions.slice(9)).toEqual(authored.permissions)
+    expect(f.role.permissions.slice(0, 9)).toHaveLength(9)
+    expect(f.role.permissions[0]).toEqual({ action: "*", resource: "*", effect: "allow" })
+    expect(f.role.request).toEqual({ settings: {}, headers: {}, body: {} })
+    expect(f.role.description).toBe("Implement one trusted CAP admitted proposal")
+    expect(f.role.system).toStartWith("Implement only the trusted frozen proposal")
+    f.sessions.parent.model.variant = "xhigh"
+    for (const message of f.histories.parent) if (message.type === "assistant") message.model.variant = "xhigh"
+    ;(f.context as any).client.model.list = async () => ({ location: { directory: root }, data: [{ ...model, enabled: true,
+      variants: [{ id: "xhigh", settings: { reasoningEffort: "xhigh", reasoningSummary: "auto", include: ["reasoning.encrypted_content"] } }] }] })
+    expect(await implement(f.context, f.generation, observeGit(root), "parent", { directory: root })).toContain("Implementation gate complete")
+    expect(f.calls.imported).toHaveLength(1)
+    expect(f.calls.created).toHaveLength(1)
+    expect(f.calls.prompted).toHaveLength(1)
+    expect(f.calls.imported[0].info.model).toEqual({ ...model, variant: "xhigh" })
+    expect(f.histories[f.childID].find((message) => message.type === "assistant").model).toEqual({ ...model, variant: "xhigh" })
+  }
 })
 
-snapshotTest("unsupported workspace topology and unavailable model or altered loaded role stop before import", async (observer) => {
+snapshotTest("initial policy predicates report distinct safe evidence and create zero authority", async (observer) => {
   const root = snapshotFixture(observer)
-  for (const mutation of ["workspace", "missing-model", "disabled", "variant", "catalog-location", "role-missing", "role-model", "role-mode", "role-hidden", "role-policy", "role-location"] as const) {
+  const cases = [
+    ["role-absent", "policy is unavailable: permissions are not an array or role is absent"],
+    ["permissions-not-array", "policy is unavailable: permissions are not an array or role is absent"],
+    ["location", "policy location mismatch"],
+    ["id", "policy role id mismatch"],
+    ["mode", "policy role mode mismatch"],
+    ["hidden", "policy role hidden mismatch"],
+    ["model-null", "policy model override is present"],
+    ["model-object", "policy model override is present"],
+    ["model-value", "policy model override is present"],
+    ["reset", "policy deny-all reset missing"],
+    ["extra-allow", "policy ordered permission suffix mismatch"],
+    ["order", "policy ordered permission suffix mismatch"],
+    ["resource", "policy ordered permission suffix mismatch"],
+    ["effect", "policy ordered permission suffix mismatch"],
+    ["extra-field", "policy ordered permission suffix mismatch"],
+  ] as const
+  for (const [mutation, reason] of cases) {
     const f = fake(root)
     const published = await publication(f.context, f.generation, observeGit(root), "parent", { directory: root })
-    const captured = mutation === "workspace" ? { ...published, activation: { ...published.activation, location: { directory: root, workspaceID: "workspace" } } } : published
-    f.claim(captured)
+    f.claim(published)
     const host = f.context as any
-    if (mutation === "missing-model") host.client.model.list = async () => ({ location: { directory: root }, data: [] })
-    if (mutation === "disabled") host.client.model.list = async () => ({ location: { directory: root }, data: [{ ...model, enabled: false, variants: [] }] })
-    if (mutation === "variant") {
-      // A named variant in valid initial execution evidence must exist in the catalog.
-      const fresh = fake(root)
-      fresh.sessions.parent.model.variant = "high"
-      for (const message of fresh.histories.parent) if (message.type === "assistant") message.model.variant = "high"
-      const plan = await publication(fresh.context, fresh.generation, observeGit(root), "parent", { directory: root })
-      fresh.claim(plan)
-      await expect(authorizePublishedAttempt(fresh.context, plan, fresh.guard)).rejects.toThrow("variant is unavailable")
-      expectNoImplementation(fresh)
-      continue
+    const secret = "DO-NOT-PRINT-REQUEST-OR-SYSTEM"
+    f.role.request = { settings: { secret }, headers: { Authorization: secret }, body: { secret } }
+    f.role.system = secret
+    let returnedLocation = { directory: root }
+    if (mutation === "role-absent") host.client.agent.get = async () => ({ location: returnedLocation, data: undefined })
+    if (mutation === "permissions-not-array") f.role.permissions = {}
+    if (mutation === "location") {
+      returnedLocation = { directory: root + "/other" }
+      host.client.agent.get = async () => ({ location: returnedLocation, data: f.role })
     }
-    if (mutation === "catalog-location") host.client.model.list = async () => ({ location: { directory: root + "/other" }, data: [{ ...model, enabled: true, variants: [] }] })
-    if (mutation === "role-missing") host.client.agent.get = async () => ({ location: { directory: root }, data: undefined })
-    if (mutation === "role-model") (f.role as any).model = model
-    if (mutation === "role-mode") f.role.mode = "primary"
-    if (mutation === "role-hidden") f.role.hidden = false
-    if (mutation === "role-policy") f.role.permissions.push({ action: "subagent", resource: "*", effect: "allow" })
-    if (mutation === "role-location") host.client.agent.get = async () => ({ location: { directory: root + "/other" }, data: f.role })
-    await expect(authorizePublishedAttempt(f.context, captured, f.guard)).rejects.toThrow(mutation === "workspace" ? "cannot preserve workspaceID" : /model|policy/)
+    if (mutation === "id") { f.role.id = "other"; f.role.model = undefined }
+    if (mutation === "mode") f.role.mode = "primary"
+    if (mutation === "hidden") f.role.hidden = false
+    if (mutation === "model-null") f.role.model = null
+    if (mutation === "model-object") f.role.model = { ...model, request: { headers: { Authorization: secret } } }
+    if (mutation === "model-value") f.role.model = "model-override"
+    if (mutation === "reset") f.role.permissions.splice(9, 1)
+    if (mutation === "extra-allow") f.role.permissions.push({ action: "subagent", resource: "*", effect: "allow" })
+    if (mutation === "order") [f.role.permissions[15], f.role.permissions[16]] = [f.role.permissions[16], f.role.permissions[15]]
+    if (mutation === "resource") f.role.permissions[15].resource = "git commit --amend"
+    if (mutation === "effect") f.role.permissions[15].effect = "allow"
+    if (mutation === "extra-field") f.role.permissions[15].request = { headers: { Authorization: secret } }
+    let catalogReads = 0
+    f.options.onRead = (kind) => { if (kind === "catalog") catalogReads++ }
+    const error = await authorizePublishedAttempt(f.context, published, f.guard).catch((error: Error) => error)
+    expect(error).toBeInstanceOf(Error)
+    const message = (error as Error).message
+    expect(message).toStartWith(`Attempt binding failed: loaded authorized Implementer ${reason}; evidence=`)
+    expect(message).not.toContain(secret)
+    expectNoImplementation(f)
+    expect(f.calls.prompted).toHaveLength(0)
+    expect(catalogReads).toBe(0)
+    const diagnostic = JSON.parse(message.split("; evidence=")[1]!)
+    expect(diagnostic.location).toEqual({ ...returnedLocation, extraFieldCount: 0 })
+    expect(diagnostic.role.id).toEqual(mutation === "role-absent" ? { type: "undefined" } : f.role.id)
+    expect(diagnostic.role.mode).toEqual(mutation === "role-absent" ? { type: "undefined" } : f.role.mode)
+    expect(diagnostic.role.hidden).toEqual(mutation === "role-absent" ? { type: "undefined" } : f.role.hidden)
+    expect(diagnostic.role.model.state).toBe(mutation === "id" ? "undefined" : mutation === "model-null" ? "null"
+      : mutation === "model-object" || mutation === "model-value" ? "value" : "absent")
+    if (mutation === "model-object") expect(diagnostic.role.model.value).toEqual({ ...model, extraFieldCount: 1 })
+    if (mutation === "model-value") expect(diagnostic.role.model.value).toEqual({ value: "model-override" })
+    expect(diagnostic.permissionsAreArray).toBe(!["role-absent", "permissions-not-array"].includes(mutation))
+    expect(diagnostic.permissionCount).toBe(Array.isArray(f.role.permissions) && mutation !== "role-absent" ? f.role.permissions.length : null)
+    expect(diagnostic.lastDenyAllResetIndex).toBe(["role-absent", "permissions-not-array", "reset"].includes(mutation) ? -1 : 9)
+    const authored = Bun.YAML.parse(readFileSync(path.join(import.meta.dir, "../.opencode/agents/authorized_implementer.md"), "utf8").split("---\n")[1]!) as any
+    expect(diagnostic.expectedOrderedSuffix).toEqual(authored.permissions)
+    expect(diagnostic.actualOrderedSuffix).toEqual(diagnostic.lastDenyAllResetIndex < 0 ? null
+      : f.role.permissions.slice(9).map(({ action, resource, effect, ...extra }: any) => ({ action, resource, effect, extraFieldCount: Object.keys(extra).length })))
+    expect(diagnostic.fullRoleEquality).toBe("not-checked")
+  }
+})
+
+snapshotTest("later expected-role drift reports full-role inequality without another child or any prompt", async (observer) => {
+  const root = snapshotFixture(observer)
+  for (const barrier of [2, 3]) {
+    const f = fake(root)
+    const published = await publication(f.context, f.generation, observeGit(root), "parent", { directory: root })
+    f.claim(published)
+    let reads = 0
+    f.options.onRead = (kind) => {
+      if (kind === "role" && ++reads === barrier) f.role.request.headers = { Authorization: "SECRET-DRIFT" }
+    }
+    const error = await authorizePublishedAttempt(f.context, published, f.guard).catch((error: Error) => error)
+    expect(error).toBeInstanceOf(Error)
+    const message = (error as Error).message
+    expect(message).toStartWith("Attempt binding failed: loaded authorized Implementer policy expected-role drift; evidence=")
+    expect(message).not.toContain("SECRET-DRIFT")
+    expect(JSON.parse(message.split("; evidence=")[1]!).fullRoleEquality).toBe(false)
+    expect(f.calls.imported).toHaveLength(1)
+    expect(f.calls.created).toHaveLength(1)
+    expect(f.calls.prompted).toHaveLength(0)
+    expect(reads).toBe(barrier)
+  }
+})
+
+snapshotTest("model catalog predicates report distinct evidence and create zero authority", async (observer) => {
+  const root = snapshotFixture(observer)
+  for (const [mutation, reason, matchCount] of [
+    ["location", "model catalog location mismatch", 1],
+    ["missing", "frozen provider/model has zero enabled exact matches", 0],
+    ["disabled", "frozen provider/model has zero enabled exact matches", 0],
+    ["wrong-id", "frozen provider/model has zero enabled exact matches", 0],
+    ["wrong-provider", "frozen provider/model has zero enabled exact matches", 0],
+    ["duplicate", "frozen provider/model has multiple enabled exact matches", 2],
+    ["variant", "frozen named variant is unavailable", 1],
+  ] as const) {
+    const f = fake(root)
+    f.sessions.parent.model.variant = "xhigh"
+    for (const message of f.histories.parent) if (message.type === "assistant") message.model.variant = "xhigh"
+    const published = await publication(f.context, f.generation, observeGit(root), "parent", { directory: root })
+    f.claim(published)
+    const returnedLocation = { directory: mutation === "location" ? root + "/other" : root }
+    const entry = { ...model, enabled: mutation !== "disabled", variants: [{ id: mutation === "variant" ? "high" : "xhigh",
+      settings: { secret: "SECRET-CATALOG" } }], request: { headers: { Authorization: "SECRET-CATALOG" } } }
+    if (mutation === "wrong-id") entry.id = "other"
+    if (mutation === "wrong-provider") entry.providerID = "other"
+    ;(f.context as any).client.model.list = async () => ({ location: returnedLocation,
+      data: mutation === "missing" ? [] : mutation === "duplicate" ? [entry, structuredClone(entry)] : [entry] })
+    const error = await authorizePublishedAttempt(f.context, published, f.guard).catch((error: Error) => error)
+    expect(error).toBeInstanceOf(Error)
+    const message = (error as Error).message
+    expect(message).toStartWith(`Attempt binding failed: ${reason}; evidence=`)
+    expect(message).not.toContain("SECRET-CATALOG")
+    expect(JSON.parse(message.split("; evidence=")[1]!)).toEqual({
+      location: { ...returnedLocation, extraFieldCount: 0 }, expectedLocation: { directory: root, extraFieldCount: 0 },
+      frozenModel: { ...model, variant: "xhigh" }, enabledExactMatchCount: matchCount,
+      availableVariantIDs: matchCount === 1 ? [mutation === "variant" ? "high" : "xhigh"] : null,
+    })
     expectNoImplementation(f)
     expect(f.calls.prompted).toHaveLength(0)
   }
+})
+
+snapshotTest("unsupported workspace topology stops before import", async (observer) => {
+  const root = snapshotFixture(observer)
   const f = fake(root)
-  ;(f.context as any).location.workspaceID = "workspace"
-  await expect(publication(f.context, f.generation, observeGit(root), "parent", { directory: root, workspaceID: "workspace" } as any)).rejects.toThrow("unsupported workspace-bound topology")
+  const published = await publication(f.context, f.generation, observeGit(root), "parent", { directory: root })
+  const captured = { ...published, activation: { ...published.activation, location: { directory: root, workspaceID: "workspace" } } }
+  f.claim(captured)
+  await expect(authorizePublishedAttempt(f.context, captured, f.guard)).rejects.toThrow("cannot preserve workspaceID")
   expectNoImplementation(f)
+  expect(f.calls.prompted).toHaveLength(0)
+  const fresh = fake(root)
+  ;(fresh.context as any).location.workspaceID = "workspace"
+  await expect(publication(fresh.context, fresh.generation, observeGit(root), "parent", { directory: root, workspaceID: "workspace" } as any)).rejects.toThrow("unsupported workspace-bound topology")
+  expectNoImplementation(fresh)
 })
 
 snapshotTest("one Authorize imports an exact fresh empty child with frozen root model and family policy", async (observer) => {

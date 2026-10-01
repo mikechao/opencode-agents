@@ -341,19 +341,70 @@ const implementerRules = [
 function supportedTopology(location: Location): void {
   if ("workspaceID" in location) stop("unsupported workspace-bound topology: public session.import cannot preserve workspaceID")
 }
+// Whitelist diagnostic values: never serialize request settings/headers/body,
+// system text, or arbitrary extra response fields. Comparisons still use originals.
+function diagnosticScalar(value: unknown): unknown {
+  if (value === undefined) return { type: "undefined" }
+  if (value === null || ["string", "boolean", "number"].includes(typeof value)) return value
+  return { type: Array.isArray(value) ? "array" : typeof value }
+}
+function diagnosticFields(value: unknown, fields: string[]): Record<string, unknown> {
+  if (!value || typeof value !== "object") return { value: diagnosticScalar(value) }
+  const object = value as Record<string, unknown>
+  return Object.fromEntries([
+    ...fields.filter((key) => Object.hasOwn(object, key)).map((key) => [key, diagnosticScalar(object[key])]),
+    ["extraFieldCount", Object.keys(object).filter((key) => !fields.includes(key)).length],
+  ])
+}
+function roleDiagnostic(location: unknown, expectedLocation: Location, role: AgentInfo | undefined, expected?: Frozen<AgentInfo>): string {
+  const permissions = role?.permissions
+  const reset = Array.isArray(permissions) ? permissions.reduce((last, rule, index) =>
+    rule.action === "*" && rule.resource === "*" && rule.effect === "deny" ? index : last, -1) : -1
+  const modelState = !role || !Object.hasOwn(role, "model") ? "absent"
+    : role.model === undefined ? "undefined" : role.model === null ? "null" : "value"
+  return exactEvidence({
+    location: diagnosticFields(location, ["directory", "workspaceID"]),
+    expectedLocation: diagnosticFields(expectedLocation, ["directory", "workspaceID"]),
+    role: { id: diagnosticScalar(role?.id), mode: diagnosticScalar(role?.mode), hidden: diagnosticScalar(role?.hidden),
+      model: { state: modelState, ...(modelState === "value" ? { value: diagnosticFields(role?.model, ["providerID", "id", "variant"]) } : {}) } },
+    permissionsAreArray: Array.isArray(permissions), permissionCount: Array.isArray(permissions) ? permissions.length : null,
+    lastDenyAllResetIndex: reset,
+    actualOrderedSuffix: Array.isArray(permissions) && reset >= 0
+      ? permissions.slice(reset).map((rule) => diagnosticFields(rule, ["action", "resource", "effect"])) : null,
+    expectedOrderedSuffix: implementerRules,
+    fullRoleEquality: expected === undefined ? "not-checked" : same(role, expected),
+  })
+}
 async function creationPolicy(context: Context, published: PublishedAttempt, check: () => void, expected?: Frozen<AgentInfo>): Promise<Frozen<AgentInfo>> {
   const { location } = published.activation
   supportedTopology(location)
   const loaded = await after(check, context.client.agent.get({ agentID: "authorized_implementer", location }))
   const role = loaded.data
-  if (!role || !Array.isArray(role.permissions)) stop("loaded authorized Implementer policy is unavailable")
+  const rejectRole = (reason: string): never => stop(`${reason}; evidence=${roleDiagnostic(loaded.location, location, role, expected)}`)
+  if (!role || !Array.isArray(role.permissions)) rejectRole("loaded authorized Implementer policy is unavailable: permissions are not an array or role is absent")
   const reset = role.permissions.reduce((last, rule, index) => rule.action === "*" && rule.resource === "*" && rule.effect === "deny" ? index : last, -1)
-  if (!same(loaded.location, location) || role.id !== "authorized_implementer" || role.mode !== "subagent" || !role.hidden || role.model !== undefined ||
-      reset < 0 || !same(role.permissions.slice(reset), implementerRules) || (expected && !same(role, expected))) stop("loaded authorized Implementer policy or model override changed")
+  if (!same(loaded.location, location)) rejectRole("loaded authorized Implementer policy location mismatch")
+  if (role.id !== "authorized_implementer") rejectRole("loaded authorized Implementer policy role id mismatch")
+  if (role.mode !== "subagent") rejectRole("loaded authorized Implementer policy role mode mismatch")
+  if (!role.hidden) rejectRole("loaded authorized Implementer policy role hidden mismatch")
+  if (role.model !== undefined) rejectRole("loaded authorized Implementer policy model override is present")
+  if (reset < 0) rejectRole("loaded authorized Implementer policy deny-all reset missing")
+  if (!same(role.permissions.slice(reset), implementerRules)) rejectRole("loaded authorized Implementer policy ordered permission suffix mismatch")
+  if (expected && !same(role, expected)) rejectRole("loaded authorized Implementer policy expected-role drift")
   const catalog = await after(check, context.client.model.list({ location }))
   const model = published.bound.model
   const available = catalog.data.filter((item) => item.id === model.id && item.providerID === model.providerID && item.enabled)
-  if (!same(catalog.location, location) || available.length !== 1 || (model.variant !== "default" && !available[0]!.variants.some((variant) => variant.id === model.variant))) stop("frozen root model or variant is unavailable")
+  const rejectModel = (reason: string): never => stop(`${reason}; evidence=${exactEvidence({
+    location: diagnosticFields(catalog.location, ["directory", "workspaceID"]),
+    expectedLocation: diagnosticFields(location, ["directory", "workspaceID"]),
+    frozenModel: { providerID: model.providerID, id: model.id, variant: model.variant },
+    enabledExactMatchCount: available.length,
+    availableVariantIDs: available.length === 1 ? available[0]!.variants.map((variant) => diagnosticScalar(variant.id)) : null,
+  })}`)
+  if (!same(catalog.location, location)) rejectModel("model catalog location mismatch")
+  if (available.length === 0) rejectModel("frozen provider/model has zero enabled exact matches")
+  if (available.length > 1) rejectModel("frozen provider/model has multiple enabled exact matches")
+  if (model.variant !== "default" && !available[0]!.variants.some((variant) => variant.id === model.variant)) rejectModel("frozen named variant is unavailable")
   return immutable(role)
 }
 const zeroTokens = { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }
