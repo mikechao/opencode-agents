@@ -6,7 +6,7 @@ import type { Generation } from "../../../src/cap.ts"
 import { observeGit, requireFresh } from "../../../src/git.ts"
 import {
   activationEvidence, authorizePublishedAttempt, exactEvidence, initiallyAuthorizable,
-  publishedPresentationMatches, publishPlan, snapshotLocation, type DecisionOwner, type PublishedAttempt,
+  publishedPresentationMatches, publishPlan, snapshotLocation, verifyPublishedAttempt, type DecisionOwner, type PublishedAttempt,
 } from "../../../src/attempt.ts"
 
 const dirtyStatus = "Planning only — worktree was dirty when this attempt started. Start a new attempt from a clean worktree to enable implementation."
@@ -36,6 +36,7 @@ const plugin: Definition = {
     let attempted = false
     let closed = false
     let completionID: string | undefined
+    let retained: PublishedAttempt | undefined
     let pending: PublishedAttempt | undefined
     let deciding: PublishedAttempt | undefined
     let pendingSurfaceUsable: (() => boolean) | undefined
@@ -52,6 +53,7 @@ const plugin: Definition = {
     const closeAuthority = () => {
       if (closed) return
       closed = true
+      retained = undefined
       pending = undefined
       deciding = undefined
       guard.bound = undefined
@@ -94,10 +96,13 @@ const plugin: Definition = {
       },
       assertCurrent() {
         if (closed || generation.revoked) throw new Error("Attempt ownership was closed or revoked")
-        if (attempted && ((!guard.dispatched && !rootSelected()) || !same(snapshotLocation(context.location ?? context.data.location.default()), location))) throw new Error("Root view or TUI location changed")
-        const retained = pending ?? deciding
-        if (retained) {
-          if (!publishedPresentationMatches(context, retained)) throw new Error("Published Plan projection changed")
+        if (attempted) {
+          const requiresRoot = (pending || deciding) && !guard.dispatched
+          if ((requiresRoot && !rootSelected()) || !same(snapshotLocation(context.location ?? context.data.location.default()), location)) throw new Error("Root view or TUI location changed")
+        }
+        const owned = retained ?? pending ?? deciding
+        if (owned) {
+          if (!publishedPresentationMatches(context, owned)) throw new Error("Published Plan projection changed")
         }
         if (guard.switchRecord && switchEcho && !same(guard.switchRecord, switchEcho)) throw new Error("Slot switch echo identity changed")
         if (guard.publication && publicationEcho && !same(guard.publication, publicationEcho)) throw new Error("Publication echo identity changed")
@@ -111,7 +116,7 @@ const plugin: Definition = {
         <Show when={input.sessionID === rootSessionID}>
           <Show when={presentation()} keyed>
             {(state) => state.kind === "pending"
-              ? <DecisionStrip published={state.published} />
+              ? <Show when={rootSelected()}><DecisionStrip published={state.published} /></Show>
               : <text wrapMode="char">{state.message}</text>}
           </Show>
         </Show> })
@@ -121,10 +126,27 @@ const plugin: Definition = {
       ensurePresentation(rootSessionID)
       setPresentation({ kind: "status", message })
     }
+    const armRetained = () => {
+      if (!retained || closed || generation.revoked || !rootSelected()) return
+      const captured = retained
+      // Transfer once before any await. Departure now closes root-bound ownership;
+      // it never transfers back to retention or starts another preparation.
+      retained = undefined
+      pending = captured
+      void verifyPublishedAttempt(context, captured, guard).then(() => {
+        guard.assertCurrent()
+        if (pending !== captured) throw new Error("Root preparation no longer owns the exact published attempt")
+        requireFresh(observeGit(location.directory!, captured.activation.baseline), captured.activation.baseline)
+        guard.assertCurrent()
+        ensurePresentation(captured.bound.parentID)
+        setPresentation({ kind: "pending", published: captured })
+      }).catch(terminate)
+    }
     const decide = (captured: PublishedAttempt, decision: "authorize" | "cancel") => {
       if (closed || generation.revoked || pending !== captured || deciding || generation.busy) return
       try {
         guard.assertCurrent()
+        if (!rootSelected()) throw new Error("Root view or TUI location changed")
         // Only a complete current frame can support a pending human decision.
         // Invalid geometry leaves this exact attempt pending for a later frame.
         if (!pendingSurfaceUsable?.()) { invalidateLayout?.(); return }
@@ -193,7 +215,7 @@ const plugin: Definition = {
           inViewport(authorizeButton) && authorizeButton!.width >= 11 && inViewport(cancelButton) && cancelButton!.width >= 8)
       }
       pendingSurfaceUsable = () => {
-        if (pending !== captured) return false
+        if (pending !== captured || !rootSelected()) return false
         if (!live(surface)) { terminate(new Error("Authorization surface is unavailable")); return false }
         return ready() && !!layoutProof && layoutProof.surface === surface && layoutProof.frame === (surface!.parent ?? surface!) &&
           layoutProof.width === context.renderer.terminalWidth && layoutProof.height === context.renderer.terminalHeight && validGeometry()
@@ -266,10 +288,8 @@ const plugin: Definition = {
           return
         }
         requireFresh(observeGit(location.directory!, baseline), baseline!)
-        pending = published
+        retained = published
         setLayoutRevision((value) => value + 1)
-        ensurePresentation(published.bound.parentID)
-        setPresentation({ kind: "pending", published })
       }).catch(terminate)
     })
     // Notifications revoke on receipt; server read barriers independently catch delayed events.
@@ -342,6 +362,7 @@ const plugin: Definition = {
         context.data.session.pending.list(creation!.data.sessionID)
         try {
           guard.assertCurrent()
+          armRetained()
         } catch (error) { terminate(error) }
       })
       return dispose

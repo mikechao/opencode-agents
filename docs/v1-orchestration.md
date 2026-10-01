@@ -19,7 +19,9 @@ activation Git observation + completion time
 → frozen IntentCandidate C
 → exact synthetic admission S, delivery:steer, resume:false
 → root remains idle → exact pending publication verification
-→ eligible clean-initial attempt: root-only question, binding context, Authorize / Cancel
+→ eligible clean-initial attempt: private retained publication, independent of selected route
+→ exact root selected: transfer once to root-bound preparation; trusted revalidation + clean freshness
+→ root-only question, binding context, Authorize / Cancel; fresh completed readable frame
 → local Authorize claims exact PublishedAttempt synchronously and shows persistent progress
 → fresh publication/native/Git/liveness verification
 → one-use intent grant
@@ -56,9 +58,9 @@ the implementation HEAD recorded in [the issue #4 report](issue-4-live-dogfood.m
 | [attempt.ts](../src/attempt.ts) | Activation/publication evidence, exact native and pending-publication verification, guarded authorization bridge, one same-slot executor, exact prompt/result binding. |
 
 The [TUI plugin](../.opencode/plugins/opencode-agents/tui.tsx) owns one activation,
-its pending/claimed references, local decision callbacks, irreversible
-invalidation, reactive view guards, and cleanup. It does not persist authority
-in session state or either plugin storage API. There is no workflow service,
+its private retained/pending/claimed references, local decision callbacks,
+irreversible invalidation, reactive view guards, and cleanup. It does not persist
+authority in session state or either plugin storage API. There is no workflow service,
 phase enum, retry counter, compatibility path, or recovery mechanism.
 
 ## Native roles and binding
@@ -128,6 +130,14 @@ generation itself remains mutable only for liveness. Coherence checks compare
 retained P/native results, candidate/root/HEAD, and publication. Neither IDs,
 hashes, metadata, cached messages, nor prose replace full evidence.
 
+Inspecting the native Planner or another child does not invalidate trusted Plan
+publication. Publication and private retention are independent of the selected
+TUI route; original location/workspace, generation, native, publication, Git,
+and exact root projection checks remain required. Eligible publication retains
+the exact immutable `PublishedAttempt` privately while root is not selected.
+Retention is non-authoritative: it creates no decision surface or callback,
+grant, slot switch, or implementation prompt.
+
 ## Exact pending synthetic semantics
 
 On OpenCode 2.0.20, while S is pending:
@@ -159,7 +169,20 @@ restoring any authority.
 
 ## Local decision and lifetime
 
+Presentation ownership progresses once from `retained` to `pending` to
+`deciding`. On selection of the exact root, the plugin synchronously transfers
+the same retained object into root-bound pending ownership before any await.
+One preparation path calls the existing full trusted publication/native verifier,
+checks the current exact root projection and location, and requires fresh clean
+Git with the original canonical root/HEAD. Only successful revalidation installs
+the pending presentation. There is no transfer back to retention. Departure
+after preparation begins, including during an awaited verification, permanently
+stops the attempt; restoring route or evidence cannot reopen it. Stale async
+continuations must still own that exact pending object in a live generation
+before installing a surface.
+
 The plugin appends one reactive `session.composer.top` claim for the exact root.
+The pending strip requires both exact root slot input and selected root route.
 While pending, it shows the complete canonical worktree, Plan hash and bound
 HEAD prefix, the question “Do you authorize this plan for implementation?”,
 and Authorize / Cancel on separate lines. The question and controls are not
@@ -167,9 +190,11 @@ concatenated with the binding row. The surface occupies at most five rows:
 worktree at most two wrapped rows, then one row each for binding, question, and
 controls. It requires an 80×24-or-larger terminal and visible, unclipped
 worktree, binding, question, and control geometry. Controls become live only
-after a completed renderer frame proves the entire layout. Pending resize
-synchronously invalidates that proof and disables decisions before descendants
-reflow. Stale geometry or resizing back to the previous dimensions cannot
+after a fresh completed renderer frame proves the entire layout. Frames from
+child inspection, an earlier root view, or preparation cannot supply that proof.
+Returning to root or matching old viewport dimensions alone enables no decision.
+Pending resize synchronously invalidates that proof and disables decisions
+before descendants reflow. Stale geometry or resizing back to the previous dimensions cannot
 restore readiness: a fresh completed frame must validate the current viewport,
 ancestor visibility/liveness, wrapping, dimensions, and every required text and
 control's bounds and clipping before publishing a new proof. Invalid geometry,
@@ -207,11 +232,18 @@ Observers are installed before publication. Only exact expected synthetic,
 switch and implementation events are admitted, with RPC/history reconciliation.
 Unexpected root execution, inbox lifecycle, transcript/control mutation,
 permission/role/location changes, missing children, deletion/fork/revert/
-compaction, route loss, renderer errors, or true pending-surface loss terminate
+compaction, renderer errors, or true pending-surface loss terminate
 the attempt. Global frame/reactive watchers and continuation-wide owner checks
 retain non-layout invariants after claim; they do not recheck the disposed
 decision surface. Events revoke on receipt; independent server reads cover delayed
 notifications. There is no broad busy-period event exemption.
+
+Route loss is terminal from root presentation preparation through live pending
+presentation and claimed authorization before prompt dispatch. Issue #4's
+post-claim resize semantics and existing post-dispatch behavior are unchanged.
+Child navigation before preparation remains harmless selection, never an
+authority signal. Root return performs no Planner rerun, second synthetic Plan,
+replacement slot, root-model copying/resumption, retry, or recovery.
 
 Every awaited operation/page is followed by owner/generation/location and fresh
 Git checks. Publication uses baseline path stability, pre-admission uses clean
@@ -276,6 +308,13 @@ also cover location, projection, native transcript and permission mutation.
 The issue #4 implementation passes typecheck, the focused attempt suite (55
 tests), and the full suite (70 tests).
 
+Issue #5 adds publication during child inspection, same-object root-return
+verification and fresh-frame authorization, one-publication/one-slot uniqueness,
+stale preparation, and genuine retained invalidation regressions using the same
+test-scoped doubles. Existing pending/claimed navigation and issue #4 layout
+regressions remain in place. The issue #5 implementation passes typecheck,
+the focused attempt suite (58 tests), and the full suite (73 tests).
+
 ### Live PASS evidence
 
 Live OpenCode 2.0.20 dogfood verified the following:
@@ -332,9 +371,12 @@ Live OpenCode 2.0.20 dogfood verified the following:
   complete, reproduced the root-view guard STOP. Returning to root showed only
   model-authored `Plan prepared; awaiting human authorization.`; the trusted
   synthetic Plan had not been published, and the worktree stayed clean. This is
-  CAP safety fail-closed behavior and a publication/DX failure. Desired behavior
-  is to let child inspection coexist with trusted Plan publication while
-  keeping authorization root-only.
+  the pre-fix publication/DX failure. The implemented TUI lifecycle now permits
+  route-independent publication/private retention and one trusted preparation
+  on exact-root return, followed by a fresh readable frame. Authorization stays
+  root-only. Automated coverage exercises this behavior; live root-return
+  presentation and renderer scheduling still need verification under the pinned
+  host, as described in [the issue #5 investigation](issue-5-plan-publication-while-inspecting-planner-investigation.md).
 - On a dirty initial worktree, the trusted planning-only strip correctly says
   the attempt cannot be authorized, while Orchestrator model-authored prose may
   still say `awaiting human authorization`. Model-authored prose is not
@@ -350,6 +392,11 @@ exactly one trusted implementation prompt; exact-scope rejection for an
 out-of-scope implementation result; and longer or scrollable Plan presentation
 with a compact authorization surface under realistic content. Keyboard
 authorization is unimplemented and out of this milestone.
+
+Issue #5 still needs a fresh Planner-inspection-through-publication attempt that
+returns to root and authorizes the same retained slot, plus a retained Git
+mutation case that stops on root return without rearming. Live dogfood has not
+been run for this implementation pass.
 
 The issue #2/#3 copy and persistent status lifecycle are covered by automated
 callback/layout doubles but have not yet been rechecked in live OpenCode 2.0.20.

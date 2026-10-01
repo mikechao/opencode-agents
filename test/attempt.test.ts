@@ -5,13 +5,14 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import type { Context } from "@opencode/plugin/tui/context"
 import type { Generation } from "../src/cap.ts"
+import * as attemptModule from "../src/attempt.ts"
 import * as gitModule from "../src/git.ts"
 import { observeGit, type GitSnapshot } from "../src/git.ts"
 import { makeCandidate, parseProposal, candidateMessage, renderPlan } from "../src/proposal.ts"
 import { activationEvidence, initiallyAuthorizable, assertPublishedCoherence, exactEvidence, publishedPresentationMatches,
   authorizePublishedAttempt, implementerPrompt, plannerInput, publishPlan as publish, snapshotLocation, verifyPublishedAttempt,
   type DecisionOwner, type PublishedAttempt, SLOT_PROMPT } from "../src/attempt.ts"
-import { createRoot, createEffect, createMemo, createComponent } from "solid-js"
+import { createRoot, createEffect, createMemo, createComponent, createSignal } from "solid-js"
 import { createStore } from "solid-js/store"
 import { EventEmitter } from "node:events"
 
@@ -1491,24 +1492,315 @@ snapshotTest("pointer controls wait for completed layout and reject clipped deci
   }
 })
 
-snapshotTest("reactive navigation loss during a publication await latches before returning to root", async (observer) => {
-  const root = snapshotFixture(observer)
-  let release!: () => void
-  let waiting = false
-  const paused = new Promise<void>((resolve) => { release = resolve })
-  const f = fake(root, { onWait: async () => { waiting = true; await paused } })
-  const [route, setRoute] = (await import("solid-js")).createSignal<any>({ type: "session", sessionID: "parent" })
+// Only these retained-publication cases intercept the real returned object.
+// Restore the export before root return; the plugin keeps its private ownership.
+async function startInspectedPublication(f: ReturnType<typeof fake>, beforeCompletion?: (select: (id: string) => void) => void) {
+  const realAttempt = { ...attemptModule }
+  const modulePath = path.resolve(import.meta.dir, "../src/attempt.ts")
+  let resolve!: (published: PublishedAttempt) => void
+  let reject!: (error: unknown) => void
+  const returned = new Promise<PublishedAttempt>((done, failed) => { resolve = done; reject = failed })
+  mock.module(modulePath, () => ({ ...realAttempt, publishPlan: async (...args: Parameters<typeof publish>) => {
+    const published = await realAttempt.publishPlan(...args).catch((error) => { reject(error); throw error })
+    resolve(published)
+    return published
+  } }))
+  const [route, setRoute] = createSignal<any>({ type: "session", sessionID: "parent" })
   ;(f.context.ui.router as any).current = route
   const cleanup = await plugin.setup(f.context)
+  const select = (sessionID: string) => setRoute({ type: "session", sessionID })
+  f.sessions.parent.time.created = Date.now() + 10
   f.emit(f.created())
-  f.emit({ type: "session.execution.succeeded", id: "evt_completed", data: { sessionID: "parent" } })
-  expect(waiting).toBe(true)
-  setRoute({ type: "home" })
-  expect(f.calls.toasts.at(-1)).toContain("Root view")
-  setRoute({ type: "session", sessionID: "parent" })
-  release()
-  for (let i = 0; i < 100; i++) await Promise.resolve()
-  expect(f.calls.synthetic).toEqual([])
-  expect(f.calls.switched).toEqual([])
-  if (typeof cleanup === "function") cleanup()
+  beforeCompletion?.(select)
+  const completed = { type: "session.execution.succeeded", id: "evt_completed", data: { sessionID: "parent" } }
+  f.emit(completed)
+  return {
+    select, completed,
+    finish: async () => {
+      try {
+        const published = await returned
+        // Let the real TUI publication continuation take retained ownership.
+        await Promise.resolve()
+        expect(f.calls.toasts).toEqual([])
+        expect(f.slots).toEqual([])
+        return published
+      } finally { mock.module(modulePath, () => realAttempt) }
+    },
+    cleanup: () => { mock.module(modulePath, () => realAttempt); if (typeof cleanup === "function") cleanup() },
+  }
+}
+
+snapshotTest("Planner inspection before completion or during publication retains one Plan without a decision", async (observer) => {
+  for (const boundary of ["before-completion", "wait", "hydrate"] as const) {
+    const root = snapshotFixture(observer)
+    const f = fake(root, { events: true })
+    let release!: () => void
+    let waiting = false
+    const paused = new Promise<void>((resolve) => { release = resolve })
+    if (boundary === "wait") f.options.onWait = async () => { waiting = true; await paused }
+    if (boundary === "hydrate") {
+      const sync = f.context.data.session.message.sync
+      ;(f.context.data.session.message as any).sync = async (id: string) => {
+        await sync(id)
+        waiting = true
+        await paused
+      }
+    }
+    const attempt = await startInspectedPublication(f, boundary === "before-completion" ? (select) => select("planner-child") : undefined)
+    try {
+      if (boundary !== "before-completion") {
+        await settleUntil(() => waiting)
+        attempt.select("planner-child")
+        release()
+      }
+      const published = await attempt.finish()
+      expect(initiallyAuthorizable(published.activation)).toBe(true)
+      expect(publishedPresentationMatches(f.context, published)).toBe(true)
+      expect(f.calls.synthetic).toHaveLength(1)
+      expect(f.calls.synthetic[0]).toEqual({ id: published.publication.id, sessionID: "parent", text: proposal,
+        description: renderPlan(published.candidate), metadata: published.publication.payload.metadata, delivery: "steer", resume: false })
+      f.emit(attempt.completed); f.emit(attempt.completed)
+      f.renderer.emit("frame"); f.renderer.emit("resize")
+      attempt.select("slot-child")
+      attempt.select("unrelated-root")
+      expect(f.slots).toEqual([])
+      expect(f.calls.toasts).toEqual([])
+      expect(f.calls.switched).toEqual([])
+      expect(f.calls.prompted).toEqual([])
+      attempt.select("parent")
+      await settleUntil(() => f.slots.length > 0)
+      const child = mount(f, "planner-child")
+      expect(child.buttons).toEqual([])
+      child.dispose()
+      const view = mount(f)
+      view.click(1)
+      expect(f.calls.toasts).toEqual(["Cancelled — no implementation admitted"])
+      expect(f.calls.synthetic).toHaveLength(1)
+      expect(f.calls.switched).toEqual([])
+      expect(f.calls.prompted).toEqual([])
+      view.dispose()
+    } finally { release(); attempt.cleanup() }
+  }
+})
+
+snapshotTest("root return revalidates the same retained object and needs a fresh root frame before one authorization", async (observer) => {
+  const root = snapshotFixture(observer)
+  const f = fake(root, { events: true, onPrompt: () => observer.configure(root, HEAD, ["old.txt"]) })
+  f.renderer.emit("frame")
+  const attempt = await startInspectedPublication(f, (select) => select("planner-child"))
+  const modulePath = path.resolve(import.meta.dir, "../src/attempt.ts")
+  let release!: () => void
+  const paused = new Promise<void>((resolve) => { release = resolve })
+  let waiting = false
+  let view: ReturnType<typeof mount> | undefined
+  try {
+    const published = await attempt.finish()
+    const evidence = structuredClone({ sessions: f.sessions, histories: f.histories, inbox: f.inboxes.parent, cache: f.cache.parent })
+    const verified: PublishedAttempt[] = []
+    const authorized: PublishedAttempt[] = []
+    // Capture identity only in test scope, forwarding to the complete trusted operations.
+    const restoredAttempt = { ...attemptModule }
+    mock.module(modulePath, () => ({ ...restoredAttempt,
+      verifyPublishedAttempt: async (...args: Parameters<typeof verifyPublishedAttempt>) => {
+        verified.push(args[1])
+        return restoredAttempt.verifyPublishedAttempt(...args)
+      },
+      authorizePublishedAttempt: (...args: Parameters<typeof authorizePublishedAttempt>) => {
+        authorized.push(args[1]); return restoredAttempt.authorizePublishedAttempt(...args)
+      },
+    }))
+    const get = f.context.client.session.get
+    ;(f.context.client.session as any).get = async (input: any) => {
+      const result = await get(input)
+      if (!waiting) { waiting = true; await paused }
+      return result
+    }
+    // Completed child and earlier root frames carry no decision proof.
+    f.renderer.emit("frame")
+    attempt.select("slot-child")
+    attempt.select("parent")
+    await settleUntil(() => waiting)
+    f.emit(attempt.completed); f.renderer.emit("frame"); f.renderer.emit("resize")
+    expect(f.slots).toEqual([])
+    expect(f.calls.switched).toEqual([])
+    expect(f.calls.prompted).toEqual([])
+    release()
+    await settleUntil(() => f.slots.length > 0)
+    expect(verified).toEqual([published])
+    expect(verified[0]).toBe(published)
+    const child = mount(f, "planner-child")
+    expect(child.buttons).toEqual([])
+    child.dispose()
+    view = mount(f, "parent", false)
+    expect(view.buttons).toHaveLength(2)
+    view.click(0); view.click(1)
+    expect(authorized).toEqual([])
+    // A newly mounted root at invalid geometry also stays inert.
+    f.renderer.terminalWidth = 79
+    f.renderer.emit("resize"); f.renderer.emit("frame")
+    view.click(0); view.click(1)
+    f.renderer.terminalWidth = 120
+    f.renderer.emit("resize")
+    view.click(0); view.click(1)
+    expect(authorized).toEqual([])
+    f.renderer.emit("frame")
+    view.click(0); view.click(0); view.click(1)
+    expect(authorized).toHaveLength(1)
+    expect(authorized[0]).toBe(published)
+    expect(authorized[0]!.candidate).toBe(published.candidate)
+    expect(authorized[0]!.bound).toBe(published.bound)
+    expect(authorized[0]!.publication).toBe(published.publication)
+    await settleUntil(() => f.calls.toasts.length > 0)
+    expect(f.calls.toasts.at(-1)).toContain("Implementation gate complete")
+    expect(f.calls.switched).toEqual([published.bound.slot.childID])
+    expect(f.calls.prompted).toEqual([{ sessionID: published.bound.slot.childID, text: implementerPrompt(published.candidate) }])
+    expect(f.calls.synthetic).toHaveLength(1)
+    expect(Object.keys(f.sessions).sort()).toEqual(Object.keys(evidence.sessions).sort())
+    expect(f.histories.parent).toEqual(evidence.histories.parent)
+    expect(f.histories["planner-child"]).toEqual(evidence.histories["planner-child"])
+    expect(f.histories["slot-child"].slice(0, evidence.histories["slot-child"].length)).toEqual(evidence.histories["slot-child"])
+    expect(f.inboxes.parent).toEqual(evidence.inbox)
+    expect(f.cache.parent).toEqual(evidence.cache)
+    expect(observer.calls(root).at(-1)!.current).toEqual({ root, head: HEAD, paths: ["old.txt"] })
+  } finally {
+    release(); attempt.cleanup(); view?.dispose()
+  }
+})
+
+snapshotTest("stale root preparation cannot install a surface after navigation, cleanup, failure, or ownership closure", async (observer) => {
+  for (const loss of ["navigation", "cleanup", "replacement-activation", "native-event", "renderer", "completed-verification-cleanup"] as const) {
+    const root = snapshotFixture(observer)
+    const f = fake(root)
+    const attempt = await startInspectedPublication(f, (select) => select("planner-child"))
+    let release!: () => void
+    const paused = new Promise<void>((resolve) => { release = resolve })
+    let waiting = false
+    let replacement: Awaited<ReturnType<typeof plugin.setup>> = undefined
+    let restore: (() => void) | undefined
+    try {
+      const published = await attempt.finish()
+      if (loss === "completed-verification-cleanup") {
+        const realAttempt = { ...attemptModule }
+        const modulePath = path.resolve(import.meta.dir, "../src/attempt.ts")
+        mock.module(modulePath, () => ({ ...realAttempt, verifyPublishedAttempt: async (...args: Parameters<typeof verifyPublishedAttempt>) => {
+          await realAttempt.verifyPublishedAttempt(...args)
+          waiting = true; await paused
+        } }))
+        restore = () => mock.module(modulePath, () => realAttempt)
+      } else {
+        const get = f.context.client.session.get
+        ;(f.context.client.session as any).get = async (input: any) => {
+          const result = await get(input)
+          waiting = true; await paused
+          return result
+        }
+      }
+      attempt.select("parent")
+      await settleUntil(() => waiting)
+      expect(f.slots).toEqual([])
+      if (loss === "navigation") { attempt.select("planner-child"); attempt.select("parent") }
+      const revoked = loss === "cleanup" || loss === "replacement-activation" || loss === "completed-verification-cleanup"
+      if (revoked) attempt.cleanup()
+      if (loss === "replacement-activation") replacement = await plugin.setup(f.context)
+      if (loss === "native-event") f.emit({ type: "session.deleted", id: "evt_deleted", data: { sessionID: "parent" } })
+      if (loss === "renderer") f.renderer.emit("render:error")
+      expect(published.activation.generation.revoked).toBe(revoked)
+      release()
+      for (let i = 0; i < 300; i++) await Promise.resolve()
+      attempt.select("planner-child"); attempt.select("parent")
+      f.emit(attempt.completed); f.renderer.emit("resize"); f.renderer.emit("frame")
+      if (revoked) expect(f.slots).toEqual([])
+      else {
+        expect(f.calls.toasts).toHaveLength(1)
+        expect(f.calls.toasts[0]).toContain("STOP — Implementation was not admitted")
+        const status = mount(f)
+        expect(status.buttons).toEqual([])
+        expect(status.text()).toContain("STOP")
+        status.dispose()
+      }
+      expect(f.calls.synthetic).toHaveLength(1)
+      expect(f.calls.switched).toEqual([])
+      expect(f.calls.prompted).toEqual([])
+    } finally { release(); restore?.(); attempt.cleanup(); if (typeof replacement === "function") replacement() }
+  }
+})
+
+snapshotTest("genuine retained evidence, Git, location, session, and generation invalidation cannot rearm on root return", async (observer) => {
+  for (const mutation of ["head", "dirty", "publication", "server-publication", "inbox", "projection", "reactive-projection", "candidate-rebind", "planner", "permissions",
+    "missing-root", "delete-planner", "directory", "workspaceID", "cleanup"] as const) {
+    const root = snapshotFixture(observer)
+    const f = fake(root)
+    const [location, setLocation] = createStore({ directory: root, workspaceID: undefined as string | undefined })
+    Object.defineProperty(f.context, "location", { get: () => location })
+    const attempt = await startInspectedPublication(f, (select) => select("planner-child"))
+    let view: ReturnType<typeof mount> | undefined
+    try {
+      const published = await attempt.finish()
+      const original = structuredClone({ sessions: f.sessions, histories: f.histories, inbox: f.inboxes.parent, cache: f.cache.parent })
+      const inboxList = f.context.client.session.inbox.list
+      const messageList = f.context.data.session.message.list
+      if (mutation === "head") observer.configure(root, "2".repeat(40))
+      if (mutation === "dirty") observer.configure(root, HEAD, ["old.txt"])
+      if (mutation === "publication") f.inboxes.parent[0].time.created++
+      if (mutation === "server-publication") {
+        const inbox = f.context.client.session.inbox.list
+        ;(f.context.client.session.inbox as any).list = async (input: any) => {
+          const result = await inbox(input)
+          if (input.sessionID === "parent") result[0]!.time.created++
+          return result
+        }
+      }
+      if (mutation === "inbox") f.inboxes.parent.push(user("extra", "extra"))
+      if (mutation === "projection") f.cache.parent.at(-1).description += " changed"
+      if (mutation === "reactive-projection") {
+        const [projection, setProjection] = createStore<{ messages: any[] }>({ messages: structuredClone(f.cache.parent) })
+        ;(f.context.data.session.message as any).list = (id: string) => id === "parent" ? projection.messages : f.cache[id]
+        f.renderer.emit("resize")
+        setProjection("messages", f.cache.parent.length - 1, "description", "changed")
+        expect(f.calls.toasts.at(-1)).toContain("Published Plan projection changed")
+      }
+      if (mutation === "candidate-rebind") {
+        const different = JSON.stringify({ ...JSON.parse(proposal), intent: "A different candidate" })
+        f.histories["planner-child"][1].content[0].text = different
+        f.histories.parent[1].content[0].state.content[0].text = `<subagent sessionID="planner-child" state="completed">\n${different}\n</subagent>`
+      }
+      if (mutation === "planner") f.histories["planner-child"][1].content[0].text += " changed"
+      if (mutation === "permissions") f.sessions["planner-child"].permissions = [{ action: "edit", resource: "*", effect: "allow" }]
+      if (mutation === "missing-root") delete f.sessions.parent
+      if (mutation === "delete-planner") f.emit({ type: "session.deleted", id: "evt_deleted", data: { sessionID: "planner-child" } })
+      if (mutation === "directory" || mutation === "workspaceID") {
+        setLocation(mutation, "changed")
+        // The reactive guard must close even while Planner is selected.
+        expect(f.calls.toasts.at(-1)).toContain("TUI location changed")
+        setLocation(mutation, mutation === "directory" ? root : undefined)
+      }
+      if (mutation === "cleanup") attempt.cleanup()
+      attempt.select("parent")
+      if (mutation !== "cleanup") {
+        await settleUntil(() => f.calls.toasts.length > 0)
+        expect(f.calls.toasts[0]).toContain("STOP — Implementation was not admitted")
+        view = mount(f)
+        expect(view.buttons).toEqual([])
+      }
+      // Restore all data and selection after STOP; the old owner remains closed.
+      observer.configure(root)
+      Object.assign(f.sessions, original.sessions)
+      Object.assign(f.histories, original.histories)
+      f.inboxes.parent = original.inbox; f.cache.parent = original.cache
+      ;(f.context.client.session.inbox as any).list = inboxList
+      ;(f.context.data.session.message as any).list = messageList
+      attempt.select("planner-child"); attempt.select("parent")
+      f.emit(attempt.completed); f.renderer.emit("resize"); f.renderer.emit("frame")
+      view?.click(0); view?.click(1)
+      for (let i = 0; i < 100; i++) await Promise.resolve()
+      expect(published.candidate.proposal.intent).toBe("Change old file")
+      expect(f.calls.synthetic).toHaveLength(1)
+      expect(f.calls.switched).toEqual([])
+      expect(f.calls.prompted).toEqual([])
+      if (mutation === "cleanup") {
+        expect(f.slots).toEqual([])
+        expect(published.activation.generation.revoked).toBe(true)
+      } else expect(f.calls.toasts).toHaveLength(1)
+    } finally { attempt.cleanup(); view?.dispose() }
+  }
 })
