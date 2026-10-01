@@ -338,6 +338,9 @@ const implementerRules = [
   { action: "shell", resource: "git commit", effect: "deny" },
   { action: "shell", resource: "git commit *", effect: "deny" },
 ]
+// OpenCode 2.0.21's browser plugin appends this exact rule after config.
+// It repeats the authored deny-all for browser; accept only these two shapes.
+const openCodeBrowserDeny = { action: "browser", resource: "*", effect: "deny" }
 function supportedTopology(location: Location): void {
   if ("workspaceID" in location) stop("unsupported workspace-bound topology: public session.import cannot preserve workspaceID")
 }
@@ -372,6 +375,7 @@ function roleDiagnostic(location: unknown, expectedLocation: Location, role: Age
     actualOrderedSuffix: Array.isArray(permissions) && reset >= 0
       ? permissions.slice(reset).map((rule) => diagnosticFields(rule, ["action", "resource", "effect"])) : null,
     expectedOrderedSuffix: implementerRules,
+    allowedTrailingHostRule: openCodeBrowserDeny,
     fullRoleEquality: expected === undefined ? "not-checked" : same(role, expected),
   })
 }
@@ -389,7 +393,8 @@ async function creationPolicy(context: Context, published: PublishedAttempt, che
   if (!role.hidden) rejectRole("loaded authorized Implementer policy role hidden mismatch")
   if (role.model !== undefined) rejectRole("loaded authorized Implementer policy model override is present")
   if (reset < 0) rejectRole("loaded authorized Implementer policy deny-all reset missing")
-  if (!same(role.permissions.slice(reset), implementerRules)) rejectRole("loaded authorized Implementer policy ordered permission suffix mismatch")
+  const suffix = role.permissions.slice(reset)
+  if (!same(suffix, implementerRules) && !same(suffix, [...implementerRules, openCodeBrowserDeny])) rejectRole("loaded authorized Implementer policy ordered permission suffix mismatch")
   if (expected && !same(role, expected)) rejectRole("loaded authorized Implementer policy expected-role drift")
   const catalog = await after(check, context.client.model.list({ location }))
   const model = published.bound.model

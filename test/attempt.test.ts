@@ -174,7 +174,9 @@ function fake(root: string, options: FakeOptions = {}) {
       ({ action: "external_directory", resource: `/test/opencode-global/${resource}`, effect: "allow" })),
   ]
   const role = { ...frontmatter, id: "authorized_implementer", name: "authorized_implementer",
-    request: { settings: {}, headers: {}, body: {} }, system: source[2]!.trim(), permissions: [...defaults, ...frontmatter.permissions] }
+    request: { settings: {}, headers: {}, body: {} }, system: source[2]!.trim(),
+    // The built-in browser plugin appends this after config for every agent.
+    permissions: [...defaults, ...frontmatter.permissions, { action: "browser", resource: "*", effect: "deny" }] }
   const histories: Record<string, any[]> = {
     parent: [user("parent-user", request),
       { type: "assistant", id: "planner-tool-message", agent: "orchestrator", model: { ...model }, content: [call("planner-call", "planner", plannerInput(request), "planner-child", proposal)] },
@@ -1879,7 +1881,8 @@ snapshotTest("realistic host defaults, absent or undefined role model, and xhigh
     expect(Object.hasOwn(f.role, "model")).toBe(false)
     if (modelState === "undefined") f.role.model = undefined
     const authored = Bun.YAML.parse(readFileSync(path.join(import.meta.dir, "../.opencode/agents/authorized_implementer.md"), "utf8").split("---\n")[1]!) as any
-    expect(f.role.permissions.slice(9)).toEqual(authored.permissions)
+    expect(f.role.permissions.slice(9, -1)).toEqual(authored.permissions)
+    expect(f.role.permissions.at(-1)).toEqual({ action: "browser", resource: "*", effect: "deny" })
     expect(f.role.permissions.slice(0, 9)).toHaveLength(9)
     expect(f.role.permissions[0]).toEqual({ action: "*", resource: "*", effect: "allow" })
     expect(f.role.request).toEqual({ settings: {}, headers: {}, body: {} })
@@ -1895,6 +1898,106 @@ snapshotTest("realistic host defaults, absent or undefined role model, and xhigh
     expect(f.calls.prompted).toHaveLength(1)
     expect(f.calls.imported[0].info.model).toEqual({ ...model, variant: "xhigh" })
     expect(f.histories[f.childID].find((message) => message.type === "assistant").model).toEqual({ ...model, variant: "xhigh" })
+  }
+})
+
+snapshotTest("browser-deny compatibility accepts only the two exact ordered suffix shapes", async (observer) => {
+  const root = snapshotFixture(observer)
+  for (const browserDeny of [false, true]) {
+    const f = fake(root, { decision: true })
+    if (!browserDeny) f.role.permissions.pop()
+    const loadedRole = structuredClone(f.role)
+    let roleReads = 0
+    let catalogReads = 0
+    f.options.onRead = (kind) => { if (kind === "role") roleReads++; if (kind === "catalog") catalogReads++ }
+    expectNoImplementation(f)
+    expect(await implement(f.context, f.generation, observeGit(root), "parent", { directory: root })).toContain("Implementation gate complete")
+    expect(f.calls.imported).toHaveLength(1)
+    expect(f.calls.created).toHaveLength(1)
+    expect(f.calls.prompted).toHaveLength(1)
+    expect(roleReads).toBe(5)
+    expect(catalogReads).toBe(5)
+    expect(f.role).toEqual(loadedRole)
+  }
+})
+
+snapshotTest("browser-deny compatibility rejects altered, misplaced, duplicate, and extra trailing rules before import", async (observer) => {
+  const root = snapshotFixture(observer)
+  for (const mutation of ["browser-allow", "browser-resource", "browser-position", "browser-duplicate", "unknown-deny",
+    "trailing-allow", "unknown-deny-without-browser", "trailing-allow-without-browser", "browser-extra-field",
+    "missing-commit-deny", "missing-commit-wildcard-deny"] as const) {
+    const f = fake(root, { decision: true })
+    if (mutation === "browser-allow") f.role.permissions.at(-1)!.effect = "allow"
+    if (mutation === "browser-resource") f.role.permissions.at(-1)!.resource = "foo"
+    if (mutation === "browser-position") f.role.permissions.splice(15, 0, f.role.permissions.pop()!)
+    if (mutation === "browser-duplicate") f.role.permissions.push({ action: "browser", resource: "*", effect: "deny" })
+    if (mutation === "unknown-deny-without-browser" || mutation === "trailing-allow-without-browser") f.role.permissions.pop()
+    if (mutation === "unknown-deny" || mutation === "unknown-deny-without-browser") f.role.permissions.push({ action: "unknown", resource: "*", effect: "deny" })
+    if (mutation === "trailing-allow" || mutation === "trailing-allow-without-browser") f.role.permissions.push({ action: "browser", resource: "*", effect: "allow" })
+    if (mutation === "browser-extra-field") f.role.permissions.at(-1)!.extra = true
+    if (mutation === "missing-commit-deny") f.role.permissions.splice(15, 1)
+    if (mutation === "missing-commit-wildcard-deny") f.role.permissions.splice(16, 1)
+    await expect(implement(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow("policy ordered permission suffix mismatch")
+    expectNoImplementation(f)
+    expect(f.calls.prompted).toHaveLength(0)
+  }
+})
+
+snapshotTest("browser-deny compatibility never accepts changed or reordered authored rules", async (observer) => {
+  const root = snapshotFixture(observer)
+  for (const browserDeny of [false, true]) {
+    for (const index of [0, 1, 2, 3, 4, 5, 6, 7]) {
+      for (const field of ["action", "resource", "effect"] as const) {
+        const f = fake(root, { decision: true })
+        if (!browserDeny) f.role.permissions.pop()
+        f.role.permissions[9 + index][field] = field === "effect" ? "ask" : "changed"
+        await expect(implement(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow(
+          index === 0 ? "policy deny-all reset missing" : "policy ordered permission suffix mismatch")
+        expectNoImplementation(f)
+        expect(f.calls.prompted).toHaveLength(0)
+      }
+    }
+    const f = fake(root, { decision: true })
+    if (!browserDeny) f.role.permissions.pop()
+    ;[f.role.permissions[15], f.role.permissions[16]] = [f.role.permissions[16], f.role.permissions[15]]
+    await expect(implement(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow("policy ordered permission suffix mismatch")
+    expectNoImplementation(f)
+    expect(f.calls.prompted).toHaveLength(0)
+  }
+})
+
+snapshotTest("browser-deny compatibility preserves exact later role readbacks without prompt, retry, or replacement", async (observer) => {
+  const root = snapshotFixture(observer)
+  for (const barrier of [2, 3]) {
+    for (const mutation of ["add", "remove", "resource", "effect", "position", "duplicate"] as const) {
+      const f = fake(root)
+      if (mutation === "add") f.role.permissions.pop()
+      const published = await publication(f.context, f.generation, observeGit(root), "parent", { directory: root })
+      f.claim(published)
+      let reads = 0
+      f.options.onRead = (kind) => {
+        if (kind !== "role" || ++reads !== barrier) return
+        if (mutation === "add" || mutation === "duplicate") f.role.permissions.push({ action: "browser", resource: "*", effect: "deny" })
+        if (mutation === "remove") f.role.permissions.pop()
+        if (mutation === "resource") f.role.permissions.at(-1)!.resource = "foo"
+        if (mutation === "effect") f.role.permissions.at(-1)!.effect = "allow"
+        if (mutation === "position") f.role.permissions.splice(15, 0, f.role.permissions.pop()!)
+      }
+      const error = await authorizePublishedAttempt(f.context, published, f.guard).catch((error: Error) => error)
+      expect(error).toBeInstanceOf(Error)
+      const message = (error as Error).message
+      expect(message).toContain(mutation === "add" || mutation === "remove" ? "policy expected-role drift" : "policy ordered permission suffix mismatch")
+      expect(JSON.parse(message.split("; evidence=")[1]!).fullRoleEquality).toBe(false)
+      expect(f.calls.imported).toHaveLength(1)
+      expect(f.calls.created).toHaveLength(1)
+      expect(f.calls.prompted).toHaveLength(0)
+      const childID = f.childID
+      await expect(authorizePublishedAttempt(f.context, published, f.guard)).rejects.toThrow("cannot retry")
+      expect(f.calls.imported).toHaveLength(1)
+      expect(f.calls.created).toEqual([childID])
+      expect(f.calls.prompted).toHaveLength(0)
+      expect(reads).toBe(barrier)
+    }
   }
 })
 
@@ -1968,6 +2071,7 @@ snapshotTest("initial policy predicates report distinct safe evidence and create
     expect(diagnostic.lastDenyAllResetIndex).toBe(["role-absent", "permissions-not-array", "reset"].includes(mutation) ? -1 : 9)
     const authored = Bun.YAML.parse(readFileSync(path.join(import.meta.dir, "../.opencode/agents/authorized_implementer.md"), "utf8").split("---\n")[1]!) as any
     expect(diagnostic.expectedOrderedSuffix).toEqual(authored.permissions)
+    expect(diagnostic.allowedTrailingHostRule).toEqual({ action: "browser", resource: "*", effect: "deny" })
     expect(diagnostic.actualOrderedSuffix).toEqual(diagnostic.lastDenyAllResetIndex < 0 ? null
       : f.role.permissions.slice(9).map(({ action, resource, effect, ...extra }: any) => ({ action, resource, effect, extraFieldCount: Object.keys(extra).length })))
     expect(diagnostic.fullRoleEquality).toBe("not-checked")
