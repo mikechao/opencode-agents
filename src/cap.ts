@@ -11,7 +11,7 @@ export interface AuthorizeClaim {
   readonly candidate: IntentCandidate
   readonly rootSessionID: string
   readonly location: Readonly<LocationRef>
-  readonly publicationID: string
+  readonly publicationID: string // TUI provenance, not an independently verified credential.
 }
 export interface Reservation {
   readonly sessionID: string
@@ -44,14 +44,14 @@ export class NativeCap {
   #executorEntered = false
   #reservation?: Readonly<Reservation>
   #control?: Readonly<{ id: string; text: string }>
-  #childID?: string
-  #result?: unknown
+  #result?: Readonly<{ childID: string; status: "completed" }>
 
   get claim(): AuthorizeClaim { this.live(); if (!this.#claim) throw new Error("No CAP claim"); return this.#claim }
   get control(): Readonly<{ id: string; text: string }> { this.live(); if (!this.#control) throw new Error("No CAP control"); return this.#control }
   get phase() { return this.#phase }
   get rootSessionID() { return this.#claim?.rootSessionID }
-  get childID() { return this.#childID }
+  get childID() { return this.#result?.childID }
+  get reservation() { this.live(); if (!this.#reservation) throw new Error("No CAP reservation"); return this.#reservation }
   get result() { return this.#result }
 
   accept(input: unknown, controlText: (candidate: IntentCandidate) => string): void {
@@ -85,7 +85,6 @@ export class NativeCap {
     const owner = this.#reservation
     if (this.#phase !== "reserved" || !owner || !exactKeys(call, ["sessionID", "agent", "messageID", "id"]) ||
         Object.keys(owner).some((key) => owner[key as keyof Reservation] !== call[key as keyof Reservation])) throw new Error("CAP reservation mismatch")
-    if (!candidateIntact(this.claim.candidate)) throw new Error("Frozen CAP claim changed")
   }
   enter(call: Reservation): void {
     this.assertReserved(call)
@@ -98,15 +97,13 @@ export class NativeCap {
     if (this.#phase !== "consumed" || !owner || Object.keys(owner).some((key) => owner[key as keyof Reservation] !== call[key as keyof Reservation])) throw new Error("Consumed call identity mismatch")
   }
   consume(call: Reservation): void { this.assertReserved(call); this.#phase = "consumed" }
-  progress(id: string): void {
-    this.live()
-    if (this.#phase !== "consumed" || !id || (this.#childID && this.#childID !== id)) throw new Error("Native child progress mismatch")
-    this.#childID = id
-  }
   receipt(result: unknown): void {
     this.live()
-    if (this.#phase !== "consumed" || this.#result !== undefined) throw new Error("Native result receipt mismatch")
-    this.#result = frozenCopy(result)
+    const output = (result as { output?: { sessionID?: unknown; status?: unknown } } | null)?.output
+    if (this.#phase !== "consumed" || this.#result || typeof output?.sessionID !== "string" || !output.sessionID || output.status !== "completed") {
+      throw new Error("Native completion receipt mismatch")
+    }
+    this.#result = Object.freeze({ childID: output.sessionID, status: "completed" })
   }
   close(): void { this.#phase = "closed" }
   teardown(): void { this.close(); this.#revoked = true }

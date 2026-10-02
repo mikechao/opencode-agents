@@ -60,8 +60,9 @@ Scope MUST NOT use directories, subtrees, prefixes, globs, wildcards or implicit
 expansion. Absolute paths, backslashes, NUL, empty/dot/traversal path segments,
 `.git` segments and pattern syntax are rejected. Existing ancestors MUST be
 actual directories, not symlinks or files. Missing ancestors/new files are
-permitted. Existing final directories and final symlinks resolving outside
-the worktree are rejected; resolvable internal final symlinks are permitted.
+permitted. Existing final directories, dangling or otherwise unresolvable final
+symlinks, and final symlinks resolving outside the worktree are rejected;
+resolvable internal final symlinks are permitted.
 The concrete validator is [proposal.ts](../src/proposal.ts).
 
 Trusted code MUST validate and freeze the complete proposal intact. It MUST
@@ -93,6 +94,9 @@ The published Plan is a deterministic trusted human-readable projection of
 the candidate. Synthetic `text` retains exact raw Planner P, including its
 original JSON whitespace; synthetic `description` contains the readable Plan.
 Rendering MUST NOT replace or alter the frozen authority-bearing contents.
+Each exact filename MUST have a distinct, unambiguous trusted label. The current
+Plan quotes paths as ASCII JSON strings, escaping control and Unicode formatting
+characters without changing the authorized path bytes, and shows the file count.
 Publication, conversation text, synthetic metadata, candidate IDs, digests,
 hashes and prose MUST NOT authorize implementation.
 
@@ -140,7 +144,12 @@ exact object and removes callbacks. Cancel MUST send no RPC and no wake.
 Model replies, Form/Question answers and generic permissions MUST NOT authorize.
 
 The TUI MUST preserve initial clean eligibility and verify the published Plan
-and native Planner binding before transferring its immutable claim. The claim
+and semantic native Planner binding before transferring its immutable claim.
+Binding retains the original request, native call/child/input/final IDs, exact
+proposal bytes, role/location/no-overrides and root creation evidence. Whole
+transcript serialization, model selection and generic metadata are not authority
+invariants. The visible store MUST contain the exact trusted Plan; unrelated
+visible history need not match the complete server transcript. The claim
 binds implementation purpose, candidate/proposal/exact ordered paths/canonical
 root/HEAD, root session ID, location and publication identity. The server MUST
 occupy its one private slot synchronously before any RPC await, copy/freeze the
@@ -178,12 +187,16 @@ false values), and transformed authority arguments MUST be rejected. Malformed
 first contenders burn the claim; concurrent losers MUST NOT alter its owner.
 
 Supported server `session.context` MUST inspect the actual published call and
-preceding exact control input. Original arguments MUST be checked before native
-decoding because native normalization can remove empty optional properties.
-A strict input adapter and final executor comparison MUST retain the exact
-contract. Missing, stale or ambiguous control/call evidence MUST fail closed.
-Whole post-authorization planning histories and pending-Plan equality are not
-required; initial verification stays in the TUI.
+preceding exact control input, including the first host-published tool contender
+and failed tool parts that skip execution hooks. At final admission, original
+published arguments MUST be compared with the frozen contract independently of
+the decoded executor arguments: native repair/decoding can remove optional or
+extra properties. The native input/output schemas and host decoder remain
+unchanged. Missing, stale or ambiguous control/call evidence MUST fail closed.
+Provider byte-level JSON validity is not a separate CAP invariant; a recovered
+object still has to pass both exact authority comparisons. Whole
+post-authorization planning histories and pending-Plan equality are not required;
+initial verification stays in the TUI.
 
 After all awaited admission reads, the final synchronous barrier MUST verify
 current root role/location, absence of session permission elevation, intact
@@ -194,14 +207,24 @@ sponsorship actor with deny-all plus only
 `subagent:authorized_implementer=allow`. Only the execution actor is substituted;
 parent/message/call/progress identities and native lifecycle remain intact.
 Root static Implementer denial and session permissions MUST NOT be mutated.
-OpenCode's later ConfigAgentPlugin appends global and configured rules to existing
-agents. The server MUST inspect the final sponsor definition before consumption.
-A sponsor-only, deny-only permission hook bounds appended allows to the exact
-Implementer delegation; it MUST NOT elevate a host deny or ask. Appended denies
-or asks fail closed before consumption, except the host's unrelated browser deny.
-Changed sponsor identity, visibility, mode or original rule prefix also fails
-closed. No root/session permission override or additional permission lifecycle
-is introduced.
+OpenCode's later ConfigAgentPlugin can append global and configured rules.
+A sponsor-only, deny-only permission hook MUST bound effective allows to the
+exact Implementer delegation and reject effective ask rather than offer a
+fallback permission dialog. Native effective deny MUST remain deny. Unrelated
+rules and shadowed denies are judged by OpenCode's effective last-match policy;
+whole sponsor arrays, visibility and mode are not admission fingerprints.
+Correctly configured installed root/Planner/Implementer role and tool policies
+are trusted deployment assumptions; CAP does not certify arbitrary configuration.
+
+Sponsorship is an explicitly pinned OpenCode 2.0.22 internal seam. Native
+`subagent` MUST assert effective permission using the explicit execution actor,
+real parent session and source message/call IDs before creating a child. Permission
+MUST select the explicit actor ahead of the session agent, merge actual session
+overrides, and reject configured effective deny before hooks. Child creation
+MUST retain the real parent. CAP changes only the actor; no session runs as the
+sponsor. The final root read follows independent awaited admission reads, then
+synchronous path/Git checks and consumption. Freshness is an observation at
+release, not a transactional lock on parent policy through later native work.
 
 The original native executor MUST create/prompt/run the child and own native
 progress, result projection and presentation. No imported child, caller child
@@ -230,12 +253,16 @@ shell-accessible state to conceal changes. Direct obvious commit commands
 SHOULD be denied as defense in depth. Ordinary editing, testing and development
 shell access remain available. These controls are not adversarial containment.
 
-CAP MUST forward native progress and capture the original result. Native child
-ID, progress receipt, output, metadata, persisted call result and actual child
-parent/role/location/input/successful completion MUST agree. Root settlement
-must be successful for a verified outcome. Ordinary recovery of the same
-admitted child remains supported and grants no new admission. A recovered
-child's installed editing capability is not surviving CAP authority.
+CAP MUST forward native progress unchanged and capture the original structured
+completion child ID/status before after hooks. The exact reserved message/call
+and its persisted completed child ID/status MUST agree with that receipt and
+the actual child's parent/role/location/authorized input/successful completion.
+Root settlement must be successful for a verified outcome. Display wrappers,
+content-item count, harmless metadata and host truncation are not authority
+evidence; `outputPath` MUST NOT be followed as authority evidence. Nonempty
+Implementer prose is not required. Ordinary recovery of the same admitted child
+remains supported and grants no new admission. A recovered child's installed
+editing capability is not surviving CAP authority.
 
 Trusted code MUST independently observe canonical root and unchanged HEAD and
 derive staged, unstaged tracked and ordinary untracked changed paths, excluding

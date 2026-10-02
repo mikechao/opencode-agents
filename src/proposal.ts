@@ -38,14 +38,15 @@ function exactFile(value: unknown, root: string): asserts value is string {
     }
   }
   const full = path.join(root, value)
-  try {
-    const info = lstatSync(full)
-    if (info.isDirectory()) throw new Error(`Scope path is a directory: ${value}`)
-    if (info.isSymbolicLink() && !realpathSync(full).startsWith(`${root}${path.sep}`)) {
-      throw new Error(`Scope path leaves the worktree: ${value}`)
-    }
-  } catch (error) {
+  let info
+  try { info = lstatSync(full) } catch (error) {
     if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") throw error
+    return // Only an absent final entry is an ordinary new file.
+  }
+  if (info.isDirectory()) throw new Error(`Scope path is a directory: ${value}`)
+  // An existing symlink must resolve; ENOENT here is not an absent entry.
+  if (info.isSymbolicLink() && !realpathSync(full).startsWith(`${root}${path.sep}`)) {
+    throw new Error(`Scope path leaves the worktree: ${value}`)
   }
 }
 
@@ -87,6 +88,11 @@ export function candidateIntact(candidate: IntentCandidate): boolean {
   return current.encoding === candidate.encoding && current.digest === candidate.digest
 }
 
+// Quoted ASCII JSON is injective and keeps controls, bidi/formatting characters
+// and Unicode separators from changing the terminal's path presentation.
+export const displayPath = (value: string): string => JSON.stringify(value).replace(/[\u007f-\uffff]/g,
+  (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`)
+
 export function renderPlan(candidate: IntentCandidate): string {
   return [
     "Plan",
@@ -95,26 +101,12 @@ export function renderPlan(candidate: IntentCandidate): string {
     "",
     candidate.proposal.plan,
     "",
-    "Exact files",
-    ...(candidate.proposal.files.length ? candidate.proposal.files.map((file) => `• ${file}`) : ["(none)"]),
+    `Exact files (${candidate.proposal.files.length})`,
+    ...(candidate.proposal.files.length ? candidate.proposal.files.map((file) => `• ${displayPath(file)}`) : ["(none)"]),
     "",
     "Bound HEAD",
     candidate.head,
     "",
     "No implementation has been authorized.",
-  ].join("\n")
-}
-
-export function candidateMessage(candidate: IntentCandidate): string {
-  return [
-    "Authorize one implementation attempt for this exact proposal?",
-    `Intent: ${candidate.proposal.intent}`,
-    `Plan: ${candidate.proposal.plan}`,
-    `Exact files (${candidate.proposal.files.length}):`,
-    ...candidate.proposal.files.map((file) => `• ${JSON.stringify(file)}`),
-    ...(candidate.proposal.files.length ? [] : ["(none)"]),
-    `Worktree: ${JSON.stringify(candidate.root)}`,
-    `HEAD: ${candidate.head}`,
-    "Implementation only; no commit authorized.",
   ].join("\n")
 }

@@ -6,7 +6,8 @@ This document owns current host sequencing and implementation status.
 
 ## Native admission
 
-The pinned host is OpenCode 2.0.21. The TUI keeps initial Git eligibility,
+The pinned host is OpenCode 2.0.22; live validation of this implementation on
+that version remains a separate pass. The TUI keeps initial Git eligibility,
 exact native Planner binding, trusted Plan publication, root return preparation,
 and completed readable-frame Authorize/Cancel controls. Publication can happen
 while Planner is inspected; a dirty or ambiguous initial baseline remains
@@ -63,36 +64,51 @@ returns the trusted gate outcome. Lost responses remain uncertain in the TUI.
 The before hook reserves the first root contender before reads. Unexpected tools,
 aliases and malformed input burn it; concurrent losers cannot alter its owner.
 Supported server `session.context` reads inspect the actual published tool input
-and exact preceding control. Original input is checked before native decoding,
-including optional empty fields that the native hook may remove. The schema
-adapter preserves the native decoder and compares authority-bearing input before
-it can drop extras; the executor makes a final comparison.
-The pinned 2.0.21 input contains only validated data, without decode transforms or
-constructor defaults. Its schema-owned public maker keeps validation within the
-host's bundled Effect parser; the plugin must not compile that AST with its own
-Effect instance. JSON-schema conversion uses a detached schema object. Ordinary
-Planner calls retain native validation and invocation identities without sponsor
-substitution or shared-schema mutation.
+and exact preceding control. The before hook performs early reservation/tool
+veto; the executor compares both original published and host-decoded arguments
+with the frozen contract in one final admission. Native schemas and validation
+remain untouched, including for ordinary Planner calls. Parser-failed published
+tool parts count as contenders even when they skip before hooks. Provider JSON
+recovery alone is not an authority decision.
 
-All awaited admission reads finish before synchronous local/path/Git checks and
-consumption. No session/root permission is elevated. The installed root still
-denies Implementer. A hidden, nonselectable sponsorship actor has deny-all plus
-only `subagent:authorized_implementer=allow`. The wrapper substitutes the native
-execution actor and forwards progress while preserving real parent, message and
-call identities. The original executor owns all child scheduling and lifecycle.
-ConfigAgentPlugin runs after external plugin registration and appends rules to
-existing agents. Admission reads the final sponsor definition before consumption;
-appended denies/asks or changes to its original policy, hidden status or mode
-close admission (the built-in browser deny is harmless). A sponsor-only deny hook
-constrains appended allows to the exact Implementer target and never overrides
-a host deny or ask. Root/session permissions remain untouched.
+The TUI retains semantic request/call/child/proposal identities rather than full
+serialized histories, selected models or generic metadata. Decision-time server
+reads verify those facts and no added input. Its finite visible window must
+contain the exact Plan, not duplicate full server history. Paths in the trusted
+Plan use quoted ASCII JSON labels and a count; controls and Unicode formatting
+characters cannot turn one filename into multiple scope entries. Dangling final
+symlinks fail closed, including when path topology changes after transfer.
+Initial, publication/presentation, decision, server release and result Git
+observations remain independent; local ownership/revocation checks follow awaits.
+
+Independent awaited admission reads finish before the final root observation
+and synchronous local/path/Git checks and consumption. No session/root
+permission is elevated. The installed root still denies Implementer. A hidden,
+nonselectable sponsorship actor has deny-all plus only
+`subagent:authorized_implementer=allow`. The wrapper substitutes the native
+execution actor while preserving parent/message/call IDs and progress. The
+original executor owns all child scheduling and lifecycle.
+
+This composition is an explicitly pinned OpenCode 2.0.22 internal dependency:
+native target permission is asserted before child creation using the explicit
+actor and real parent/source IDs; permission selects that actor ahead of the
+session agent, merges session overrides and rejects effective configured deny
+before hooks. The sponsor-only deny hook bounds effective allows to the exact
+target and turns ask into deny. Native effective deny/ask creates no child even
+though the one-use claim has already been consumed. Whole sponsor-rule arrays
+and unrelated metadata are not admission fingerprints. Installed role/tool
+policies must remain correctly configured; this is a trusted deployment
+assumption. Parent freshness is a late observation, not a lock through all native
+operations after consumption.
 
 OpenCode owns Implementer child creation, execution, lifecycle, row and
 navigation. `opencode-agents` owns the narrow one-use CAP admission and the
-independent Git/result gate. The returned native output, progress child ID,
-metadata, persisted call result, and actual successful child
-parent/role/location/input/result must agree. A separate fresh Git observation
-verifies unchanged HEAD and exact changed-path membership.
+independent Git/result gate. The pre-after-hook structured completion child
+ID/status, exact reserved persisted call and actual successful child
+parent/role/location/authorized input must agree. Display wrappers,
+content-item count, harmless metadata, truncation
+and nonempty Implementer prose do not decide authority. A separate fresh Git
+observation verifies unchanged HEAD and exact changed-path membership.
 The root must settle successfully before a verified outcome is returned. Harmless
 prose is allowed; refusal/prose without admission closes unused authority.
 There is no provider-request counting, retry/compaction policing, or follow-up
@@ -119,6 +135,10 @@ Git-observer and JSX doubles. Coverage includes initial binding/publication and
 readability, malformed-first calls, raw/decoded drift, stale evidence, concurrency,
 replay, refusal, transport/execution ambiguity, teardown, result binding,
 same-child recovery, and second-claim rejection after success and failure.
+The read-only source guards in `test/native-compatibility.test.ts` require the
+selected sibling `../opencode` checkout and check the pinned actor/permission
+ordering seam. They complement effective-policy doubles and do not replace live
+host validation.
 Real Git tests remain confined to Git semantics in `test/git.test.ts`, using
 immutable seeds and private copies. Production Git observations remain fresh.
 

@@ -1,5 +1,5 @@
 import { afterEach, expect, mock, spyOn, test } from "bun:test"
-import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync, symlinkSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import type { Context } from "@opencode/plugin/tui/context"
@@ -7,7 +7,7 @@ import type { Generation } from "../src/cap.ts"
 import * as attemptModule from "../src/attempt.ts"
 import * as gitModule from "../src/git.ts"
 import { observeGit, type GitSnapshot } from "../src/git.ts"
-import { makeCandidate, parseProposal, candidateMessage, renderPlan } from "../src/proposal.ts"
+import { makeCandidate, parseProposal, renderPlan } from "../src/proposal.ts"
 import { activationEvidence, initiallyAuthorizable, assertPublishedCoherence, exactEvidence, publishedPresentationMatches,
   authorizePublishedAttempt, implementerPrompt, plannerInput, publishPlan as publish, snapshotLocation, verifyPublishedAttempt,
   type DecisionOwner, type PublishedAttempt } from "../src/attempt.ts"
@@ -231,7 +231,7 @@ async function implement(context: Context, generation: Generation, baseline: Git
   const f = fakes.get(context)!
   const published = await publication(context, generation, baseline, parent, location)
   f.claim(published)
-  f.calls.decided.push(candidateMessage(published.candidate))
+  f.calls.decided.push(renderPlan(published.candidate))
   f.options.onDecision?.()
   if (f.options.decision !== true) throw new Error("Implementation authorization was cancelled")
   return authorizePublishedAttempt(context, published, f.guard)
@@ -375,7 +375,6 @@ snapshotTest("missing, duplicate, continued, background, or substituted native c
     (f: ReturnType<typeof fake>) => { f.histories.parent[1].content[0].state.input.prompt += " " },
     (f: ReturnType<typeof fake>) => { f.histories.parent[1].content[0].state.metadata.status = "running" },
     (f: ReturnType<typeof fake>) => { f.sessions["planner-child"].parentID = "other" },
-    (f: ReturnType<typeof fake>) => { f.histories.parent[1].content[0].state.content[0].text = "paraphrase" },
     (f: ReturnType<typeof fake>) => { f.histories["planner-child"].push(user("extra", "extra")) },
   ]) {
     const root = snapshotFixture(observer)
@@ -510,7 +509,7 @@ snapshotTest("a delivered Plan never relaxes the original native history binding
   f.claim(published)
   f.histories.parent.push({ type: "synthetic", id: published.publication.id, text: proposal,
     description: renderPlan(published.candidate), metadata: published.publication.payload.metadata })
-  await expect(authorizePublishedAttempt(f.context, published, f.guard)).rejects.toThrow("parent transcript changed")
+  await expect(authorizePublishedAttempt(f.context, published, f.guard)).rejects.toThrow("unexpected parent input")
   expectNoImplementation(f)
 })
 
@@ -618,6 +617,72 @@ snapshotTest("TUI startup location evidence survives proxy mutation and rejects 
 })
 
 
+snapshotTest("semantic planning binding accepts cosmetic records, model changes and finite visible history", async (observer) => {
+  const root = snapshotFixture(observer), f = fake(root)
+  const published = await publication(f.context, f.generation, observeGit(root), "parent", { directory: root })
+  f.sessions.parent.model = { providerID: "other", id: "other" }
+  f.sessions.parent.projectID = "cosmetic-project"
+  f.sessions.parent.subpath = "cosmetic-subpath"
+  f.sessions.parent.metadata = { unrelated: true }
+  f.sessions["planner-child"].metadata = { unrelated: true }
+  for (const history of Object.values(f.histories)) {
+    for (let i = 0; i < history.length; i++) {
+      history[i] = { ...Object.fromEntries(Object.entries(history[i]).reverse()), time: { created: 999 }, tokens: { unrelated: true } }
+      if (history[i].type === "assistant") history[i].model = { providerID: "other", id: "other" }
+    }
+  }
+  f.histories.parent[1].content[0].state.content = [text("Host truncated the native display"), text("Extra presentation")]
+  f.histories.parent[1].content[0].state.metadata.truncated = true
+  f.histories.parent[1].content[0].state.metadata.outputPath = "/ignored/display"
+  f.inboxes.parent[0].time.created++
+  f.inboxes.parent[0].payload.metadata.planHash = "cosmetic-label"
+  f.inboxes.parent[0].payload.extra = true
+  f.inboxes.parent[0].extra = true
+  // More server history than the host's visible window. Only the exact Plan
+  // needs to be visible; unrelated server/store rows do not become authority.
+  f.histories.parent.splice(2, 0, ...Array.from({ length: 30 }, (_, i) => answer(`neutral-${i}`, "orchestrator", "Unrelated prose")))
+  f.cache.parent = [answer("unrelated-visible", "orchestrator", "Visible window"), f.cache.parent.at(-1)]
+  expect(publishedPresentationMatches(f.context, published)).toBe(true)
+  f.claim(published)
+  await authorizePublishedAttempt(f.context, published, f.guard)
+  expect(f.calls.claims).toHaveLength(1)
+  expect(f.calls.claims[0].candidate).toEqual(published.candidate)
+})
+
+snapshotTest("decision-time semantic planning evidence rejects changed request/call/child/proposal and added input", async (observer) => {
+  for (const mutation of ["request", "call", "child", "prompt", "role", "proposal", "added-input", "mutation-tool"] as const) {
+    const root = snapshotFixture(observer), f = fake(root)
+    const published = await publication(f.context, f.generation, observeGit(root), "parent", { directory: root })
+    const tool = f.histories.parent[1].content[0]
+    if (mutation === "request") f.histories.parent[0].text += "changed"
+    if (mutation === "call") tool.id = "different"
+    if (mutation === "child") tool.state.metadata.sessionID = "different"
+    if (mutation === "prompt") tool.state.input.prompt += "changed"
+    if (mutation === "role") f.sessions["planner-child"].agent = "authorized_implementer"
+    if (mutation === "proposal") f.histories["planner-child"][1].content[0].text += " "
+    if (mutation === "added-input") f.histories["planner-child"].push(user("added", "extra task"))
+    if (mutation === "mutation-tool") f.histories["planner-child"][1].content.push({ type: "tool", name: "edit", id: "edit", state: { status: "completed" } })
+    f.claim(published)
+    await expect(authorizePublishedAttempt(f.context, published, f.guard)).rejects.toThrow()
+    expectNoImplementation(f)
+  }
+})
+
+snapshotTest("trusted publication displays unusual filenames unambiguously and transfers their original scope", async (observer) => {
+  const root = snapshotFixture(observer), f = fake(root)
+  const files = ["one.txt\n• second.txt", "bidi\u202efile.txt"]
+  const raw = JSON.stringify({ intent: "i", plan: "p", files })
+  f.histories["planner-child"][1].content[0].text = raw
+  const published = await publication(f.context, f.generation, observeGit(root), "parent", { directory: root })
+  const labels = f.calls.synthetic[0].description.split("\n").filter((line: string) => line.startsWith("• "))
+  expect(labels).toHaveLength(2)
+  expect(labels.map((line: string) => JSON.parse(line.slice(2)))).toEqual(files)
+  expect(f.calls.synthetic[0].text).toBe(raw)
+  f.claim(published)
+  await authorizePublishedAttempt(f.context, published, f.guard)
+  expect(f.calls.claims[0].candidate.proposal.files).toEqual(files)
+})
+
 snapshotTest("retained evidence is copied, deeply immutable, and coherent", async (observer) => {
   const root = snapshotFixture(observer)
   const f = fake(root)
@@ -631,8 +696,7 @@ snapshotTest("retained evidence is copied, deeply immutable, and coherent", asyn
   assertPublishedCoherence(published)
   for (const mutation of [
     { ...published, candidate: { ...published.candidate, root: "different" } },
-    { ...published, bound: { ...published.bound, planner: { ...published.bound.planner, childID: "replacement" } } },
-    { ...published, publication: { ...published.publication, payload: { ...published.publication.payload, metadata: { source: "planner", planHash: "forged" } } } },
+    { ...published, publication: { ...published.publication, payload: { ...published.publication.payload, metadata: { source: "other", planHash: "forged" } } } },
   ]) expect(() => assertPublishedCoherence(mutation as PublishedAttempt)).toThrow()
 })
 
@@ -656,8 +720,8 @@ snapshotTest("initial eligibility requires clean observation strictly before mat
 })
 
 
-snapshotTest("exact pending publication admits reordered keys and rejects every altered field or extra item", async (observer) => {
-  for (const mutation of ["keys", "id", "sessionID", "delivery", "time", "text", "description", "metadata", "payload-key", "item-key", "extra", "promotion"] as const) {
+snapshotTest("pending publication checks semantic identity and rendering while allowing cosmetic envelope changes", async (observer) => {
+  for (const mutation of ["keys", "id", "sessionID", "delivery", "time", "text", "description", "metadata", "source", "payload-key", "item-key", "extra", "promotion"] as const) {
     const root = snapshotFixture(observer)
     const f = fake(root)
     const published = await publication(f.context, f.generation, observeGit(root), "parent", { directory: root })
@@ -672,10 +736,12 @@ snapshotTest("exact pending publication admits reordered keys and rejects every 
       else if (mutation === "time") item.time.created++
       else if (["text", "description"].includes(mutation)) item.payload[mutation] += " "
       else if (mutation === "metadata") item.payload.metadata.planHash = "forged"
+      else if (mutation === "source") item.payload.metadata.source = "other"
       else if (mutation === "payload-key") item.payload.extra = true
       else if (mutation === "item-key") item.extra = true
       else item[mutation] = "different"
-      await expect(verifyPublishedAttempt(f.context, published, f.guard)).rejects.toThrow()
+      if (["time", "metadata", "payload-key", "item-key"].includes(mutation)) await verifyPublishedAttempt(f.context, published, f.guard)
+      else await expect(verifyPublishedAttempt(f.context, published, f.guard)).rejects.toThrow()
     }
     expectNoImplementation(f)
   }
@@ -887,8 +953,8 @@ snapshotTest("pending authorization rejects changed trusted evidence after Plann
       const saved = structuredClone({ sessions: f.sessions, histories: f.histories, cache: f.cache, inboxes: f.inboxes })
       if (mutation === "head") observer.configure(root, "2".repeat(40))
       if (mutation === "dirty") observer.configure(root, HEAD, ["old.txt"])
-      if (mutation === "publication") f.inboxes.parent[0].time.created++
-      if (mutation === "identity") f.inboxes.parent[0].payload.metadata.planHash = "different"
+      if (mutation === "publication") f.inboxes.parent[0].payload.text += "changed"
+      if (mutation === "identity") f.inboxes.parent[0].payload.metadata.source = "different"
       if (mutation === "projection") f.cache.parent.at(-1).description += " changed"
       if (mutation === "candidate") {
         const different = JSON.stringify({ ...JSON.parse(proposal), intent: "A different candidate" })
@@ -923,7 +989,7 @@ snapshotTest("pending authorization rejects changed trusted evidence after Plann
 })
 
 snapshotTest("lost root surface, projection mutation, and cleanup cannot restore controls", async (observer) => {
-  for (const loss of ["unmount", "location", "projection", "wake", "cleanup"] as const) {
+  for (const loss of ["unmount", "location", "projection", "projection-loss", "wake", "cleanup"] as const) {
     const root = snapshotFixture(observer)
     const f = fake(root)
     const cleanup = await activate(f)
@@ -931,6 +997,7 @@ snapshotTest("lost root surface, projection mutation, and cleanup cannot restore
     if (loss === "unmount") view.dispose()
     if (loss === "location") (f.context as any).location.directory = "different"
     if (loss === "projection") f.cache.parent.at(-1).description += " changed"
+    if (loss === "projection-loss") f.cache.parent.pop()
     if (loss === "wake") f.emit({ type: "session.execution.started", id: "evt_wake", data: { sessionID: "parent" } })
     if (loss === "cleanup") cleanup()
     view.click(0)
@@ -951,6 +1018,44 @@ snapshotTest("lost root surface, projection mutation, and cleanup cannot restore
   }
 })
 
+
+snapshotTest("pending ownership ignores cosmetic notifications and closes on known authority changes", async (observer) => {
+  for (const event of ["session.renamed", "session.metadata.updated", "model.updated", "agent.updated", "future.cosmetic-event",
+    "session.permissions", "session.agent.selected", "session.revert.staged"]) {
+    const root = snapshotFixture(observer), f = fake(root)
+    const cleanup = await activate(f), view = mount(f)
+    try {
+      f.emit({ type: event, id: "notification", location: { directory: root }, data: { sessionID: "parent" } })
+      view.click(0)
+      await settleUntil(() => f.calls.toasts.length > 0)
+      if (["session.permissions", "session.agent.selected", "session.revert.staged"].includes(event)) {
+        expectNoImplementation(f)
+        expect(f.calls.toasts[0]).toContain("STOP")
+      } else expect(f.calls.claims).toHaveLength(1)
+    } finally { cleanup(); view.dispose() }
+  }
+})
+
+snapshotTest("measured readable geometry permits a viewport below the former 80 by 24 convention", async (observer) => {
+  const root = snapshotFixture(observer), f = fake(root)
+  const cleanup = await activate(f), view = mount(f, "parent", false)
+  try {
+    f.renderer.terminalWidth = 79
+    f.renderer.terminalHeight = 23
+    f.renderer.emit("resize")
+    for (const node of view.mounted.filter((node) => node.type === "box" || node.type === "text")) if (!node.onMouseUp) node.width = 79
+    f.renderer.emit("frame")
+    view.click(0)
+    expectNoImplementation(f)
+    const rows = Math.ceil(`Worktree: ${JSON.stringify(root)}`.length / 79)
+    view.mounted[0].height = rows + 3
+    view.mounted.filter((node) => node.type === "text" && node.wrapMode === "char")[0].height = rows
+    f.renderer.emit("frame")
+    view.click(0)
+    await settleUntil(() => f.calls.toasts.length > 0)
+    expect(f.calls.claims).toHaveLength(1)
+  } finally { cleanup(); view.dispose() }
+})
 
 snapshotTest("pending resize rejects stale callbacks and resize back needs a fresh completed frame", async (observer) => {
   const root = snapshotFixture(observer)
@@ -990,7 +1095,7 @@ snapshotTest("pending invalid frames clear the entire proof and recover only on 
     // Keep viewport identity unchanged for detailed-check failures: an early
     // viewport snapshot must not turn a partially validated frame into proof.
     if (invalid === "small-width") { f.renderer.terminalWidth = 79; f.renderer.emit("resize") }
-    if (invalid === "small-height") { f.renderer.terminalHeight = 23; f.renderer.emit("resize") }
+    if (invalid === "small-height") { f.renderer.terminalHeight = 1; f.renderer.emit("resize") }
     if (invalid === "surface") view.mounted[0].height = 2
     if (invalid === "wrap") copy[0].height = 2
     if (invalid === "worktree") copy[0].width = 1
@@ -1330,12 +1435,12 @@ snapshotTest("genuine retained evidence, Git, location, session, and generation 
       const messageList = f.context.data.session.message.list
       if (mutation === "head") observer.configure(root, "2".repeat(40))
       if (mutation === "dirty") observer.configure(root, HEAD, ["old.txt"])
-      if (mutation === "publication") f.inboxes.parent[0].time.created++
+      if (mutation === "publication") f.inboxes.parent[0].payload.text += "changed"
       if (mutation === "server-publication") {
         const inbox = f.context.client.session.inbox.list
         ;(f.context.client.session.inbox as any).list = async (input: any) => {
           const result = await inbox(input)
-          if (input.sessionID === "parent") result[0]!.time.created++
+          if (input.sessionID === "parent") (result[0]!.payload as any).text += "changed"
           return result
         }
       }
@@ -1398,7 +1503,7 @@ snapshotTest("genuine retained evidence, Git, location, session, and generation 
 // No real repositories, native child imports, or production injection seams.
 import { Effect, Schema } from "effect"
 import { Tool as NativeTool } from "@opencode/schema/tool"
-import { nativeAdmission, nativeArguments, controlText, strictNativeInput } from "../src/native.ts"
+import { nativeAdmission, nativeArguments, controlText } from "../src/native.ts"
 import { authorizeRpc } from "../src/authorize-rpc.ts"
 import serverPlugin from "../.opencode/plugins/opencode-agents/server.ts"
 
@@ -1440,7 +1545,7 @@ function sponsorHost(browser = false) {
   return { transforms, permissionHooks, roles, appendConfig, evaluate }
 }
 
-function serverFake(root: string, observer: SnapshotObserver, workspaceID?: string, inputSchema: NativeTool.ValueSchema<any> = nativeInput) {
+function serverFake(root: string, observer: SnapshotObserver, workspaceID?: string) {
   const location = { directory: root, ...(workspaceID ? { workspaceID } : {}) }
   const candidate = makeCandidate(parseProposal(proposal, root), root, HEAD)
   const claim = { purpose: "implement", candidate, rootSessionID: "ses_parent", location, publicationID: "published-plan" }
@@ -1464,7 +1569,6 @@ function serverFake(root: string, observer: SnapshotObserver, workspaceID?: stri
   }
   const context = {
     location,
-    agent: { get: ({ agentID }: any) => f.read("agent", agentID, () => ({ location, data: host.roles().get(agentID) })) },
     session: {
       get: ({ sessionID }: any) => f.read("get", sessionID, () => sessions[sessionID]),
       context: ({ sessionID }: any) => f.read("context", sessionID, () => histories[sessionID]),
@@ -1507,7 +1611,7 @@ function serverFake(root: string, observer: SnapshotObserver, workspaceID?: stri
     return result
   }).pipe(Effect.mapError((error) => new NativeTool.Error({ message: String(error) })))
   const wrapped = admission.execute(original)
-  const codec = strictNativeInput(inputSchema, admission.cap) as any
+  const decode = Schema.decodeUnknownPromise(nativeInput)
   const dispatch = async (raw: any = nativeArguments(candidate), opts: { id?: string; messageID?: string; tool?: string; agent?: string; decoded?: any; beforeInput?: any; codecInput?: any } = {}) => {
     const id = opts.id ?? "native-call", messageID = opts.messageID ?? "native-message", tool = opts.tool ?? "subagent", agent = opts.agent ?? "orchestrator"
     const part: any = { type: "tool", id, name: tool, state: { status: "running", input: structuredClone(raw), metadata: {} } }
@@ -1517,9 +1621,8 @@ function serverFake(root: string, observer: SnapshotObserver, workspaceID?: stri
     const invocation: any = { sessionID: "ses_parent", agent, messageID, id, progress: (update: any) => Effect.sync(() => progress.push(structuredClone(update))) }
     try {
       await Effect.runPromise(admission.before({ ...invocation, tool, input: opts.beforeInput ?? structuredClone(raw) }))
-      const decoded = await codec["~standard"].validate(opts.codecInput ?? opts.beforeInput ?? raw)
-      if (decoded.issues) throw new Error(decoded.issues.map((issue: any) => issue.message).join(","))
-      const result = await Effect.runPromise(wrapped(opts.decoded ?? decoded.value, invocation))
+      const decoded = await decode(opts.codecInput ?? opts.beforeInput ?? raw)
+      const result = await Effect.runPromise(wrapped(opts.decoded ?? decoded, invocation))
       f.resultMutation?.(result)
       // ToolOutput.truncate runs after native execution/after hooks and adds
       // this field even for short, unchanged output.
@@ -1529,80 +1632,41 @@ function serverFake(root: string, observer: SnapshotObserver, workspaceID?: stri
     } catch (error) { part.state = { status: "error", input: raw, error: String(error) }; throw error }
   }
   const authorize = (input: unknown = claim) => Effect.runPromise(admission.authorize(input))
-  return { ...f, state: f, context, admission, original, wrapped, codec, dispatch, authorize }
+  return { ...f, state: f, context, admission, original, wrapped, dispatch, authorize }
 }
 
-snapshotTest("ordinary Planner delegation validates a bundled host schema without CAP sponsorship or shared-schema mutation", async (observer) => {
-  const root = snapshotFixture(observer)
-  const build = await Bun.build({ entrypoints: [path.join(import.meta.dir, "fixtures/native-host.ts")], target: "bun" })
-  expect(build.success).toBe(true)
-  const modulePath = path.join(root, "native-host.mjs")
-  writeFileSync(modulePath, await build.outputs[0]!.text())
-  const host = await import(modulePath)
-  const args = { agent: "planner", description: "Plan README append change",
-    prompt: "User request:\nUpdate README.md by appending exactly this line at the end of the file:\n# issue-9-dogfood" }
-  expect(await host.decode(args)).toEqual(args)
-  const descriptors = Object.getOwnPropertyDescriptors(host.Input)
-  const f = serverFake(root, observer, undefined, host.Input)
-  const consumes = spyOn(f.admission.cap, "consume")
-  try {
-    // Preserve native validation/decoding, including optional branded IDs,
-    // stripped extras and errors. The former same-instance double hid this bug.
-    for (const value of [args, { ...args, sessionID: "ses_existing", background: false, model: "provider/model" },
-      { ...args, extra: "native strips this" }, { ...args, sessionID: "" }, { ...args, sessionID: 1 },
-      { ...args, background: "false" }, { ...args, agent: 1 }, { agent: "planner" }, null]) {
-      expect(await f.codec["~standard"].validate(value)).toEqual(await host.validate(value))
-    }
-    expect(f.codec["~standard"].jsonSchema.input({ target: "draft-2020-12" })).toEqual(
-      host.json(host.Input.rebuild(host.Input.ast))["~standard"].jsonSchema.input({ target: "draft-2020-12" }))
-    expect(await f.dispatch(args)).toMatchObject({ output: { status: "completed", output: proposal } })
-    expect(f.originals).toHaveLength(1)
-    expect(f.originals[0].input).toEqual(args)
-    expect(f.originals[0].context).toMatchObject({ agent: "orchestrator", sessionID: "ses_parent", messageID: "native-message", id: "native-call" })
-    expect(f.sessions.ses_planner.agent).toBe("planner")
-    expect(f.progress).toEqual([{ sessionID: "ses_planner", status: "running" }])
-    expect(f.wakes).toHaveLength(0)
-    expect(f.reads).toHaveLength(0)
-    expect(f.admission.cap.rootSessionID).toBeUndefined()
-    expect(f.admission.cap.childID).toBeUndefined()
-    expect(consumes).not.toHaveBeenCalled()
-    expect(f.sessions.ses_parent.permissions).toEqual([])
-    expect(f.host.roles().get("orchestrator").permissions.slice(0, 2)).toEqual([
-      { action: "*", resource: "*", effect: "deny" }, { action: "subagent", resource: "planner", effect: "allow" },
-    ])
-    expect(Object.getOwnPropertyDescriptors(host.Input)).toEqual(descriptors)
-    // The same foreign codec must still enforce the exact Implementer gate.
-    f.state.run = async () => {
-      for (const extra of [{ background: false }, { model: "" }, { sessionID: "" }, { extra: "" }]) {
-        expect((await f.codec["~standard"].validate({ ...nativeArguments(f.candidate), ...extra })).issues).toBeDefined()
-      }
-      await f.dispatch(undefined, { id: "implementer-call", messageID: "implementer-message" })
-    }
-    expect(await f.authorize()).toContain("Implementation gate complete")
-    expect(consumes).toHaveBeenCalledTimes(1)
-    expect(f.originals).toHaveLength(2)
-    expect(f.originals[1].context.agent).toBe(f.admission.actor)
-    expect(Object.getOwnPropertyDescriptors(host.Input)).toEqual(descriptors)
-  } finally { consumes.mockRestore() }
+snapshotTest("ordinary Planner delegation retains native schema decoding and execution without CAP sponsorship", async (observer) => {
+  const root = snapshotFixture(observer), f = serverFake(root, observer)
+  const args = { agent: "planner", description: "Plan", prompt: plannerInput(request) }
+  expect(await f.dispatch({ ...args, extra: "host strips this" })).toMatchObject({ output: { status: "completed" } })
+  expect(f.originals).toHaveLength(1)
+  expect(f.originals[0].input).toEqual(args)
+  expect(f.originals[0].context).toMatchObject({ agent: "orchestrator", sessionID: "ses_parent", messageID: "native-message", id: "native-call" })
+  expect(f.wakes).toHaveLength(0)
+  expect(f.reads).toHaveLength(0)
+  expect(f.admission.cap.rootSessionID).toBeUndefined()
+  expect(f.sessions.ses_parent.permissions).toEqual([])
 })
 
 snapshotTest("native Authorize transfers one frozen claim, wakes once and forwards native identities/progress/result", async (observer) => {
   const root = snapshotFixture(observer), f = serverFake(root, observer, "local-workspace")
   f.histories.ses_parent.push({ id: "planning-message", type: "assistant", agent: "orchestrator", model,
     content: [call("planner-call", "planner", plannerInput(request), "planner-child", proposal)] })
+  expect(await Effect.runPromise(f.host.evaluate("orchestrator", "subagent", ["authorized_implementer"]))).toBe("deny")
   f.state.run = async () => { await f.dispatch(); observer.configure(root, HEAD, ["old.txt"]) }
   const outcome = await f.authorize()
   expect(outcome).toContain("Implementation gate complete")
-  expect(outcome).toContain("Resulting paths (1): old.txt")
+  expect(outcome).toContain('Resulting paths (1): "old.txt"')
   expect(f.wakes).toHaveLength(1)
   expect(f.wakes[0]).toEqual({ id: f.admission.cap.control.id, sessionID: "ses_parent", text: controlText(f.candidate), delivery: "steer", resume: true })
   expect(f.originals).toHaveLength(1)
   expect(f.originals[0].input).toEqual(nativeArguments(f.candidate))
   expect(f.originals[0].context).toMatchObject({ agent: f.admission.actor, sessionID: "ses_parent", messageID: "native-message", id: "native-call" })
   expect(f.progress).toEqual([{ sessionID: "ses_child", status: "running" }])
-  expect((f.admission.cap.result as NativeTool.Result).metadata).toEqual({ sessionID: "ses_child", status: "completed" })
-  expect(f.histories.ses_parent.at(-1).content[0].state.metadata).toEqual({ sessionID: "ses_child", status: "completed", truncated: false })
+  expect(f.admission.cap.result).toEqual({ childID: "ses_child", status: "completed" })
+  expect(f.histories.ses_parent.at(-1).content[0].state.metadata).toMatchObject({ sessionID: "ses_child", status: "completed" })
   expect(f.sessions.ses_parent.permissions).toEqual([])
+  expect(await Effect.runPromise(f.host.evaluate("orchestrator", "subagent", ["authorized_implementer"]))).toBe("deny")
   expect(f.admission.cap.phase).toBe("closed")
   expect(await f.authorize()).toContain("One governed implementation attempt")
   await expect(f.dispatch(undefined, { id: "second-call" })).rejects.toThrow()
@@ -1618,7 +1682,6 @@ snapshotTest("later configured allows cannot broaden the sponsor beyond exact Im
     f.host.appendConfig(rules)
     const consume = spyOn(f.admission.cap, "consume")
     try {
-      if (rules.length) expect(f.host.roles().get(f.admission.actor).permissions.slice(2, -1)).toEqual(rules)
       expect(await Effect.runPromise(f.host.evaluate(f.admission.actor, "subagent", ["authorized_implementer"]))).toBe("allow")
       for (const [action, resources] of [
         ["subagent", ["planner"]], ["subagent", ["authorized_implementer", "planner"]],
@@ -1631,7 +1694,7 @@ snapshotTest("later configured allows cannot broaden the sponsor beyond exact Im
       for (const effect of ["deny", "ask"] as const) {
         const event = { agent: f.admission.actor, action: "subagent", resources: ["authorized_implementer"], effect }
         await Effect.runPromise(f.admission.sponsorPermission(event as any))
-        expect(event.effect).toBe(effect)
+        expect(event.effect).toBe("deny")
       }
       const rootEvent = { agent: "orchestrator", action: "edit", resources: ["old.txt"], effect: "allow" }
       await Effect.runPromise(f.admission.sponsorPermission(rootEvent as any))
@@ -1647,39 +1710,43 @@ snapshotTest("later configured allows cannot broaden the sponsor beyond exact Im
   }
 })
 
-snapshotTest("later global/configured denies and unsupported policy changes close admission before consumption", async (observer) => {
+snapshotTest("pinned native effective target deny/ask blocks child creation after one consumption", async (observer) => {
   const root = snapshotFixture(observer)
-  const cases = [
-    { global: [{ action: "*", resource: "*", effect: "deny" }] },
-    { global: [{ action: "subagent", resource: "authorized_*", effect: "deny" }] },
-    { global: [{ action: "*", resource: "*", effect: "ask" }] },
-    { global: [{ action: "edit", resource: "*", effect: "deny" }] },
-    // Even a subsequent allow does not silently bypass a configured deny.
-    { global: [{ action: "*", resource: "*", effect: "deny" }, { action: "*", resource: "*", effect: "allow" }] },
-    { configured: [{ action: "subagent", resource: "authorized_implementer", effect: "deny" }] },
-    { transform: (agent: any) => { agent.hidden = false } },
-    { transform: (agent: any) => { agent.mode = "primary" } },
-    { transform: (agent: any) => { agent.permissions[0].effect = "allow" } },
-  ]
-  for (const item of cases) {
+  for (const effect of ["deny", "ask"] as const) {
     const f = serverFake(root, observer)
-    f.host.appendConfig(item.global ?? [], item.configured ? { [f.admission.actor]: item.configured } : {})
-    if (item.transform) f.host.transforms.push((editor) => editor.update(f.admission.actor, item.transform))
+    f.host.appendConfig([{ action: "subagent", resource: "authorized_*", effect }])
     const consume = spyOn(f.admission.cap, "consume")
     try {
       f.state.run = async () => {
-        await expect(f.dispatch()).rejects.toThrow("Sponsor effective host policy")
-        expect(f.admission.cap.phase).toBe("closed")
+        await expect(f.dispatch()).rejects.toThrow("Native permission deny")
         await expect(f.dispatch(undefined, { id: "replacement" })).rejects.toThrow()
       }
       expect(await f.authorize()).toContain("unverified")
-      expect(consume).not.toHaveBeenCalled()
-      expect(f.nativeEntries).toHaveLength(0)
+      expect(consume).toHaveBeenCalledTimes(1)
+      expect(f.nativeEntries).toHaveLength(1)
       expect(f.originals).toHaveLength(0)
+      expect(f.sessions.ses_child).toBeUndefined()
       expect(f.sessions.ses_parent.permissions).toEqual([])
       expect(await f.authorize()).toContain("One governed")
       expect(f.wakes).toHaveLength(1)
     } finally { consume.mockRestore() }
+  }
+})
+
+snapshotTest("effective last-match target allow accepts shadowed/unrelated denies and cosmetic sponsor changes", async (observer) => {
+  const root = snapshotFixture(observer)
+  for (const rules of [
+    [{ action: "edit", resource: "*", effect: "deny" }],
+    [{ action: "subagent", resource: "authorized_implementer", effect: "deny" },
+     { action: "subagent", resource: "authorized_implementer", effect: "allow" }],
+  ]) {
+    const f = serverFake(root, observer)
+    f.host.appendConfig(rules)
+    f.host.transforms.push((editor) => editor.update(f.admission.actor, (agent: any) => { agent.hidden = false; agent.mode = "primary" }))
+    f.state.run = async () => { await f.dispatch() }
+    expect(await f.authorize()).toContain("Implementation gate complete")
+    expect(f.originals).toHaveLength(1)
+    expect(f.sessions.ses_parent.permissions).toEqual([])
   }
 })
 
@@ -1730,14 +1797,14 @@ snapshotTest("parser-failed first contenders that skip execute.before burn admis
   }
 })
 
-snapshotTest("published metadata permits only the exact untruncated host normalization of the native receipt", async (observer) => {
+snapshotTest("published completion checks child/status and tolerates host metadata and truncation", async (observer) => {
   const root = snapshotFixture(observer)
   for (const mutation of ["missing", "true", "string", "null", "extra", "outputPath", "sessionID", "status"] as const) {
     const f = serverFake(root, observer)
     f.state.run = async () => {
       await f.dispatch()
       const metadata = f.histories.ses_parent[1].content[0].state.metadata
-      expect(metadata).toEqual({ sessionID: "ses_child", status: "completed", truncated: false })
+      expect(metadata).toMatchObject({ sessionID: "ses_child", status: "completed" })
       if (mutation === "missing") delete metadata.truncated
       if (mutation === "true") metadata.truncated = true
       if (mutation === "string") metadata.truncated = "false"
@@ -1747,13 +1814,13 @@ snapshotTest("published metadata permits only the exact untruncated host normali
       if (mutation === "sessionID") metadata.sessionID = "ses_other"
       if (mutation === "status") metadata.status = "running"
     }
-    expect(await f.authorize()).toContain("unverified")
+    expect(await f.authorize()).toContain(["sessionID", "status"].includes(mutation) ? "unverified" : "Implementation gate complete")
     expect(f.originals).toHaveLength(1)
     expect(f.admission.cap.phase).toBe("closed")
   }
 })
 
-snapshotTest("published original input beats native normalization; strict pre-decoding and final arguments reject transformation", async (observer) => {
+snapshotTest("published original input beats native normalization; decoded authority changes never execute", async (observer) => {
   const root = snapshotFixture(observer)
   for (const boundary of ["published", "decoder", "executor"] as const) {
     const f = serverFake(root, observer)
@@ -1791,7 +1858,7 @@ snapshotTest("a captured executor cannot enter the same reserved identity twice 
   let release!: () => void, entered!: () => void
   const paused = new Promise<void>((resolve) => { release = resolve }), started = new Promise<void>((resolve) => { entered = resolve })
   let contextReads = 0
-  f.state.onRead = async (kind) => { if (kind === "context" && ++contextReads === 2) { entered(); await paused } }
+  f.state.onRead = async (kind) => { if (kind === "context" && ++contextReads === 1) { entered(); await paused } }
   f.state.run = async () => {
     const first = f.dispatch()
     await started
@@ -1837,6 +1904,24 @@ snapshotTest("fresh role, location, permission, path, HEAD and clean checks reje
   }
 })
 
+snapshotTest("a final symlink becoming dangling after transfer fails closed at late admission", async (observer) => {
+  for (const outside of [false, true]) {
+    const root = snapshotFixture(observer), f = serverFake(root, observer)
+    const targetRoot = outside ? snapshotFixture(observer) : root
+    f.state.onRead = (kind, id) => {
+      if (kind === "get" && id === "ses_parent") {
+        rmSync(path.join(root, "old.txt"))
+        symlinkSync(path.join(targetRoot, "missing-target"), path.join(root, "old.txt"))
+      }
+    }
+    f.state.run = async () => { await expect(f.dispatch()).rejects.toThrow() }
+    expect(await f.authorize()).toContain("unverified")
+    expect(f.originals).toHaveLength(0)
+    expect(f.wakes).toHaveLength(1)
+    expect(await f.authorize()).toContain("One governed")
+  }
+})
+
 snapshotTest("prose/refusal, failed execution and ambiguous wake/result/settlement close authority without another wake", async (observer) => {
   const root = snapshotFixture(observer)
   for (const failure of ["refusal", "wake", "native", "wait", "background-result"] as const) {
@@ -1875,13 +1960,12 @@ snapshotTest("teardown at acceptance, reservation or execution revokes old closu
   }
 })
 
-snapshotTest("trusted native result binds child identity, progress, metadata, persisted result and independent Git scope", async (observer) => {
+snapshotTest("trusted native completion binds child identity/task/outcome, persisted call and independent Git scope", async (observer) => {
   const root = snapshotFixture(observer)
-  for (const mutation of ["ses_parent", "role", "location", "permissions", "outcome", "input", "text", "metadata", "output", "content", "published", "head", "scope", "progress-missing", "progress-other", "progress-conflict", "progress-status", "child-control", "child-attachment", "final-error", "root-outcome"] as const) {
+  for (const mutation of ["ses_parent", "role", "location", "permissions", "outcome", "input", "metadata", "output", "head", "scope", "child-control", "child-attachment", "final-error", "root-outcome"] as const) {
     observer.configure(root)
     const f = serverFake(root, observer)
     f.state.run = async () => {
-      if (["progress-conflict", "progress-status"].includes(mutation)) { await expect(f.dispatch()).rejects.toThrow(); return }
       await f.dispatch()
       if (mutation === "ses_parent") f.sessions.ses_child.parentID = "other"
       if (mutation === "role") f.sessions.ses_child.agent = "other"
@@ -1889,8 +1973,6 @@ snapshotTest("trusted native result binds child identity, progress, metadata, pe
       if (mutation === "permissions") f.sessions.ses_child.permissions = [{ action: "edit", resource: "*", effect: "allow" }]
       if (mutation === "outcome") f.sessions.ses_child.outcome = "failed"
       if (mutation === "input") f.histories.ses_child[0].text += " changed"
-      if (mutation === "text") f.histories.ses_child[1].content[0].text += " changed"
-      if (mutation === "published") f.histories.ses_parent[1].content[0].state.content[0].text += " changed"
       if (mutation === "head") observer.configure(root, "2".repeat(40))
       if (mutation === "scope") observer.configure(root, HEAD, ["unauthorized.txt"])
       if (mutation === "child-control") f.histories.ses_child.splice(1, 0, { type: "synthetic", id: "extra", text: "different work" })
@@ -1898,17 +1980,27 @@ snapshotTest("trusted native result binds child identity, progress, metadata, pe
       if (mutation === "final-error") f.histories.ses_child[1].error = { type: "failed" }
       if (mutation === "root-outcome") f.sessions.ses_parent.outcome = "failed"
     }
-    if (mutation === "progress-missing") f.state.nativeProgress = []
-    if (mutation === "progress-other") f.state.nativeProgress = [{ sessionID: "ses_other", status: "running" }]
-    if (mutation === "progress-conflict") f.state.nativeProgress.push({ sessionID: "ses_other", status: "running" })
-    if (mutation === "progress-status") f.state.nativeProgress = [{ sessionID: "ses_child", status: "completed" }]
     if (mutation === "output") f.state.nativeResultMutation = (result) => { result.output.sessionID = "other" }
-    if (["metadata", "content"].includes(mutation)) f.state.resultMutation = (result) => {
-      if (mutation === "metadata") result.metadata.sessionID = "other"
-      if (mutation === "output") result.output.sessionID = "other"
-      if (mutation === "content") result.content += " changed"
-    }
+    if (mutation === "metadata") f.state.resultMutation = (result) => { result.metadata.sessionID = "other" }
     expect(await f.authorize()).toContain("unverified")
+    expect(f.originals).toHaveLength(1)
+    expect(await f.authorize()).toContain("One governed")
+  }
+})
+
+snapshotTest("native display/progress formatting and empty completion prose do not decide CAP authority", async (observer) => {
+  for (const mutation of ["wrapper", "progress", "empty", "neutral-marker"] as const) {
+    const root = snapshotFixture(observer), f = serverFake(root, observer)
+    if (mutation === "wrapper") f.state.nativeResultMutation = (result) => { result.content = "Different native presentation"; result.metadata.extra = true }
+    if (mutation === "progress") f.state.nativeProgress = []
+    if (mutation === "empty") f.state.onNative = () => { f.histories.ses_child[1].content = [] }
+    f.state.run = async () => {
+      if (mutation === "neutral-marker") f.histories.ses_parent.push({ type: "model-switched", id: "model-change", model: { providerID: "other", id: "other" } })
+      await f.dispatch()
+      f.histories.ses_parent.at(-1).content[0].state.content = [text("Truncated output"), text("Extra presentation")]
+      f.histories.ses_parent.at(-1).content[0].state.metadata.truncated = true
+    }
+    expect(await f.authorize()).toContain("Implementation gate complete")
     expect(f.originals).toHaveLength(1)
     expect(await f.authorize()).toContain("One governed")
   }
@@ -2005,7 +2097,10 @@ test("Effect server registers only local Authorize RPC, a narrow hidden sponsor 
     rpc: { register: (definition: any, handlers: any) => Effect.sync(() => rpcs.push({ definition, handlers })) },
   } as any
   await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    const schema = native.input, execute = native.execute
     yield* serverPlugin.effect(context)
+    expect(native.input).toBe(schema)
+    expect(native.execute).not.toBe(execute)
     expect(rpcs).toHaveLength(1)
     expect(rpcs[0].definition).toBe(authorizeRpc)
     expect(Object.keys(rpcs[0].handlers)).toEqual(["authorize"])

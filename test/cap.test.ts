@@ -74,15 +74,16 @@ test("reservation selects one owner, losers cannot change it; consumption and cl
 test("native receipts bind one child and teardown rejects retained authority", () => {
   const cap = new NativeCap()
   cap.accept(claim(), control)
-  expect(() => cap.progress("child")).toThrow()
-  cap.reserve(call); cap.consume(call); cap.progress("child"); cap.progress("child")
-  expect(() => cap.progress("other")).toThrow()
-  const result = { output: { sessionID: "child" } }
+  expect(() => cap.receipt({ output: { sessionID: "child", status: "completed" } })).toThrow()
+  cap.reserve(call); cap.consume(call)
+  for (const output of [{}, { sessionID: "child", status: "running" }, { sessionID: "", status: "completed" }]) expect(() => cap.receipt({ output })).toThrow()
+  const result = { output: { sessionID: "child", status: "completed" }, metadata: { unrelated: true } }
   cap.receipt(result)
   result.output.sessionID = "other"
-  expect(cap.result).toEqual({ output: { sessionID: "child" } })
+  expect(cap.result).toEqual({ childID: "child", status: "completed" })
+  expect(cap.reservation).toEqual(call)
   expect(() => cap.receipt(result)).toThrow()
   cap.teardown()
-  for (const run of [() => cap.live(), () => cap.reserve(call), () => cap.progress("child"), () => cap.accept(claim(), control)]) expect(run).toThrow("revoked")
+  for (const run of [() => cap.live(), () => cap.reserve(call), () => cap.receipt(result), () => cap.accept(claim(), control)]) expect(run).toThrow("revoked")
   expect(() => assertLive({ revoked: true, busy: false })).toThrow("revoked")
 })

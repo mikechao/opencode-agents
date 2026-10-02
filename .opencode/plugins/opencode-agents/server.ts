@@ -1,6 +1,6 @@
 import { Plugin } from "@opencode/plugin/effect"
 import { Effect } from "effect"
-import { nativeAdmission, sponsorRules, strictNativeInput } from "../../../src/native.ts"
+import { nativeAdmission, sponsorRules } from "../../../src/native.ts"
 import { authorizeRpc } from "../../../src/authorize-rpc.ts"
 
 export default Plugin.define({
@@ -16,7 +16,6 @@ export default Plugin.define({
     yield* context.permission.hook("evaluate", admission.sponsorPermission)
     yield* context.tool.hook("execute.before", admission.before)
     yield* context.tool.transform((editor) => editor.update("subagent", (tool) => {
-      tool.input = strictNativeInput(tool.input, admission.cap)
       tool.execute = admission.execute(tool.execute)
     }))
     yield* context.rpc.register(authorizeRpc, { authorize: (claim) => admission.authorize(claim) }).pipe(Effect.orDie)

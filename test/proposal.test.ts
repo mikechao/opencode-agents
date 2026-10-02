@@ -3,7 +3,7 @@ import { createHash } from "node:crypto"
 import { mkdtempSync, realpathSync, rmSync, writeFileSync, symlinkSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { candidateIntact, candidateMessage, makeCandidate, parseProposal, renderPlan } from "../src/proposal.ts"
+import { candidateIntact, displayPath, makeCandidate, parseProposal, renderPlan } from "../src/proposal.ts"
 
 const roots: string[] = []
 const HEAD = "1".repeat(40)
@@ -44,7 +44,7 @@ test("trusted plan rendering preserves multiline text and exact candidate scope"
   const candidate = makeCandidate(parseProposal(proposal, root), root, HEAD)
   const expected = [
     "Plan", "", "Change old file", "", "Update its contents", "Check the result", "",
-    "Exact files", "• old.txt", "• new.txt", "• nested/three.txt", "",
+    "Exact files (3)", '• "old.txt"', '• "new.txt"', '• "nested/three.txt"', "",
     "Bound HEAD", candidate.head, "", "No implementation has been authorized.",
   ].join("\n")
   expect(renderPlan(candidate)).toBe(expected)
@@ -78,20 +78,31 @@ test("exact intent, plan, file order, root and HEAD bind candidate encoding and 
   ]) expect(candidateIntact(altered)).toBe(false)
 })
 
-test("candidate confirmation text preserves exact proposal and states implementation-only authority", () => {
+test("trusted scope labels quote and escape every display-sensitive path without changing bytes", () => {
   const root = fixture()
-  const candidate = makeCandidate(parseProposal(proposal, root), root, HEAD)
-  expect(candidateMessage(candidate)).toBe([
-    "Authorize one implementation attempt for this exact proposal?",
-    "Intent: Change old file", "Plan: Update its contents\nCheck the result", "Exact files (3):",
-    '• "old.txt"', '• "new.txt"', '• "nested/three.txt"',
-    `Worktree: ${JSON.stringify(root)}`, `HEAD: ${candidate.head}`, "Implementation only; no commit authorized.",
-  ].join("\n"))
-  expect(candidateMessage(candidate)).toContain(candidate.proposal.plan)
-  const empty = makeCandidate(parseProposal('{"intent":"i","plan":"p","files":[]}', root), root, candidate.head)
-  expect(candidateMessage(empty)).toContain("Exact files (0):\n(none)")
-  expect(renderPlan(empty)).toContain("Exact files\n(none)")
-  expect(renderPlan(empty)).toContain("No implementation has been authorized.")
+  const files = ['review-example.txt\n• second.txt', 'line\rreturn', 'tab\tfile', 'escape\x1bfile', 'del\x7ffile',
+    'bidi\u202efile', 'zero\u200bwidth', 'line\u2028separator', 'paragraph\u2029separator', 'quote"file', 'é.txt', '😀.txt']
+  const candidate = makeCandidate(parseProposal(JSON.stringify({ intent: "i", plan: "p", files }), root), root, HEAD)
+  const labels = renderPlan(candidate).split("\n").filter((line) => line.startsWith("• ")).map((line) => line.slice(2))
+  expect(labels).toHaveLength(files.length)
+  expect(labels.map((label) => JSON.parse(label))).toEqual(files)
+  expect(labels.every((label) => /^[\x20-\x7e]+$/.test(label))).toBe(true)
+  expect(new Set(labels).size).toBe(files.length)
+  expect(candidate.proposal.files).toEqual(files)
+  const separate = makeCandidate(parseProposal(JSON.stringify({ intent: "i", plan: "p", files: ['review-example.txt', 'second.txt'] }), root), root, HEAD)
+  expect(renderPlan(candidate)).not.toBe(renderPlan(separate))
+  expect(displayPath('review-example.txt\n• second.txt')).toBe('"review-example.txt\\n\\u2022 second.txt"')
+  const empty = makeCandidate(parseProposal('{"intent":"i","plan":"p","files":[]}', root), root, HEAD)
+  expect(renderPlan(empty)).toContain("Exact files (0)\n(none)")
+})
+
+test("existing dangling final symlinks fail closed for internal and outside missing targets", () => {
+  const root = fixture(), outside = fixture()
+  for (const [name, target] of [['internal-dangling', path.join(root, 'absent')], ['outside-dangling', path.join(outside, 'absent')]]) {
+    symlinkSync(target!, path.join(root, name!))
+    expect(() => parseProposal(JSON.stringify({ intent: 'i', plan: 'p', files: [name] }), root)).toThrow()
+  }
+  expect(parseProposal('{"intent":"i","plan":"p","files":["new.txt"]}', root).files).toEqual(['new.txt'])
 })
 
 test("exact scope permits internal final symlinks and rejects escaping symlinks and malformed paths", () => {

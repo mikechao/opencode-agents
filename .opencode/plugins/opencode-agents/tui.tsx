@@ -2,6 +2,7 @@ import type { Definition } from "@opencode/plugin/tui/plugin"
 import type { OpenCodeEvent } from "@opencode/client"
 import type { Renderable, MouseEvent } from "@opentui/core"
 import { createEffect, createRoot, createSignal, onCleanup, Show } from "solid-js"
+import { displayPath } from "../../../src/proposal.ts"
 import type { Generation } from "../../../src/cap.ts"
 import { observeGit, requireFresh } from "../../../src/git.ts"
 import {
@@ -11,7 +12,8 @@ import {
 
 const dirtyStatus = "Planning only — worktree was dirty when this attempt started. Start a new attempt from a clean worktree to enable implementation."
 const authorizationQuestion = "Do you authorize this plan for implementation?"
-const columns = (text: string) => [...text].reduce((size, char) => size + (char.codePointAt(0)! > 127 ? 2 : 1), 0)
+// Labels use single-column characters; worktree paths use ASCII JSON escapes.
+const columns = (text: string) => text.length
 const same = (a: unknown, b: unknown) => exactEvidence(a) === exactEvidence(b)
 
 type Presentation =
@@ -35,7 +37,6 @@ const plugin: Definition = {
     let rootSessionID: string | undefined
     let attempted = false
     let closed = false
-    let completionID: string | undefined
     let retained: PublishedAttempt | undefined
     let pending: PublishedAttempt | undefined
     let deciding: PublishedAttempt | undefined
@@ -43,7 +44,6 @@ const plugin: Definition = {
     let invalidateLayout: (() => void) | undefined
     let removePresentation: (() => void) | undefined
     let transferred = false
-    let publicationEcho: unknown
     const [presentation, setPresentation] = createSignal<Presentation>()
     const [layoutRevision, setLayoutRevision] = createSignal(0)
     const closeAuthority = () => {
@@ -54,10 +54,7 @@ const plugin: Definition = {
       deciding = undefined
       guard.bound = undefined
       guard.publishing = undefined
-      guard.publication = undefined
-      publicationEcho = undefined
       creation = undefined
-      completionID = undefined
     }
     const present = (title: string, message: string) => {
       if (generation.revoked) return
@@ -100,10 +97,9 @@ const plugin: Definition = {
         if (owned) {
           if (!publishedPresentationMatches(context, owned)) throw new Error("Published Plan projection changed")
         }
-        if (guard.publication && publicationEcho && !same(guard.publication, publicationEcho)) throw new Error("Publication echo identity changed")
       },
     }
-    const binding = (published: PublishedAttempt) => `Plan ${published.publication.payload.metadata!.planHash} · HEAD ${published.candidate.head.slice(0, 12)}`
+    const binding = (published: PublishedAttempt) => `Plan ${published.candidate.digest.slice(0, 12)} · HEAD ${published.candidate.head.slice(0, 12)}`
     const ensurePresentation = (sessionID: string) => {
       rootSessionID = sessionID
       if (removePresentation) return
@@ -183,7 +179,7 @@ const plugin: Definition = {
       const [ready, setReady] = createSignal(false)
       const [width, setWidth] = createSignal(context.renderer.terminalWidth)
       let layoutProof: { width: number; height: number; surface: Renderable; frame: Renderable } | undefined
-      const rootLines = () => Math.min(2, Math.max(1, Math.ceil(columns(`Worktree: ${JSON.stringify(captured.candidate.root)}`) / Math.max(1, width()))))
+      const rootLines = () => Math.min(2, Math.max(1, Math.ceil(columns(`Worktree: ${displayPath(captured.candidate.root)}`) / Math.max(1, width()))))
       const invalidate = () => { layoutProof = undefined; setReady(false) }
       invalidateLayout = invalidate
       const live = (node: Renderable | undefined) => {
@@ -196,15 +192,15 @@ const plugin: Definition = {
       const validGeometry = () => {
         const frame = surface?.parent ?? surface
         const viewport = { width: context.renderer.terminalWidth, height: context.renderer.terminalHeight }
-        if (context.renderer.isDestroyed || viewport.width < 80 || viewport.height < 24 || !live(surface) || !frame ||
+        if (context.renderer.isDestroyed || !live(surface) || !frame ||
             frame.width <= 0 || frame.width > viewport.width || width() !== frame.width ||
-            columns(`Worktree: ${JSON.stringify(captured.candidate.root)}`) > frame.width * 2 ||
+            columns(`Worktree: ${displayPath(captured.candidate.root)}`) > frame.width * 2 ||
             columns(binding(captured)) > frame.width || columns(authorizationQuestion) > frame.width) return false
         const inViewport = (node: Renderable | undefined, height = 1) => node && live(node) && node.width > 0 && node.height === height &&
           node.screenX >= 0 && node.screenY >= 0 && node.screenX + node.width <= viewport.width &&
           node.screenY + node.height <= viewport.height
         return !!(inViewport(surface, rootLines() + 3) &&
-          inViewport(worktreeText, rootLines()) && columns(`Worktree: ${JSON.stringify(captured.candidate.root)}`) <= worktreeText!.width * rootLines() &&
+          inViewport(worktreeText, rootLines()) && columns(`Worktree: ${displayPath(captured.candidate.root)}`) <= worktreeText!.width * rootLines() &&
           inViewport(bindingText) && columns(binding(captured)) <= bindingText!.width &&
           inViewport(questionText) && columns(authorizationQuestion) <= questionText!.width &&
           inViewport(authorizeButton) && authorizeButton!.width >= 11 && inViewport(cancelButton) && cancelButton!.width >= 8)
@@ -251,7 +247,7 @@ const plugin: Definition = {
         }
       })
       return <box ref={(node) => { surface = node }} flexDirection="column" flexShrink={0} height={rootLines() + 3}>
-        <text ref={(node) => { worktreeText = node }} height={rootLines()} wrapMode="char">{`Worktree: ${JSON.stringify(captured.candidate.root)}`}</text>
+        <text ref={(node) => { worktreeText = node }} height={rootLines()} wrapMode="char">{`Worktree: ${displayPath(captured.candidate.root)}`}</text>
         <text ref={(node) => { bindingText = node }} height={1} wrapMode="char">{binding(captured)}</text>
         <text ref={(node) => { questionText = node }} height={1} wrapMode="char">{authorizationQuestion}</text>
         <box flexDirection="row" height={1}>
@@ -268,14 +264,13 @@ const plugin: Definition = {
     }
     const removeCreated = context.data.on("session.created", (event) => {
       if (generation.revoked || closed || !baseline || attempted || creation || event.data.parentID ||
-          event.data.agent !== "orchestrator" || !same(event.data.location, location)) return
+          event.data.agent !== "orchestrator" || !same(snapshotLocation(event.data.location), location)) return
       creation = structuredClone(event)
       rootSessionID = event.data.sessionID
     })
     const removeCompleted = context.data.on("session.execution.succeeded", (event) => {
       if (generation.revoked || closed || attempted || !baseline || !creation || event.data.sessionID !== creation.data.sessionID) return
       attempted = true
-      completionID = event.id
       setLayoutRevision((value) => value + 1)
       const activation = activationEvidence(generation, location, baseline, observationCompletedAt, creation)
       void publishPlan(context, activation, guard).then((published) => {
@@ -296,14 +291,6 @@ const plugin: Definition = {
     // independent publication reads also catch delayed notifications.
     const removeEvents = context.data.listen(({ details: event }) => {
       if (generation.revoked || closed || transferred || !creation) return
-      // Registry events have empty data and scope in the Location.Ref envelope,
-      // not a session/project ID. Invalidate pending policy evidence before
-      // filtering by session identity.
-      if (event.type === "agent.updated" || event.type === "model.updated") {
-        if (event.location && same(snapshotLocation(event.location), location))
-          terminate(new Error(`Unexpected ${event.type} at the attempt location; policy evidence invalidated`))
-        return
-      }
       const sessionID = "sessionID" in event.data ? event.data.sessionID : undefined
       if (!attempted) {
         if (sessionID === creation.data.sessionID && ["session.execution.failed", "session.execution.interrupted", "session.deleted", "session.moved", "session.permissions"].includes(event.type)) {
@@ -318,19 +305,23 @@ const plugin: Definition = {
         return
       }
       if (typeof sessionID !== "string" || ![creation.data.sessionID, bound?.planner.childID].includes(sessionID)) return
-      if (event.id === completionID || ["session.viewed", "session.renamed", "session.usage.recorded", "session.usage.updated"].includes(event.type)) return
       if (event.type === "session.inbox.enqueued" && sessionID === creation.data.sessionID && guard.publishing) {
         const expected = guard.publishing
-        const observed = { id: event.data.inboxID, sessionID, time: { created: event.created }, ...event.data.item }
-        if (event.data.inboxID === expected.id && same(event.data.item, { type: "synthetic", delivery: "steer",
-          payload: { text: expected.text, description: expected.description, metadata: expected.metadata } }) &&
-            (!publicationEcho || same(publicationEcho, observed))) {
-          publicationEcho = observed
-          if (guard.publication && !same(guard.publication, observed)) terminate(new Error("Publication echo identity changed"))
-          return
-        }
+        const item = event.data.item
+        if (event.data.inboxID === expected.id && item.type === "synthetic" && item.delivery === "steer" &&
+            item.payload.text === expected.text && item.payload.description === expected.description && item.payload.metadata?.source === "planner") return
+        terminate(new Error("Unexpected pending input; attempt terminated"))
+        return
       }
-      terminate(new Error(`Unexpected ${event.type}; attempt terminated`))
+      // Cosmetic/registry notifications do not carry authority. Known changes to
+      // task, lifecycle, policy or location invalidate immediately; decision-time
+      // reads independently verify the bound request/call/child and pending Plan.
+      if (["session.deleted", "session.moved", "session.permissions", "session.agent.selected",
+           "session.execution.started", "session.execution.failed", "session.execution.interrupted", "session.inbox.enqueued",
+           "session.inbox.delivered", "session.inbox.cancelled", "session.inbox.delivery.changed", "session.message.content.updated",
+           "session.forked", "session.revert.staged", "session.revert.cleared", "session.revert.committed"].includes(event.type)) {
+        terminate(new Error(`Unexpected ${event.type}; attempt terminated`))
+      }
     })
     const resized = () => {
       // Resize precedes descendant layout. A pending decision needs a fresh
