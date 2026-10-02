@@ -7,8 +7,8 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@opencode/plugin": "2.0.21",
-    "@opencode/schema": "2.0.21",
+    "@opencode/plugin": "2.0.22",
+    "@opencode/schema": "2.0.22",
     "effect": "4.0.0-rc.112"
   },
   "devDependencies": {
