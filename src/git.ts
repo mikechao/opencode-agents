@@ -24,12 +24,19 @@ function line(root: string, args: readonly string[]): string {
 function paths(bytes: Buffer): string[] {
   if (!bytes.length) return []
   if (bytes.at(-1) !== 0) throw new Error("Incomplete NUL-delimited Git output")
-  return decoder.decode(bytes.subarray(0, -1)).split("\0").map((name) => {
-    if (!name || name.startsWith("/") || name.split("/").some((part) => !part || part === "." || part === ".." || part === ".git")) {
-      throw new Error("Invalid repository path in Git observation")
-    }
-    return name
-  })
+  return decoder
+    .decode(bytes.subarray(0, -1))
+    .split("\0")
+    .map((name) => {
+      if (
+        !name ||
+        name.startsWith("/") ||
+        name.split("/").some((part) => !part || part === "." || part === ".." || part === ".git")
+      ) {
+        throw new Error("Invalid repository path in Git observation")
+      }
+      return name
+    })
 }
 
 export function observeGit(location: string, baseline?: GitSnapshot): GitSnapshot {
@@ -53,7 +60,11 @@ export function observeGit(location: string, baseline?: GitSnapshot): GitSnapsho
   if (line(root, ["rev-parse", "--verify", "HEAD^{commit}"]) !== head) {
     throw new Error("Git HEAD changed during observation")
   }
-  return Object.freeze({ root, head, paths: Object.freeze([...new Set([...staged, ...unstaged, ...untracked])].sort()) })
+  return Object.freeze({
+    root,
+    head,
+    paths: Object.freeze([...new Set([...staged, ...unstaged, ...untracked])].sort()),
+  })
 }
 
 export function requireFresh(snapshot: GitSnapshot, baseline: GitSnapshot): void {
@@ -62,7 +73,11 @@ export function requireFresh(snapshot: GitSnapshot, baseline: GitSnapshot): void
   }
 }
 
-export function requireInScope(snapshot: GitSnapshot, baseline: GitSnapshot, files: readonly string[]): readonly string[] {
+export function requireInScope(
+  snapshot: GitSnapshot,
+  baseline: GitSnapshot,
+  files: readonly string[],
+): readonly string[] {
   if (snapshot.root !== baseline.root || snapshot.head !== baseline.head) {
     throw new Error("Worktree root or HEAD changed during implementation")
   }

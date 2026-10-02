@@ -21,7 +21,7 @@ function exactFile(value: unknown, root: string): asserts value is string {
   if (typeof value !== "string" || !value || value.includes("\\") || value.includes("\0")) {
     throw new Error("Scope must contain exact repository-relative file paths")
   }
-  if (path.posix.isAbsolute(value) || value.includes("//") || /[*?\[\]{}]/.test(value)) {
+  if (path.posix.isAbsolute(value) || value.includes("//") || /[*?[\]{}]/.test(value)) {
     throw new Error(`Invalid scope path: ${value}`)
   }
   const parts = value.split("/")
@@ -38,8 +38,10 @@ function exactFile(value: unknown, root: string): asserts value is string {
     }
   }
   const full = path.join(root, value)
-  let info
-  try { info = lstatSync(full) } catch (error) {
+  let info: ReturnType<typeof lstatSync>
+  try {
+    info = lstatSync(full)
+  } catch (error) {
     if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") throw error
     return // Only an absent final entry is an ordinary new file.
   }
@@ -64,7 +66,12 @@ export function parseProposal(text: string, root: string): Proposal {
   if (Object.keys(value).sort().join(",") !== "files,intent,plan") {
     throw new Error("Planner proposal must have exactly intent, plan, and files")
   }
-  if (typeof value.intent !== "string" || !value.intent.trim() || typeof value.plan !== "string" || !value.plan.trim()) {
+  if (
+    typeof value.intent !== "string" ||
+    !value.intent.trim() ||
+    typeof value.plan !== "string" ||
+    !value.plan.trim()
+  ) {
     throw new Error("Planner intent and plan must be nonempty text")
   }
   if (/[\x00-\x09\x0b-\x1f\x7f]/.test(value.intent) || /[\x00-\x09\x0b-\x1f\x7f]/.test(value.plan)) {
@@ -78,7 +85,14 @@ export function parseProposal(text: string, root: string): Proposal {
 }
 
 export function makeCandidate(proposal: Proposal, root: string, head: string): IntentCandidate {
-  const encoding = JSON.stringify({ kind: "intent", intent: proposal.intent, plan: proposal.plan, files: proposal.files, root, head })
+  const encoding = JSON.stringify({
+    kind: "intent",
+    intent: proposal.intent,
+    plan: proposal.plan,
+    files: proposal.files,
+    root,
+    head,
+  })
   const digest = createHash("sha256").update(encoding).digest("hex")
   return Object.freeze({ kind: "intent", proposal, root, head, encoding, digest })
 }
@@ -90,8 +104,8 @@ export function candidateIntact(candidate: IntentCandidate): boolean {
 
 // Quoted ASCII JSON is injective and keeps controls, bidi/formatting characters
 // and Unicode separators from changing the terminal's path presentation.
-export const displayPath = (value: string): string => JSON.stringify(value).replace(/[\u007f-\uffff]/g,
-  (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`)
+export const displayPath = (value: string): string =>
+  JSON.stringify(value).replace(/[\u007f-\uffff]/g, (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`)
 
 export function renderPlan(candidate: IntentCandidate): string {
   return [
@@ -102,7 +116,9 @@ export function renderPlan(candidate: IntentCandidate): string {
     candidate.proposal.plan,
     "",
     `Exact files (${candidate.proposal.files.length})`,
-    ...(candidate.proposal.files.length ? candidate.proposal.files.map((file) => `• ${displayPath(file)}`) : ["(none)"]),
+    ...(candidate.proposal.files.length
+      ? candidate.proposal.files.map((file) => `• ${displayPath(file)}`)
+      : ["(none)"]),
     "",
     "Bound HEAD",
     candidate.head,

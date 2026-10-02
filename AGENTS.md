@@ -17,6 +17,11 @@ Two sibling repositories may be used as read-only references:
 - Reuse useful techniques from `../codex-agents` selectively; do not inherit its workflow, recovery, installer, or compatibility machinery without an explicit requirement.
 - Do not run OpenCode during preparation or static-analysis tasks unless the task explicitly authorizes it.
 
+## Validation
+
+- Finish relevant implementation work with `bun run check` (formatting check, lint, typecheck, and tests), then `git diff --check`.
+- Use `bun run format` to format owned code/config. Markdown, historical documents, and generated outputs are outside Biome's scope.
+
 ## Test architecture
 
 - Keep tests at the cheapest layer that proves the behavior under test.

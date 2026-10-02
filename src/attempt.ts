@@ -37,8 +37,14 @@ export function snapshotLocation(location: LocationRef): Readonly<LocationRef> {
 }
 type Call = Readonly<{ messageID: string; toolID: string; childID: string; prompt: string; agent: "planner" }>
 type Child = Readonly<{ inputID: string; finalID: string; text: string }>
-export type Bound = Readonly<{ parentID: string; userID: string; request: string; planner: Call; plannerChild: Child;
-  parentCreatedAt: number }>
+export type Bound = Readonly<{
+  parentID: string
+  userID: string
+  request: string
+  planner: Call
+  plannerChild: Child
+  parentCreatedAt: number
+}>
 
 type Created = Extract<OpenCodeEvent, { type: "session.created" }>
 type Synthetic = Extract<SessionInboxInfo, { type: "synthetic" }>
@@ -63,7 +69,12 @@ export type PublishedAttempt = Readonly<{
 export interface AttemptGuard {
   assertCurrent(): void
   bound?: Bound
-  publishing?: Readonly<{ id: string; text: string; description: string; metadata: { source: string; planHash: string } }>
+  publishing?: Readonly<{
+    id: string
+    text: string
+    description: string
+    metadata: { source: string; planHash: string }
+  }>
 }
 
 export interface DecisionOwner extends AttemptGuard {
@@ -72,26 +83,54 @@ export interface DecisionOwner extends AttemptGuard {
 }
 
 export function activationEvidence(
-  generation: Generation, location: Location, baseline: GitSnapshot, observationCompletedAt: number, creation: Created,
+  generation: Generation,
+  location: Location,
+  baseline: GitSnapshot,
+  observationCompletedAt: number,
+  creation: Created,
 ): ActivationEvidence {
-  return Object.freeze({ generation, location: frozenCopy(location), baseline: frozenCopy(baseline),
-    observationCompletedAt, creation: frozenCopy(creation) })
+  return Object.freeze({
+    generation,
+    location: frozenCopy(location),
+    baseline: frozenCopy(baseline),
+    observationCompletedAt,
+    creation: frozenCopy(creation),
+  })
 }
 export function initiallyAuthorizable(activation: ActivationEvidence): boolean {
   const { creation, baseline, observationCompletedAt } = activation
-  return baseline.paths.length === 0 && Number.isFinite(observationCompletedAt) && Number.isFinite(creation.created) &&
-    creation.created > observationCompletedAt && creation.data.agent === "orchestrator" && !creation.data.parentID &&
+  return (
+    baseline.paths.length === 0 &&
+    Number.isFinite(observationCompletedAt) &&
+    Number.isFinite(creation.created) &&
+    creation.created > observationCompletedAt &&
+    creation.data.agent === "orchestrator" &&
+    !creation.data.parentID &&
     sameLocation({ location: creation.data.location } as SessionInfo, activation.location)
+  )
 }
 // Canonical JSON comparisons preserve every JSON field and array position, not key insertion order.
 export function exactEvidence(value: unknown): string {
-  return JSON.stringify(value, (_, item) => item && typeof item === "object" && !Array.isArray(item)
-    ? Object.fromEntries(Object.keys(item).sort().map((key) => [key, item[key]])) : item)
+  return JSON.stringify(value, (_, item) =>
+    item && typeof item === "object" && !Array.isArray(item)
+      ? Object.fromEntries(
+          Object.keys(item)
+            .sort()
+            .map((key) => [key, item[key]]),
+        )
+      : item,
+  )
 }
-function same(a: unknown, b: unknown): boolean { return exactEvidence(a) === exactEvidence(b) }
+function same(a: unknown, b: unknown): boolean {
+  return exactEvidence(a) === exactEvidence(b)
+}
 
-function stop(message: string): never { throw new Error(`Attempt binding failed: ${message}`) }
-function empty(value: unknown): boolean { return value === undefined || (Array.isArray(value) && value.length === 0) }
+function stop(message: string): never {
+  throw new Error(`Attempt binding failed: ${message}`)
+}
+function empty(value: unknown): boolean {
+  return value === undefined || (Array.isArray(value) && value.length === 0)
+}
 function plain(message: Pick<Extract<SessionMessageInfo, { type: "user" }>, "files" | "agents" | "skills">): boolean {
   return empty(message.files) && empty(message.agents) && empty(message.skills)
 }
@@ -122,7 +161,10 @@ async function messages(context: Context, sessionID: string, check: () => void):
   let cursor: string | undefined
   const seen = new Set<string>()
   do {
-    const page = await after(check, context.client.message.list({ sessionID, limit: 200, ...(cursor ? { cursor } : { order: "asc" }) }))
+    const page = await after(
+      check,
+      context.client.message.list({ sessionID, limit: 200, ...(cursor ? { cursor } : { order: "asc" }) }),
+    )
     all.push(...page.data)
     cursor = page.cursor.next ?? undefined
     if (cursor && seen.has(cursor)) stop("message pagination repeated a cursor")
@@ -139,9 +181,20 @@ async function idle(context: Context, sessionID: string, check: () => void): Pro
   if (active[sessionID] || inbox.length) stop("session is running or has pending input")
 }
 function successful(session: SessionInfo, id: string, agent: string, location: Location, parentID?: string): void {
-  if (session.id !== id || session.parentID !== parentID || session.fork || session.revert || session.time.archived || session.agent !== agent ||
-      !sameLocation(session, location) || session.outcome !== "succeeded" || !session.time.idle || !Number.isFinite(session.time.created) ||
-      !empty(session.permissions)) stop(`unexpected ${agent} session identity, outcome, or permissions`)
+  if (
+    session.id !== id ||
+    session.parentID !== parentID ||
+    session.fork ||
+    session.revert ||
+    session.time.archived ||
+    session.agent !== agent ||
+    !sameLocation(session, location) ||
+    session.outcome !== "succeeded" ||
+    !session.time.idle ||
+    !Number.isFinite(session.time.created) ||
+    !empty(session.permissions)
+  )
+    stop(`unexpected ${agent} session identity, outcome, or permissions`)
 }
 function oneFinal(history: SessionMessageInfo[], agent: string): Assistant {
   const assistants = history.filter((message): message is Assistant => message.type === "assistant")
@@ -152,52 +205,94 @@ function oneFinal(history: SessionMessageInfo[], agent: string): Assistant {
   return final
 }
 function finalText(message: Assistant): string {
-  return message.content.filter((part) => part.type === "text").map((part) => part.text).join("")
+  return message.content
+    .filter((part) => part.type === "text")
+    .map((part) => part.text)
+    .join("")
 }
 function completedCall(messageID: string, tool: Tool, agent: Call["agent"]): Call {
   if (tool.name !== "subagent" || tool.state.status !== "completed") stop("unexpected parent tool")
   const input = tool.state.input
   const keys = Object.keys(input).sort()
-  if (JSON.stringify(keys) !== JSON.stringify(["agent", "description", "prompt"].sort()) ||
-      input.agent !== agent || typeof input.description !== "string" || !input.description ||
-      typeof input.prompt !== "string" || !input.prompt) stop("native subagent arguments differ from the fixed contract")
+  if (
+    JSON.stringify(keys) !== JSON.stringify(["agent", "description", "prompt"].sort()) ||
+    input.agent !== agent ||
+    typeof input.description !== "string" ||
+    !input.description ||
+    typeof input.prompt !== "string" ||
+    !input.prompt
+  )
+    stop("native subagent arguments differ from the fixed contract")
   const childID = tool.state.metadata?.sessionID
-  if (typeof childID !== "string" || tool.state.metadata?.status !== "completed") stop("missing completed native child metadata")
+  if (typeof childID !== "string" || tool.state.metadata?.status !== "completed")
+    stop("missing completed native child metadata")
   return { messageID, toolID: tool.id, childID, prompt: input.prompt, agent }
 }
 function parentCalls(history: SessionMessageInfo[]): { userID: string; request: string; planner: Call } {
   const users = history.filter((message) => message.type === "user")
-  if (users.length !== 1 || users[0]?.type !== "user" || history[0] !== users[0] || !plain(users[0]) || !users[0].text) stop("parent does not have one exact plain user input")
-  if (history.some((message) => !["user", "assistant", "idle", "model-switched"].includes(message.type))) stop("unexpected parent input or control message")
+  if (users.length !== 1 || users[0]?.type !== "user" || history[0] !== users[0] || !plain(users[0]) || !users[0].text)
+    stop("parent does not have one exact plain user input")
+  if (history.some((message) => !["user", "assistant", "idle", "model-switched"].includes(message.type)))
+    stop("unexpected parent input or control message")
   const idles = history.filter((message) => message.type === "idle")
-  if (!idles.length || idles.some((message) => message.outcome !== "succeeded")) stop("parent did not complete one successful turn")
+  if (!idles.length || idles.some((message) => message.outcome !== "succeeded"))
+    stop("parent did not complete one successful turn")
   oneFinal(history, "orchestrator")
   if (history.at(-1)?.type !== "idle") stop("parent final result is missing")
-  const tools = history.flatMap((message) => message.type === "assistant"
-    ? message.content.filter((part): part is Tool => part.type === "tool").map((part) => ({ messageID: message.id, part })) : [])
-  if (tools.length !== 1 || tools[0]?.part.name !== "subagent") stop("parent did not make exactly one native Planner call")
+  const tools = history.flatMap((message) =>
+    message.type === "assistant"
+      ? message.content
+          .filter((part): part is Tool => part.type === "tool")
+          .map((part) => ({ messageID: message.id, part }))
+      : [],
+  )
+  if (tools.length !== 1 || tools[0]?.part.name !== "subagent")
+    stop("parent did not make exactly one native Planner call")
   const planner = completedCall(tools[0].messageID, tools[0].part, "planner")
   if (planner.prompt !== plannerInput(users[0].text)) stop("native Planner prompt or identity differs from contract")
   return { userID: users[0].id, request: users[0].text, planner }
 }
 function verifyChildHistory(history: SessionMessageInfo[], agent: Call["agent"], prompt: string): Child {
   const users = history.filter((message) => message.type === "user")
-  if (users.length !== 1 || users[0]?.type !== "user" || history[0] !== users[0] || !plain(users[0]) || users[0].text !== nativeBootstrap(prompt) ||
-      history.some((message) => !["user", "assistant", "idle", "model-switched"].includes(message.type))) stop(`unexpected ${agent} bootstrap input`)
+  if (
+    users.length !== 1 ||
+    users[0]?.type !== "user" ||
+    history[0] !== users[0] ||
+    !plain(users[0]) ||
+    users[0].text !== nativeBootstrap(prompt) ||
+    history.some((message) => !["user", "assistant", "idle", "model-switched"].includes(message.type))
+  )
+    stop(`unexpected ${agent} bootstrap input`)
   const idles = history.filter((message) => message.type === "idle")
   if (!idles.length || idles.some((message) => message.outcome !== "succeeded") || history.at(-1)?.type !== "idle") {
     stop(`unexpected ${agent} bootstrap completion`)
   }
   const final = oneFinal(history, agent)
-  if (history.some((message) => message.type === "assistant" && message.content.some((part) =>
-    part.type === "tool" && (["edit", "write", "apply_patch", "bash", "subagent", "execute"].includes(part.name) || part.name.startsWith("session_") || part.state.status !== "completed")))) {
+  if (
+    history.some(
+      (message) =>
+        message.type === "assistant" &&
+        message.content.some(
+          (part) =>
+            part.type === "tool" &&
+            (["edit", "write", "apply_patch", "bash", "subagent", "execute"].includes(part.name) ||
+              part.name.startsWith("session_") ||
+              part.state.status !== "completed"),
+        ),
+    )
+  ) {
     stop(`${agent} used a disallowed tool during bootstrap`)
   }
   const text = finalText(final)
   if (!text) stop(`unexpected ${agent} final text`)
   return { inputID: users[0].id, finalID: final.id, text }
 }
-async function bindNativeAttempt(context: Context, check: () => void, parentID: string, location: Location): Promise<Bound> {
+async function bindNativeAttempt(
+  context: Context,
+  check: () => void,
+  parentID: string,
+  location: Location,
+): Promise<Bound> {
   const parent = await after(check, context.client.session.get({ sessionID: parentID }))
   successful(parent, parentID, "orchestrator", location)
   await idle(context, parentID, check)
@@ -211,33 +306,59 @@ async function bindNativeAttempt(context: Context, check: () => void, parentID: 
   const plannerChild = verifyChildHistory(history, "planner", calls.planner.prompt)
   return frozenCopy({ parentID, ...calls, plannerChild, parentCreatedAt: parent.time.created })
 }
-function checkedPublication(publication: Synthetic | Frozen<Synthetic>, bound: Bound, candidate: IntentCandidate): void {
-  if (!publication.id || publication.type !== "synthetic" || publication.sessionID !== bound.parentID ||
-      publication.delivery !== "steer" || publication.payload.text !== bound.plannerChild.text ||
-      publication.payload.description !== renderPlan(candidate) || publication.payload.metadata?.source !== "planner") {
+function checkedPublication(
+  publication: Synthetic | Frozen<Synthetic>,
+  bound: Bound,
+  candidate: IntentCandidate,
+): void {
+  if (
+    !publication.id ||
+    publication.type !== "synthetic" ||
+    publication.sessionID !== bound.parentID ||
+    publication.delivery !== "steer" ||
+    publication.payload.text !== bound.plannerChild.text ||
+    publication.payload.description !== renderPlan(candidate) ||
+    publication.payload.metadata?.source !== "planner"
+  ) {
     stop("synthetic admission changed Planner text, description, or admission evidence")
   }
 }
 export function assertPublishedCoherence(published: PublishedAttempt): void {
   const { activation, bound, candidate, publication } = published
-  if (bound.parentID !== activation.creation.data.sessionID ||
-      (Number.isFinite(activation.creation.created) && bound.parentCreatedAt !== activation.creation.created) ||
-      bound.planner.prompt !== plannerInput(bound.request) ||
-      !candidateIntact(candidate) || candidate.root !== activation.baseline.root || candidate.head !== activation.baseline.head ||
-      !same(JSON.parse(bound.plannerChild.text), candidate.proposal)) stop("retained candidate or root creation evidence is incoherent")
+  if (
+    bound.parentID !== activation.creation.data.sessionID ||
+    (Number.isFinite(activation.creation.created) && bound.parentCreatedAt !== activation.creation.created) ||
+    bound.planner.prompt !== plannerInput(bound.request) ||
+    !candidateIntact(candidate) ||
+    candidate.root !== activation.baseline.root ||
+    candidate.head !== activation.baseline.head ||
+    !same(JSON.parse(bound.plannerChild.text), candidate.proposal)
+  )
+    stop("retained candidate or root creation evidence is incoherent")
   checkedPublication(publication, bound, candidate)
 }
 export function publishedPresentationMatches(context: Context, published: PublishedAttempt): boolean {
   const { bound, publication } = published
   const visible = context.data.session.message.list(bound.parentID).filter((message) => message.id === publication.id)
   const pending = context.data.session.pending.list(bound.parentID)
-  return visible.length === 1 && visible[0]?.type === "synthetic" && visible[0].text === publication.payload.text &&
-    visible[0].description === publication.payload.description && visible[0].metadata?.source === "planner" &&
-    pending.length === 1 && publicationMatches(pending[0], published)
+  return (
+    visible.length === 1 &&
+    visible[0]?.type === "synthetic" &&
+    visible[0].text === publication.payload.text &&
+    visible[0].description === publication.payload.description &&
+    visible[0].metadata?.source === "planner" &&
+    pending.length === 1 &&
+    publicationMatches(pending[0], published)
+  )
 }
 function publicationMatches(item: SessionInboxInfo | undefined, published: PublishedAttempt): boolean {
   if (!item || item.id !== published.publication.id || item.type !== "synthetic") return false
-  try { checkedPublication(item, published.bound, published.candidate); return true } catch { return false }
+  try {
+    checkedPublication(item, published.bound, published.candidate)
+    return true
+  } catch {
+    return false
+  }
 }
 async function verifyParentPlanner(context: Context, published: PublishedAttempt, check: () => void): Promise<void> {
   const { bound, activation } = published
@@ -246,10 +367,12 @@ async function verifyParentPlanner(context: Context, published: PublishedAttempt
   if (parent.time.created !== bound.parentCreatedAt) stop("root creation identity changed")
   const active = await after(check, context.client.session.active())
   const inbox = await after(check, context.client.session.inbox.list({ sessionID: bound.parentID }))
-  if (active[bound.parentID] || (inbox.length !== 1 || !publicationMatches(inbox[0], published))) stop("root is running or pending publication changed")
+  if (active[bound.parentID] || inbox.length !== 1 || !publicationMatches(inbox[0], published))
+    stop("root is running or pending publication changed")
   const parentHistory = await messages(context, bound.parentID, check)
   const calls = parentCalls(parentHistory)
-  if (!same(calls, { userID: bound.userID, request: bound.request, planner: bound.planner })) stop("parent call binding changed")
+  if (!same(calls, { userID: bound.userID, request: bound.request, planner: bound.planner }))
+    stop("parent call binding changed")
   const planner = await after(check, context.client.session.get({ sessionID: bound.planner.childID }))
   successful(planner, bound.planner.childID, "planner", activation.location, bound.parentID)
   await idle(context, bound.planner.childID, check)
@@ -261,7 +384,11 @@ function observePublication(activation: ActivationEvidence): void {
   const current = observeGit(activation.location.directory!, activation.baseline)
   if (!same(current.paths, activation.baseline.paths)) stop("publication worktree paths changed")
 }
-export async function verifyPublishedAttempt(context: Context, published: PublishedAttempt, guard: AttemptGuard): Promise<void> {
+export async function verifyPublishedAttempt(
+  context: Context,
+  published: PublishedAttempt,
+  guard: AttemptGuard,
+): Promise<void> {
   assertPublishedCoherence(published)
   const check = checks(context, published.activation, guard)
   check()
@@ -271,7 +398,11 @@ export async function verifyPublishedAttempt(context: Context, published: Publis
 }
 
 // One publication per activation; no implementation authority is created here.
-export async function publishPlan(context: Context, activation: ActivationEvidence, guard: AttemptGuard): Promise<PublishedAttempt> {
+export async function publishPlan(
+  context: Context,
+  activation: ActivationEvidence,
+  guard: AttemptGuard,
+): Promise<PublishedAttempt> {
   const { generation, baseline, location, creation } = activation
   const parentID = creation.data.sessionID
   assertLive(generation)
@@ -284,15 +415,22 @@ export async function publishPlan(context: Context, activation: ActivationEviden
     await after(check, context.client.session.wait({ sessionID: parentID }))
     const bound = await bindNativeAttempt(context, check, parentID, location)
     guard.bound = bound
-    if (Number.isFinite(creation.created) && bound.parentCreatedAt !== creation.created) stop("root creation evidence changed")
+    if (Number.isFinite(creation.created) && bound.parentCreatedAt !== creation.created)
+      stop("root creation evidence changed")
     const candidate = makeCandidate(parseProposal(bound.plannerChild.text, baseline.root), baseline.root, baseline.head)
     const planHash = createHash("sha256").update(bound.plannerChild.text).digest("hex").slice(0, 12)
-    guard.publishing = frozenCopy({ id: `msg_${randomUUID()}`, text: bound.plannerChild.text,
-      description: renderPlan(candidate), metadata: { source: "planner", planHash } })
+    guard.publishing = frozenCopy({
+      id: `msg_${randomUUID()}`,
+      text: bound.plannerChild.text,
+      description: renderPlan(candidate),
+      metadata: { source: "planner", planHash },
+    })
     check()
     observePublication(activation)
-    const admitted = await after(check, context.client.session.synthetic({ sessionID: parentID, ...guard.publishing,
-      delivery: "steer", resume: false }))
+    const admitted = await after(
+      check,
+      context.client.session.synthetic({ sessionID: parentID, ...guard.publishing, delivery: "steer", resume: false }),
+    )
     checkedPublication(admitted, bound, candidate)
     if (admitted.id !== guard.publishing.id) stop("synthetic admission identity changed")
     const published = Object.freeze({ activation, bound, candidate, publication: frozenCopy(admitted) })
@@ -313,7 +451,11 @@ export async function publishPlan(context: Context, activation: ActivationEviden
 
 // The positive readable-frame callback is the only TUI caller of this transport.
 // The server owns the attempt after transfer; transport ambiguity never retries.
-export async function authorizePublishedAttempt(context: Context, published: PublishedAttempt, owner: DecisionOwner): Promise<string> {
+export async function authorizePublishedAttempt(
+  context: Context,
+  published: PublishedAttempt,
+  owner: DecisionOwner,
+): Promise<string> {
   const { activation } = published
   assertLive(activation.generation)
   owner.assertDecision(published)
@@ -327,10 +469,16 @@ export async function authorizePublishedAttempt(context: Context, published: Pub
     requireFresh(observeGit(activation.location.directory!, activation.baseline), activation.baseline)
     owner.assertDecision(published)
     owner.transfer()
-    const outcome = await context.client.rpc(authorizeRpc).authorize({
-      purpose: "implement", candidate: published.candidate, rootSessionID: published.bound.parentID,
-      location: activation.location, publicationID: published.publication.id,
-    }, { location: activation.location })
+    const outcome = await context.client.rpc(authorizeRpc).authorize(
+      {
+        purpose: "implement",
+        candidate: published.candidate,
+        rootSessionID: published.bound.parentID,
+        location: activation.location,
+        publicationID: published.publication.id,
+      },
+      { location: activation.location },
+    )
     if (typeof outcome !== "string") stop("Authorize RPC returned an invalid outcome")
     return outcome
   } finally {

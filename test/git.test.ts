@@ -16,7 +16,9 @@ beforeAll(() => {
   git(seed, "add", "old.txt")
   git(seed, "commit", "-qm", "baseline")
 })
-afterAll(() => { rmSync(seed, { recursive: true, force: true }) })
+afterAll(() => {
+  rmSync(seed, { recursive: true, force: true })
+})
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
@@ -118,8 +120,15 @@ test("changed HEAD cannot pass; unusual pathnames remain exact", () => {
 })
 
 test("freshness and exact scope reject substituted root or HEAD independently of paths", () => {
-  const baseline: GitSnapshot = Object.freeze({ root: "/trusted/worktree", head: "1".repeat(40), paths: Object.freeze([]) })
-  for (const substituted of [{ ...baseline, root: baseline.root + "/other" }, { ...baseline, head: "0".repeat(40) }]) {
+  const baseline: GitSnapshot = Object.freeze({
+    root: "/trusted/worktree",
+    head: "1".repeat(40),
+    paths: Object.freeze([]),
+  })
+  for (const substituted of [
+    { ...baseline, root: baseline.root + "/other" },
+    { ...baseline, head: "0".repeat(40) },
+  ]) {
     expect(() => requireFresh(substituted, baseline)).toThrow()
     expect(() => requireInScope(substituted, baseline, [])).toThrow()
   }
