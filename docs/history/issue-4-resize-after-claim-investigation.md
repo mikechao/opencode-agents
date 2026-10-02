@@ -4,7 +4,7 @@
 
 This investigation uses repository baseline `9ddb7b632dbe6a6291cc96d0ef84366aacca6799`. It makes no implementation changes and does not address issues #5 or #6.
 
-The relevant implementation is the activation-local TUI closure in [tui.tsx](../.opencode/plugins/opencode-agents/tui.tsx), the guarded admission sequence in [attempt.ts](../src/attempt.ts), its host-double and renderer-layout tests in [attempt.test.ts](../test/attempt.test.ts), and the current status and normative contract in [v1-orchestration.md](v1-orchestration.md) and [coding-authority-protocol.md](coding-authority-protocol.md).
+The relevant implementation is the activation-local TUI closure in [tui.tsx](../../.opencode/plugins/opencode-agents/tui.tsx), the guarded admission sequence in [attempt.ts](../../src/attempt.ts), its host-double and renderer-layout tests in [attempt.test.ts](../../test/attempt.test.ts), and the current status and normative contract in [v1-orchestration.md](../v1-orchestration.md) and [coding-authority-protocol.md](../coding-authority-protocol.md).
 
 ## 1. Current behavior
 

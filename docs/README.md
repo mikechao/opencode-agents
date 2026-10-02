@@ -52,7 +52,7 @@ minimal scope supersedes Issue #9's proposed enrollment and provider policing.
 
 ## Historical evidence
 
-Investigation, milestone, probe and audit documents are retained under
-[`history/`](history/README.md) as non-normative historical evidence. Superseded
-material was pruned according to the archived
+Issue investigations, dogfood reports, milestone and probe documents are
+retained under [`history/`](history/README.md) as non-normative historical
+evidence. Superseded material was pruned according to the archived
 [cleanup plan](history/documentation-cleanup-plan.md).

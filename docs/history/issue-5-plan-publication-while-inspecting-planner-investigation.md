@@ -36,19 +36,19 @@ refer to the baseline above.
 Verified repository notes:
 
 - `src/m1/attempt.ts` and `src/m2/attempt.ts` do not exist or appear in the
-  tracked file list; relevant logic is in [attempt.ts](../src/attempt.ts).
-- [package.json](../package.json) and `bun.lock` pin `@opencode/plugin` 2.0.21.
-- [attempt.test.ts](../test/attempt.test.ts), lines 1494–1514, contains the exact
+  tracked file list; relevant logic is in [attempt.ts](../../src/attempt.ts).
+- [package.json](../../package.json) and `bun.lock` pin `@opencode/plugin` 2.0.21.
+- [attempt.test.ts](../../test/attempt.test.ts), lines 1494–1514, contains the exact
   regression `reactive navigation loss during a publication await latches
   before returning to root`.
-- [tui.tsx](../.opencode/plugins/opencode-agents/tui.tsx), lines 85–104, owns
+- [tui.tsx](../../.opencode/plugins/opencode-agents/tui.tsx), lines 85–104, owns
   `rootSelected()` and the route-requiring `assertCurrent()` implementation.
 - `publishPlan()` calls injected guard checks; it never reads the router.
 
 The GitHub issue records OpenCode 2.0.20 dogfood. This report uses the current
 2.0.21 pin and matching local upstream source. Earlier charter/CAP status prose
 still describes publication-only runtime and a removed modal executor;
-[v1-orchestration.md](v1-orchestration.md) and current code establish that direct
+[v1-orchestration.md](../v1-orchestration.md) and current code establish that direct
 pointer authorization and same-slot implementation now exist. Those historical
 status statements are not evidence that the current bridge is absent. Their
 general cleanup is outside this pass; the normative authority requirements
@@ -66,7 +66,7 @@ sets `rootSessionID`. It requires a root `orchestrator`, matching location, a
 baseline, and no previously adopted/attempted/closed activation (247–252).
 
 The root agent instructions in
-[orchestrator.md](../.opencode/agents/orchestrator.md) require two sequential
+[orchestrator.md](../../.opencode/agents/orchestrator.md) require two sequential
 foreground native calls: fresh Planner, then fresh inert `implementer_slot`.
 Planner receives the exact user request; the slot receives `SLOT_PROMPT` and
 must return `READY`. The root ends with informational prose. Trusted code does
@@ -125,7 +125,7 @@ native events. Root creation time is checked against `activation.creation`.
 paths, validates path ancestry/symlink constraints, and freezes proposal/scope.
 `makeCandidate(..., baseline.root, baseline.head)` freezes `candidate`, with
 deterministic JSON `encoding` and SHA-256 `digest`
-([proposal.ts](../src/proposal.ts)). These remain the initial root/HEAD; later
+([proposal.ts](../../src/proposal.ts)). These remain the initial root/HEAD; later
 reads cannot replace them. `candidateIntact()` recomputes both identifiers.
 
 `planHash` is the first 12 hexadecimal characters of SHA-256 of raw Planner P;

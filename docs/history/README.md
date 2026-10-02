@@ -10,6 +10,18 @@ and completed-transition audits. Old file paths, role names, milestone names,
 API assumptions, and conclusions are intentionally preserved in their
 historical context; they do not describe today's runtime by default.
 
+## Issue #4–#9 reports
+
+These issue-specific reports are **non-normative historical evidence**:
+
+- [Issue #4 resize investigation](issue-4-resize-after-claim-investigation.md) — pending-frame and post-claim resize analysis.
+- [Issue #4 live dogfood](issue-4-live-dogfood.md) — live resize and authorization outcomes on the earlier path.
+- [Issue #5 Plan publication investigation](issue-5-plan-publication-while-inspecting-planner-investigation.md) — publication while inspecting Planner.
+- [Issue #6 authorization mismatch investigation](issue-6-live-authorization-policy-mismatch-investigation.md) — live admission failure and limits of the available evidence.
+- [Issue #6 child-creation investigation](issue-6-post-authorization-implementer-creation-investigation.md) — proposed post-authorization child creation.
+- [Issue #8 native Implementer investigation](issue-8-cap-gated-native-implementer-investigation.md) — host API findings and superseded presentation design.
+- [Issue #9 native CAP investigation](issue-9-native-cap-minimum-investigation.md) — source-supported minimal admission proposal and alternatives.
+
 ## B1 / trusted kernel / CAP hosting
 
 [Kernel/store isolation](b1-trusted-kernel-store-isolation-investigation.md),

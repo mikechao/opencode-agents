@@ -148,9 +148,9 @@ Reviewer, reviewed-target construction and Commit are future work.
 
 Historical OpenCode 2.0.20 dogfood and Issue #4 resize results describe prior
 paths, not validation of this native path. See the retained
-[Issue #4 dogfood](issue-4-live-dogfood.md),
-[Issue #6 investigation](issue-6-post-authorization-implementer-creation-investigation.md),
-and [Issue #9 investigation](issue-9-native-cap-minimum-investigation.md).
+[Issue #4 dogfood](history/issue-4-live-dogfood.md),
+[Issue #6 investigation](history/issue-6-post-authorization-implementer-creation-investigation.md),
+and [Issue #9 investigation](history/issue-9-native-cap-minimum-investigation.md).
 Issue #9's approved minimal scope supersedes its investigation's proposed
 enrollment, scoped Implementer hosting and provider-request policing.
 Issue #8's custom-row work is superseded by native presentation.
