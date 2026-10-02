@@ -17,6 +17,10 @@ Two sibling repositories may be used as read-only references:
 - Reuse useful techniques from `../codex-agents` selectively; do not inherit its workflow, recovery, installer, or compatibility machinery without an explicit requirement.
 - Do not run OpenCode during preparation or static-analysis tasks unless the task explicitly authorizes it.
 
+## Design
+
+- Prefer type-driven simplification when a type can eliminate invalid states, coupled booleans/optionals, duplicated branching, or unnecessary casts. Do not add types merely to name existing shapes or create abstraction. Preserve runtime validation for untrusted host and external data.
+
 ## Validation
 
 - Finish relevant implementation work with `bun run check` (formatting check, lint, typecheck, and tests), then `git diff --check`.

@@ -42,28 +42,24 @@ const plugin: Definition = {
     } catch {
       /* Publication requires a valid initial observation. */
     }
-    let creation: Extract<OpenCodeEvent, { type: "session.created" }> | undefined
+    type Created = Extract<OpenCodeEvent, { type: "session.created" }>
+    type Ownership =
+      | { kind: "waiting"; creation?: Created }
+      | { kind: "publishing"; creation: Created }
+      | { kind: "retained" | "pending" | "deciding" | "transferred"; creation: Created; published: PublishedAttempt }
+      | { kind: "closed" }
+    let ownership: Ownership = { kind: "waiting" }
     let rootSessionID: string | undefined
-    let attempted = false
-    let closed = false
-    let retained: PublishedAttempt | undefined
-    let pending: PublishedAttempt | undefined
-    let deciding: PublishedAttempt | undefined
     let pendingSurfaceUsable: (() => boolean) | undefined
     let invalidateLayout: (() => void) | undefined
     let removePresentation: (() => void) | undefined
-    let transferred = false
     const [presentation, setPresentation] = createSignal<Presentation>()
     const [layoutRevision, setLayoutRevision] = createSignal(0)
     const closeAuthority = () => {
-      if (closed) return
-      closed = true
-      retained = undefined
-      pending = undefined
-      deciding = undefined
+      if (ownership.kind === "closed") return
+      ownership = { kind: "closed" }
       guard.bound = undefined
       guard.publishing = undefined
-      creation = undefined
     }
     const present = (title: string, message: string) => {
       if (generation.revoked) return
@@ -79,11 +75,12 @@ const plugin: Definition = {
       }
     }
     const terminate = (error: unknown) => {
-      if (closed || generation.revoked) return
+      if (ownership.kind === "closed" || generation.revoked) return
       const reason = error instanceof Error ? error.message : String(error)
-      const message = transferred
-        ? `STOP — Authorized server attempt outcome unknown; no claim or wake will be resent. ${reason}`
-        : `STOP — Implementation was not admitted. ${reason}`
+      const message =
+        ownership.kind === "transferred"
+          ? `STOP — Authorized server attempt outcome unknown; no claim or wake will be resent. ${reason}`
+          : `STOP — Implementation was not admitted. ${reason}`
       closeAuthority()
       if (rootSessionID) showStatus(message)
       present("STOP", message)
@@ -92,35 +89,38 @@ const plugin: Definition = {
       const route = context.ui.router.current()
       return (
         route.type === "session" &&
-        route.sessionID === creation?.data.sessionID &&
+        ownership.kind !== "closed" &&
+        route.sessionID === ownership.creation?.data.sessionID &&
         same(snapshotLocation(context.location ?? context.data.location.default()), location)
       )
     }
     const guard: DecisionOwner = {
       transfer() {
         guard.assertCurrent()
-        transferred = true
+        if (ownership.kind !== "deciding" && ownership.kind !== "transferred")
+          throw new Error("Local decision no longer owns the exact published attempt")
+        ownership = { ...ownership, kind: "transferred" }
       },
       assertDecision(captured) {
-        if (deciding !== captured) throw new Error("Local decision no longer owns the exact published attempt")
+        if ((ownership.kind !== "deciding" && ownership.kind !== "transferred") || ownership.published !== captured)
+          throw new Error("Local decision no longer owns the exact published attempt")
         guard.assertCurrent()
       },
       assertCurrent() {
-        if (closed || generation.revoked) throw new Error("Attempt ownership was closed or revoked")
-        if (transferred) return
-        if (attempted) {
+        if (ownership.kind === "closed" || generation.revoked)
+          throw new Error("Attempt ownership was closed or revoked")
+        if (ownership.kind === "transferred") return
+        if (ownership.kind !== "waiting") {
           // A pending Plan belongs to the attempt, not the mounted route.
           // Only a claimed decision must retain the root view until transfer.
           if (
-            (deciding && !rootSelected()) ||
+            (ownership.kind === "deciding" && !rootSelected()) ||
             !same(snapshotLocation(context.location ?? context.data.location.default()), location)
           )
             throw new Error("Root view or TUI location changed")
         }
-        const owned = retained ?? pending ?? deciding
-        if (owned) {
-          if (!publishedPresentationMatches(context, owned)) throw new Error("Published Plan projection changed")
-        }
+        if ("published" in ownership && !publishedPresentationMatches(context, ownership.published))
+          throw new Error("Published Plan projection changed")
       },
     }
     const binding = (published: PublishedAttempt) =>
@@ -153,16 +153,16 @@ const plugin: Definition = {
       setPresentation({ kind: "status", message })
     }
     const armRetained = () => {
-      if (!retained || closed || generation.revoked || !rootSelected()) return
-      const captured = retained
+      if (ownership.kind !== "retained" || generation.revoked || !rootSelected()) return
+      const captured = ownership.published
       // Prepare this exact Plan once. Pending ownership survives route changes;
       // navigation never starts another preparation or publication.
-      retained = undefined
-      pending = captured
+      ownership = { ...ownership, kind: "pending" }
       void verifyPublishedAttempt(context, captured, guard)
         .then(() => {
           guard.assertCurrent()
-          if (pending !== captured) throw new Error("Root preparation no longer owns the exact published attempt")
+          if (ownership.kind !== "pending" || ownership.published !== captured)
+            throw new Error("Root preparation no longer owns the exact published attempt")
           requireFresh(observeGit(location.directory!, captured.activation.baseline), captured.activation.baseline)
           guard.assertCurrent()
           ensurePresentation(captured.bound.parentID)
@@ -171,7 +171,8 @@ const plugin: Definition = {
         .catch(terminate)
     }
     const decide = (captured: PublishedAttempt, decision: "authorize" | "cancel") => {
-      if (closed || generation.revoked || pending !== captured || deciding || generation.busy) return
+      if (ownership.kind !== "pending" || generation.revoked || ownership.published !== captured || generation.busy)
+        return
       try {
         guard.assertCurrent()
         if (!rootSelected()) {
@@ -185,8 +186,7 @@ const plugin: Definition = {
           return
         }
         // Run-to-completion claims the exact object before any asynchronous work.
-        pending = undefined
-        deciding = captured
+        ownership = { ...ownership, kind: "deciding" }
         invalidateLayout?.()
         if (decision === "cancel") {
           const message = "Cancelled — no implementation admitted"
@@ -234,7 +234,7 @@ const plugin: Definition = {
         setReady(false)
       }
       invalidateLayout = invalidate
-      const live = (node: Renderable | undefined) => {
+      const live = (node: Renderable | undefined): node is Renderable => {
         if (!node) return false
         for (let ancestor: Renderable | null = node; ancestor; ancestor = ancestor.parent) {
           if (!ancestor.visible || ancestor.isDestroyed) return false
@@ -256,8 +256,8 @@ const plugin: Definition = {
           columns(authorizationQuestion) > frame.width
         )
           return false
-        const inViewport = (node: Renderable | undefined, height = 1) =>
-          node &&
+        const inViewport = (node: Renderable | undefined, height = 1): node is Renderable =>
+          !!node &&
           live(node) &&
           node.width > 0 &&
           node.height === height &&
@@ -268,19 +268,19 @@ const plugin: Definition = {
         return !!(
           inViewport(surface, rootLines() + 3) &&
           inViewport(worktreeText, rootLines()) &&
-          columns(`Worktree: ${displayPath(captured.candidate.root)}`) <= worktreeText!.width * rootLines() &&
+          columns(`Worktree: ${displayPath(captured.candidate.root)}`) <= worktreeText.width * rootLines() &&
           inViewport(bindingText) &&
-          columns(binding(captured)) <= bindingText!.width &&
+          columns(binding(captured)) <= bindingText.width &&
           inViewport(questionText) &&
-          columns(authorizationQuestion) <= questionText!.width &&
+          columns(authorizationQuestion) <= questionText.width &&
           inViewport(authorizeButton) &&
-          authorizeButton!.width >= 11 &&
+          authorizeButton.width >= 11 &&
           inViewport(cancelButton) &&
-          cancelButton!.width >= 8
+          cancelButton.width >= 8
         )
       }
       pendingSurfaceUsable = () => {
-        if (pending !== captured || !rootSelected()) return false
+        if (ownership.kind !== "pending" || ownership.published !== captured || !rootSelected()) return false
         if (!live(surface)) {
           terminate(new Error("Authorization surface is unavailable"))
           return false
@@ -289,14 +289,14 @@ const plugin: Definition = {
           ready() &&
           !!layoutProof &&
           layoutProof.surface === surface &&
-          layoutProof.frame === (surface!.parent ?? surface!) &&
+          layoutProof.frame === (surface.parent ?? surface) &&
           layoutProof.width === context.renderer.terminalWidth &&
           layoutProof.height === context.renderer.terminalHeight &&
           validGeometry()
         )
       }
       const checkLayout = () => {
-        if (closed || pending !== captured) return
+        if (ownership.kind !== "pending" || ownership.published !== captured) return
         invalidate()
         guard.assertCurrent()
         if (!rootSelected()) return
@@ -304,7 +304,7 @@ const plugin: Definition = {
           terminate(new Error("Authorization surface is unavailable"))
           return
         }
-        const frame = surface!.parent ?? surface!
+        const frame = surface.parent ?? surface
         // Measure after the complete parent/child layout pass. A width change
         // schedules the correct path wrapping; wait for that frame before enabling.
         if (width() !== frame.width) {
@@ -316,7 +316,7 @@ const plugin: Definition = {
         layoutProof = {
           width: context.renderer.terminalWidth,
           height: context.renderer.terminalHeight,
-          surface: surface!,
+          surface,
           frame,
         }
         setReady(true)
@@ -334,7 +334,7 @@ const plugin: Definition = {
         invalidate()
         pendingSurfaceUsable = undefined
         invalidateLayout = undefined
-        if (pending === captured && !closed) {
+        if (ownership.kind === "pending" && ownership.published === captured) {
           // The host keys SessionFrame by route.sessionID and disposes this
           // slot on ordinary navigation. Drop its proof, retaining the exact
           // pending Plan. Loss while the root is still selected fails closed.
@@ -410,29 +410,28 @@ const plugin: Definition = {
     const removeCreated = context.data.on("session.created", (event) => {
       if (
         generation.revoked ||
-        closed ||
+        ownership.kind !== "waiting" ||
         !baseline ||
-        attempted ||
-        creation ||
+        ownership.creation ||
         event.data.parentID ||
         event.data.agent !== "orchestrator" ||
         !same(snapshotLocation(event.data.location), location)
       )
         return
-      creation = structuredClone(event)
+      ownership = { kind: "waiting", creation: structuredClone(event) }
       rootSessionID = event.data.sessionID
     })
     const removeCompleted = context.data.on("session.execution.succeeded", (event) => {
       if (
         generation.revoked ||
-        closed ||
-        attempted ||
+        ownership.kind !== "waiting" ||
         !baseline ||
-        !creation ||
-        event.data.sessionID !== creation.data.sessionID
+        !ownership.creation ||
+        event.data.sessionID !== ownership.creation.data.sessionID
       )
         return
-      attempted = true
+      const creation = ownership.creation
+      ownership = { kind: "publishing", creation }
       setLayoutRevision((value) => value + 1)
       const activation = activationEvidence(generation, location, baseline, observationCompletedAt, creation)
       void publishPlan(context, activation, guard)
@@ -448,7 +447,7 @@ const plugin: Definition = {
             return
           }
           requireFresh(observeGit(location.directory!, baseline), baseline!)
-          retained = published
+          ownership = { kind: "retained", creation, published }
           setLayoutRevision((value) => value + 1)
         })
         .catch(terminate)
@@ -456,9 +455,11 @@ const plugin: Definition = {
     // Before transfer, notifications invalidate TUI evidence on receipt;
     // independent publication reads also catch delayed notifications.
     const removeEvents = context.data.listen(({ details: event }) => {
-      if (generation.revoked || closed || transferred || !creation) return
+      if (generation.revoked || ownership.kind === "closed" || ownership.kind === "transferred") return
+      const creation = ownership.creation
+      if (!creation) return
       const sessionID = "sessionID" in event.data ? event.data.sessionID : undefined
-      if (!attempted) {
+      if (ownership.kind === "waiting") {
         if (
           sessionID === creation.data.sessionID &&
           [
@@ -469,7 +470,6 @@ const plugin: Definition = {
             "session.permissions",
           ].includes(event.type)
         ) {
-          attempted = true
           terminate(new Error("The fresh Orchestrator turn did not complete successfully"))
         }
         return
@@ -534,10 +534,10 @@ const plugin: Definition = {
       setLayoutRevision((value) => value + 1)
     }
     const rendererLost = () => {
-      if (!transferred) terminate(new Error("TUI renderer was lost"))
+      if (ownership.kind !== "transferred") terminate(new Error("TUI renderer was lost"))
     }
     const decidingFrame = () => {
-      if (!deciding || transferred || closed) return
+      if (ownership.kind !== "deciding") return
       try {
         guard.assertCurrent()
       } catch (error) {
@@ -552,10 +552,16 @@ const plugin: Definition = {
     const disposeWatch = createRoot((dispose) => {
       createEffect(() => {
         layoutRevision()
-        if (closed || generation.revoked || transferred || !attempted) return
+        if (
+          generation.revoked ||
+          ownership.kind === "closed" ||
+          ownership.kind === "transferred" ||
+          ownership.kind === "waiting"
+        )
+          return
         // Track retained/pending preparation and the positive decision until transfer.
-        context.data.session.message.list(creation!.data.sessionID)
-        context.data.session.pending.list(creation!.data.sessionID)
+        context.data.session.message.list(ownership.creation.data.sessionID)
+        context.data.session.pending.list(ownership.creation.data.sessionID)
         try {
           // The host returns a store proxy. Read its route fields even while
           // pending; current() alone cannot retain the departure subscription.
@@ -576,7 +582,6 @@ const plugin: Definition = {
       removePresentation = undefined
       remove?.()
       rootSessionID = undefined
-      creation = undefined
       pendingSurfaceUsable = undefined
       invalidateLayout = undefined
       removeCreated()

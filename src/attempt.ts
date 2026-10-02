@@ -106,7 +106,7 @@ export function initiallyAuthorizable(activation: ActivationEvidence): boolean {
     creation.created > observationCompletedAt &&
     creation.data.agent === "orchestrator" &&
     !creation.data.parentID &&
-    sameLocation({ location: creation.data.location } as SessionInfo, activation.location)
+    sameLocation(creation.data.location, activation.location)
   )
 }
 // Canonical JSON comparisons preserve every JSON field and array position, not key insertion order.
@@ -134,8 +134,8 @@ function empty(value: unknown): boolean {
 function plain(message: Pick<Extract<SessionMessageInfo, { type: "user" }>, "files" | "agents" | "skills">): boolean {
   return empty(message.files) && empty(message.agents) && empty(message.skills)
 }
-function sameLocation(session: SessionInfo, location: Location): boolean {
-  return same(snapshotLocation(session.location), location)
+function sameLocation(current: LocationRef, location: LocationRef): boolean {
+  return same(snapshotLocation(current), location)
 }
 function requireActivationLocation(context: Context, location: Location): string {
   const current = snapshotLocation(context.location ?? context.data.location.default())
@@ -188,7 +188,7 @@ function successful(session: SessionInfo, id: string, agent: string, location: L
     session.revert ||
     session.time.archived ||
     session.agent !== agent ||
-    !sameLocation(session, location) ||
+    !sameLocation(session.location, location) ||
     session.outcome !== "succeeded" ||
     !session.time.idle ||
     !Number.isFinite(session.time.created) ||
