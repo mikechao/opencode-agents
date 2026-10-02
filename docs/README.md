@@ -17,26 +17,36 @@ Its measurements predate the published-plan authorization bridge.
 
 ## Current implementation status
 
-Runtime simplification is complete: milestone-named runtime architecture has
-been retired. The runtime modules are `attempt.ts`, `cap.ts`, `git.ts`, and
-`proposal.ts` under `src/`.
+Issue #9 implements minimal native CAP admission on pinned OpenCode 2.0.21.
+Trusted TUI Planner binding, Plan publication, clean initial eligibility and
+readable-frame pointer authorization are preserved. Authorize transfers a
+frozen claim to one local RPC; a private server slot reserves/consumes one exact
+native invocation and verifies its result plus fresh Git scope before STOP.
+The root's static denial and all session permissions stay intact. OpenCode
+owns child lifecycle and native presentation; Issue #8's custom-row work is
+superseded.
 
-The live TUI publishes a trusted Plan, then offers root-only local pointer
-Authorize / Cancel controls when a clean initial observation demonstrably
-preceded the adopted root's creation. Authorization verifies the exact pending
-publication and native binding, switches the same retained Implementer slot,
-consumes one-use authority, and dispatches one frozen prompt. The unchanged-HEAD
-and exact Git path scope gate stops before Reviewer / Commit.
+The trusted TUI is the intended producer of Authorize claims. Same-user local
+processes and localhost OpenCode RPC access belong to the trusted host boundary;
+RPC caller origin is not independently authenticated. CAP is not an OS/process
+sandbox.
 
-A stable initially dirty worktree still receives a readable Plan and explicit
-planning-only status. That attempt can never become authorizable by cleaning
-later. Cancel and STOP preserve the Plan while permanently discarding authority.
-The independent modal implementation path has been removed.
+Issue #9 preserves **one governed implementation attempt per plugin activation**.
+Multiple sequential authorized attempts within an activation are out of scope.
+Cancel sends no claim/wake. Failure, lost response, settlement and teardown
+never reopen authority. Restart cannot reconstruct a claim from transcripts;
+ordinary native recovery of the same admitted child remains supported.
 
-Automated validation covers the bridge with trusted host/observer doubles and
-the small real-Git boundary. Focused live OpenCode 2.0.20 dogfood of the new
-pointer/layout integration remains required; it has not been run. Reviewer,
-reviewed-target construction, and Commit remain later work.
+Automated checks use trusted host/transport/Git-observer/JSX doubles; real Git
+remains limited to Git semantics. No live execution or dogfood was performed
+for this change. Independent `/review` is the next user-owned step. Native
+presentation under the installed host remains unverified live. Reviewer,
+reviewed-target construction and Commit are later work.
+
+The runtime modules are `attempt.ts`, `cap.ts`, `authorize-rpc.ts`, `native.ts`,
+`git.ts` and `proposal.ts`, with directory TUI and Effect server entries.
+Historical investigations describe proposals and older paths; the approved
+minimal scope supersedes Issue #9's proposed enrollment and provider policing.
 
 ## Historical evidence
 

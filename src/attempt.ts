@@ -1,10 +1,11 @@
 import type { Context } from "@opencode/plugin/tui/context"
 import type { LocationRef, OpenCodeEvent, SessionInboxInfo, SessionInfo, SessionMessageInfo, AgentInfo, ModelRef } from "@opencode/client"
 import { createHash, randomUUID } from "node:crypto"
-import { assertLive, consumeIntent, grantIntent, type Generation } from "./cap.ts"
+import { assertLive, type Generation } from "./cap.ts"
 import { observeGit, requireFresh, requireInScope, type GitSnapshot } from "./git.ts"
 import { candidateIntact, makeCandidate, parseProposal, renderPlan } from "./proposal.ts"
 import type { IntentCandidate } from "./proposal.ts"
+import { authorizeRpc } from "./authorize-rpc.ts"
 
 export function implementerPrompt(candidate: IntentCandidate): string {
   return [
@@ -64,15 +65,11 @@ export interface AttemptGuard {
   bound?: Bound
   publishing?: Readonly<{ id: string; text: string; description: string; metadata: { source: string; planHash: string } }>
   publication?: Frozen<Synthetic>
-  child?: Frozen<SessionInfo>
-  creationAttempted?: boolean
-  creationReturned?: boolean
-  prompt?: Readonly<{ id: string; text: string }>
-  dispatched?: boolean
 }
 
 export interface DecisionOwner extends AttemptGuard {
   assertDecision(published: PublishedAttempt): void
+  transfer(): void
 }
 
 function immutable<T>(value: T): Frozen<T> {
@@ -330,136 +327,10 @@ export async function verifyPublishedAttempt(context: Context, published: Publis
   check()
 }
 
-// Only the policy suffix after the last deny-all determines this role's tool contract.
-// Host defaults/global rules may precede it; freeze the whole loaded definition too.
-const implementerRules = [
-  { action: "*", resource: "*", effect: "deny" },
-  ...["read", "glob", "grep", "edit", "shell"].map((action) => ({ action, resource: "*", effect: "allow" })),
-  { action: "shell", resource: "git commit", effect: "deny" },
-  { action: "shell", resource: "git commit *", effect: "deny" },
-]
-// OpenCode 2.0.21's browser plugin appends this exact rule after config.
-// It repeats the authored deny-all for browser; accept only these two shapes.
-const openCodeBrowserDeny = { action: "browser", resource: "*", effect: "deny" }
-function supportedTopology(location: Location): void {
-  if ("workspaceID" in location) stop("unsupported workspace-bound topology: public session.import cannot preserve workspaceID")
-}
-// Whitelist diagnostic values: never serialize request settings/headers/body,
-// system text, or arbitrary extra response fields. Comparisons still use originals.
-function diagnosticScalar(value: unknown): unknown {
-  if (value === undefined) return { type: "undefined" }
-  if (value === null || ["string", "boolean", "number"].includes(typeof value)) return value
-  return { type: Array.isArray(value) ? "array" : typeof value }
-}
-function diagnosticFields(value: unknown, fields: string[]): Record<string, unknown> {
-  if (!value || typeof value !== "object") return { value: diagnosticScalar(value) }
-  const object = value as Record<string, unknown>
-  return Object.fromEntries([
-    ...fields.filter((key) => Object.hasOwn(object, key)).map((key) => [key, diagnosticScalar(object[key])]),
-    ["extraFieldCount", Object.keys(object).filter((key) => !fields.includes(key)).length],
-  ])
-}
-function roleDiagnostic(location: unknown, expectedLocation: Location, role: AgentInfo | undefined, expected?: Frozen<AgentInfo>): string {
-  const permissions = role?.permissions
-  const reset = Array.isArray(permissions) ? permissions.reduce((last, rule, index) =>
-    rule.action === "*" && rule.resource === "*" && rule.effect === "deny" ? index : last, -1) : -1
-  const modelState = !role || !Object.hasOwn(role, "model") ? "absent"
-    : role.model === undefined ? "undefined" : role.model === null ? "null" : "value"
-  return exactEvidence({
-    location: diagnosticFields(location, ["directory", "workspaceID"]),
-    expectedLocation: diagnosticFields(expectedLocation, ["directory", "workspaceID"]),
-    role: { id: diagnosticScalar(role?.id), mode: diagnosticScalar(role?.mode), hidden: diagnosticScalar(role?.hidden),
-      model: { state: modelState, ...(modelState === "value" ? { value: diagnosticFields(role?.model, ["providerID", "id", "variant"]) } : {}) } },
-    permissionsAreArray: Array.isArray(permissions), permissionCount: Array.isArray(permissions) ? permissions.length : null,
-    lastDenyAllResetIndex: reset,
-    actualOrderedSuffix: Array.isArray(permissions) && reset >= 0
-      ? permissions.slice(reset).map((rule) => diagnosticFields(rule, ["action", "resource", "effect"])) : null,
-    expectedOrderedSuffix: implementerRules,
-    allowedTrailingHostRule: openCodeBrowserDeny,
-    fullRoleEquality: expected === undefined ? "not-checked" : same(role, expected),
-  })
-}
-async function creationPolicy(context: Context, published: PublishedAttempt, check: () => void, expected?: Frozen<AgentInfo>): Promise<Frozen<AgentInfo>> {
-  const { location } = published.activation
-  supportedTopology(location)
-  const loaded = await after(check, context.client.agent.get({ agentID: "authorized_implementer", location }))
-  const role = loaded.data
-  const rejectRole = (reason: string): never => stop(`${reason}; evidence=${roleDiagnostic(loaded.location, location, role, expected)}`)
-  if (!role || !Array.isArray(role.permissions)) rejectRole("loaded authorized Implementer policy is unavailable: permissions are not an array or role is absent")
-  const reset = role.permissions.reduce((last, rule, index) => rule.action === "*" && rule.resource === "*" && rule.effect === "deny" ? index : last, -1)
-  if (!same(loaded.location, location)) rejectRole("loaded authorized Implementer policy location mismatch")
-  if (role.id !== "authorized_implementer") rejectRole("loaded authorized Implementer policy role id mismatch")
-  if (role.mode !== "subagent") rejectRole("loaded authorized Implementer policy role mode mismatch")
-  if (!role.hidden) rejectRole("loaded authorized Implementer policy role hidden mismatch")
-  if (role.model !== undefined) rejectRole("loaded authorized Implementer policy model override is present")
-  if (reset < 0) rejectRole("loaded authorized Implementer policy deny-all reset missing")
-  const suffix = role.permissions.slice(reset)
-  if (!same(suffix, implementerRules) && !same(suffix, [...implementerRules, openCodeBrowserDeny])) rejectRole("loaded authorized Implementer policy ordered permission suffix mismatch")
-  if (expected && !same(role, expected)) rejectRole("loaded authorized Implementer policy expected-role drift")
-  const catalog = await after(check, context.client.model.list({ location }))
-  const model = published.bound.model
-  const available = catalog.data.filter((item) => item.id === model.id && item.providerID === model.providerID && item.enabled)
-  const rejectModel = (reason: string): never => stop(`${reason}; evidence=${exactEvidence({
-    location: diagnosticFields(catalog.location, ["directory", "workspaceID"]),
-    expectedLocation: diagnosticFields(location, ["directory", "workspaceID"]),
-    frozenModel: { providerID: model.providerID, id: model.id, variant: model.variant },
-    enabledExactMatchCount: available.length,
-    availableVariantIDs: available.length === 1 ? available[0]!.variants.map((variant) => diagnosticScalar(variant.id)) : null,
-  })}`)
-  if (!same(catalog.location, location)) rejectModel("model catalog location mismatch")
-  if (available.length === 0) rejectModel("frozen provider/model has zero enabled exact matches")
-  if (available.length > 1) rejectModel("frozen provider/model has multiple enabled exact matches")
-  if (model.variant !== "default" && !available[0]!.variants.some((variant) => variant.id === model.variant)) rejectModel("frozen named variant is unavailable")
-  return immutable(role)
-}
-const zeroTokens = { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }
-// Created event time is host commit time; imported time.created is caller initialization time.
-export function childCreatedMatches(event: Created, expected: Frozen<SessionInfo>): boolean {
-  const data = event.data
-  // The Created event carries "" at the project root; SessionInfo.fromRow omits it.
-  const subpath = data.subpath === "" ? undefined : data.subpath
-  return Number.isFinite(event.created) && data.sessionID === expected.id && data.parentID === expected.parentID && data.agent === expected.agent &&
-    !!data.model && same({ ...data.model, variant: data.model.variant ?? "default" }, expected.model) && same(data.location, expected.location) && data.projectID === expected.projectID &&
-    subpath === expected.subpath && same(data.metadata, expected.metadata) && same(data.permissions, expected.permissions) && data.title === expected.title
-}
-function childIdentity(session: SessionInfo, expected: Frozen<SessionInfo>, emptyState: boolean): void {
-  if (!session || !session.time || session.id !== expected.id || session.parentID !== expected.parentID || session.agent !== "authorized_implementer" ||
-      !same(selectedModel(session.model), expected.model) || !same(session.location, expected.location) || session.projectID !== expected.projectID ||
-      session.subpath !== expected.subpath || !same(session.metadata, expected.metadata) || !same(session.permissions, []) ||
-      session.title !== expected.title || session.fork !== undefined || session.revert !== undefined || session.time.archived !== undefined ||
-      session.time.created !== expected.time.created || !Number.isFinite(session.time.updated) || session.time.updated < expected.time.created ||
-      (emptyState && (session.outcome !== undefined || session.time.idle !== undefined || session.time.viewed !== undefined ||
-        session.cost !== 0 || !same(session.tokens, zeroTokens)))) stop("created child identity, model, location, permissions, timestamps, or state is unverified")
-}
-async function verifiedChild(context: Context, check: () => void, child: Frozen<SessionInfo>, input?: { id: string; text: string }, expectedResult?: string): Promise<string> {
-  const session = await after(check, context.client.session.get({ sessionID: child.id }))
-  childIdentity(session, child, !input)
-  if (input) successful(session, child.id, "authorized_implementer", child.location, child.parentID)
-  await idle(context, child.id, check)
-  const history = await messages(context, child.id, check)
-  const resultHistory = JSON.stringify(history)
-  if (expectedResult !== undefined && resultHistory !== expectedResult) stop("implementation result transcript changed")
-  if (!input) {
-    if (history.length) stop("created child received input or history before trusted prompt")
-    return resultHistory
-  }
-  const users = history.filter((message) => message.type === "user")
-  const idles = history.filter((message) => message.type === "idle")
-  if (users.length !== 1 || users[0]?.type !== "user" || history[0] !== users[0] ||
-      users[0].id !== input.id || users[0].text !== input.text || !plain(users[0]) || users[0].metadata !== undefined ||
-      idles.length !== 1 || idles[0]?.type !== "idle" || idles[0].outcome !== "succeeded" || history.at(-1)?.type !== "idle" ||
-      history.some((message) => !["user", "assistant", "idle"].includes(message.type))) stop("authorized child input/result mismatch")
-  executionModel(history, selectedModel(child.model))
-  const final = oneFinal(history, "authorized_implementer")
-  if (!finalText(final)) stop("authorized Implementer returned no text")
-  return resultHistory
-}
-
 // One publication per activation; no implementation authority is created here.
 export async function publishPlan(context: Context, activation: ActivationEvidence, guard: AttemptGuard): Promise<PublishedAttempt> {
   const { generation, baseline, location, creation } = activation
   const parentID = creation.data.sessionID
-  supportedTopology(location)
   assertLive(generation)
   if (generation.busy) stop("another CAP attempt is already running")
   generation.busy = true
@@ -498,87 +369,28 @@ export async function publishPlan(context: Context, activation: ActivationEviden
   }
 }
 
+// The positive readable-frame callback is the only TUI caller of this transport.
+// The server owns the attempt after transfer; transport ambiguity never retries.
 export async function authorizePublishedAttempt(context: Context, published: PublishedAttempt, owner: DecisionOwner): Promise<string> {
   const { activation } = published
   assertLive(activation.generation)
   owner.assertDecision(published)
-  supportedTopology(activation.location)
-  if (owner.creationAttempted || owner.dispatched) stop("claimed attempt cannot retry creation or prompt")
   if (!initiallyAuthorizable(activation)) stop("initial clean-before-bootstrap evidence is unavailable")
   if (activation.generation.busy) stop("another CAP attempt is already running")
   activation.generation.busy = true
   try {
     await verifyPublishedAttempt(context, published, owner)
     if (!publishedPresentationMatches(context, published)) stop("published Plan view changed")
-    const fresh = checks(context, activation, owner, "clean")
-    const check = () => { owner.assertDecision(published); fresh() }
-    check()
-    assertPublishedCoherence(published)
-    return await executeBoundImplementation(context, published, owner, check)
+    checks(context, activation, owner, "clean")()
+    owner.assertDecision(published)
+    owner.transfer()
+    const outcome = await context.client.rpc(authorizeRpc).authorize({
+      purpose: "implement", candidate: published.candidate, rootSessionID: published.bound.parentID,
+      location: activation.location, publicationID: published.publication.id,
+    }, { location: activation.location })
+    if (typeof outcome !== "string") stop("Authorize RPC returned an invalid outcome")
+    return outcome
   } finally {
     activation.generation.busy = false
   }
-}
-
-async function executeBoundImplementation(context: Context, published: PublishedAttempt, owner: DecisionOwner, check: () => void): Promise<string> {
-  const { activation, candidate, bound } = published
-  const { generation, baseline, location } = activation
-  const frozenText = implementerPrompt(candidate)
-  const prompt = Object.freeze({ id: `msg_${randomUUID()}`, text: frozenText })
-  const role = await creationPolicy(context, published, check)
-  // Policy/catalog reads are awaits: independently revalidate publication before creation.
-  await verifyParentPlanner(context, published, check)
-  if (!publishedPresentationMatches(context, published)) stop("published Plan view changed")
-  check()
-  const grant = grantIntent(candidate, true, generation)
-  const initializedAt = Date.now()
-  const child = immutable<SessionInfo>({ id: `ses_${randomUUID()}`, parentID: bound.parentID, agent: "authorized_implementer",
-    model: bound.model, location, projectID: bound.projectID, subpath: bound.subpath, metadata: bound.metadata, permissions: [],
-    cost: 0, tokens: zeroTokens, time: { created: initializedAt, updated: initializedAt } })
-  owner.child = child
-  owner.creationAttempted = true
-  // No retry, including same-ID replay, after any result or transport ambiguity.
-  const returnedChild = await context.client.session.import({ info: child, messages: [], location })
-  owner.creationReturned = true
-  check()
-  childIdentity(returnedChild, child, true)
-  const created = immutable(returnedChild)
-  owner.child = created
-  await verifiedChild(context, check, created)
-  await verifyParentPlanner(context, published, check)
-  await creationPolicy(context, published, check, role)
-  await verifiedChild(context, check, created)
-  // Final full read barrier, followed by fresh synchronous Git and local checks.
-  await verifyParentPlanner(context, published, check)
-  await creationPolicy(context, published, check, role)
-  await verifiedChild(context, check, created)
-  if (!publishedPresentationMatches(context, published)) stop("published Plan view changed")
-  check()
-  assertPublishedCoherence(published)
-  owner.prompt = prompt
-  owner.dispatched = true
-  consumeIntent(grant, candidate, generation)
-  const admission = context.client.session.prompt({ sessionID: created.id, ...prompt, delivery: "steer" })
-  // Never require cleanliness after invocation: the child may already be editing.
-  const freshResult = checks(context, activation, owner, "implemented")
-  const resultCheck = () => { owner.assertDecision(published); freshResult() }
-  const returned = await after(resultCheck, admission)
-  if (returned.sessionID !== created.id || returned.type !== "user" || returned.id !== prompt.id ||
-      returned.payload.text !== frozenText || returned.delivery !== "steer" || !Number.isFinite(returned.time.created) ||
-      returned.payload.metadata !== undefined || Object.keys(returned.payload).some((key) => !["text", "files", "agents", "skills", "metadata"].includes(key)) ||
-      !plain(returned.payload)) stop("trusted prompt returned an unexpected input")
-  await verifyParentPlanner(context, published, resultCheck)
-  await after(resultCheck, context.client.session.wait({ sessionID: created.id }))
-  await creationPolicy(context, published, resultCheck, role)
-  const implementation = await verifiedChild(context, resultCheck, created, prompt)
-  await verifyParentPlanner(context, published, resultCheck)
-  // Recheck the result after parent/Planner awaits as well.
-  await creationPolicy(context, published, resultCheck, role)
-  await verifiedChild(context, resultCheck, created, prompt, implementation)
-  resultCheck()
-  const result = observeGit(requireActivationLocation(context, location), baseline)
-  const paths = requireInScope(result, baseline, candidate.proposal.files)
-  owner.assertCurrent()
-  assertLive(generation)
-  return `Implementation gate complete: HEAD ${baseline.head} unchanged. Resulting paths (${paths.length}): ${paths.join(", ") || "(none)"}. STOP before Reviewer / Commit.`
 }

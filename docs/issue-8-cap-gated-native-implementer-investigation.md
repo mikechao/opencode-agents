@@ -1,5 +1,10 @@
 # Issue #8 CAP-Gated Native Implementer Investigation
 
+> Historical investigation: Issue #9's approved native admission supersedes
+> Issue #8's proposed custom status/navigation row work. Current implementation
+> uses original native tool lifecycle and presentation; this report is retained
+> as source evidence, not current architecture.
+
 ## Executive Conclusion
 
 Keep the Issue #6 `session.import` architecture and solve Issue #8 with a small trusted status/navigation contribution. OpenCode 2.0.21 **can resume the root through synthetic input and has a genuine server-plugin pre-execution tool rejection hook**; a native Implementer call is therefore not inherently model-authorized. However, neither facility supplies the complete existing CAP boundary: the grant lives in the TUI, the server permission hook cannot elevate the Orchestrator's configured denial, session permission elevation persists and is inherited by children, and ordinary native execution creates and prompts its child without the current intervening verification barrier. Public tool wrapping offers additional possibilities, but integrating it requires authority transfer, new permission/lifetime rules, root-continuation validation, and version-sensitive lifecycle interception. A genuine model-emitted native call would provide the desired row/navigation automatically; direct execution of the public tool callback would not. Replacing the current path for this presentation requirement is not recommended.

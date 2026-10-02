@@ -37,14 +37,19 @@ This is an authority-integrity contract within that local trust boundary.
 It does not defend installed trusted components against deliberate same-user
 modification. Ordinary development shell capability is not adversarial
 filesystem or Git-history containment; trusted observation has explicit
-limits defined by CAP.
+limits defined by CAP. The trusted TUI is the intended producer of Authorize
+claims; same-user local processes and localhost OpenCode RPC access belong to
+the trusted host boundary. RPC caller origin is not independently authenticated.
+CAP is not an OS/process sandbox.
 
 ## Current goals
 
 - Keep a small, auditable authority contract and runtime with clear ownership.
 - Integrate trusted human authorization of the exact published Plan while
-  preserving CAP's clean admission and freshness requirements. This is the
-  next architectural problem; runtime simplification is complete.
+  preserving CAP's clean admission and freshness requirements. Issue #9
+  implements minimal native admission with one governed implementation attempt
+  per plugin activation; sequential authorized attempts within an activation
+  are out of scope.
 - Preserve readable bound Plans and native child-session visibility.
 - Later establish an exact reviewed target, independent Reviewer-owned
   validation, and separate human-authorized Commit with verified Git outcome.

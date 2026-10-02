@@ -5,7 +5,7 @@ import { createEffect, createRoot, createSignal, onCleanup, Show } from "solid-j
 import type { Generation } from "../../../src/cap.ts"
 import { observeGit, requireFresh } from "../../../src/git.ts"
 import {
-  activationEvidence, authorizePublishedAttempt, childCreatedMatches, exactEvidence, initiallyAuthorizable,
+  activationEvidence, authorizePublishedAttempt, exactEvidence, initiallyAuthorizable,
   publishedPresentationMatches, publishPlan, snapshotLocation, verifyPublishedAttempt, type DecisionOwner, type PublishedAttempt,
 } from "../../../src/attempt.ts"
 
@@ -42,12 +42,8 @@ const plugin: Definition = {
     let pendingSurfaceUsable: (() => boolean) | undefined
     let invalidateLayout: (() => void) | undefined
     let removePresentation: (() => void) | undefined
-    let childEcho: string | undefined
+    let transferred = false
     let publicationEcho: unknown
-    let promptEnqueued = false
-    let promptDelivered = false
-    let executionStarted = false
-    let executionSucceeded = false
     const [presentation, setPresentation] = createSignal<Presentation>()
     const [layoutRevision, setLayoutRevision] = createSignal(0)
     const closeAuthority = () => {
@@ -59,12 +55,6 @@ const plugin: Definition = {
       guard.bound = undefined
       guard.publishing = undefined
       guard.publication = undefined
-      guard.child = undefined
-      guard.creationAttempted = undefined
-      guard.creationReturned = undefined
-      guard.prompt = undefined
-      guard.dispatched = undefined
-      childEcho = undefined
       publicationEcho = undefined
       creation = undefined
       completionID = undefined
@@ -76,17 +66,10 @@ const plugin: Definition = {
     }
     const terminate = (error: unknown) => {
       if (closed || generation.revoked) return
-      const mayHaveStarted = guard.dispatched
-      const creationAttempted = guard.creationAttempted
-      const creationReturned = guard.creationReturned
       const reason = error instanceof Error ? error.message : String(error)
-      const message = mayHaveStarted
-        ? `STOP — Implementation may already have started; no prompt will be resent. ${reason}`
-        : creationAttempted
-          ? creationReturned
-            ? `STOP — Child admission failed; child may remain; no trusted implementation prompt was dispatched; no creation retry. ${reason}`
-            : `STOP — Child creation outcome unknown; child may remain; no trusted implementation prompt was dispatched; no creation retry. ${reason}`
-          : `STOP — Implementation was not admitted; no child created or implementation prompt was dispatched. ${reason}`
+      const message = transferred
+        ? `STOP — Authorized server attempt outcome unknown; no claim or wake will be resent. ${reason}`
+        : `STOP — Implementation was not admitted. ${reason}`
       closeAuthority()
       if (rootSessionID) showStatus(message)
       present("STOP", message)
@@ -97,14 +80,19 @@ const plugin: Definition = {
         same(snapshotLocation(context.location ?? context.data.location.default()), location)
     }
     const guard: DecisionOwner = {
+      transfer() {
+        guard.assertCurrent()
+        transferred = true
+      },
       assertDecision(captured) {
         if (deciding !== captured) throw new Error("Local decision no longer owns the exact published attempt")
         guard.assertCurrent()
       },
       assertCurrent() {
         if (closed || generation.revoked) throw new Error("Attempt ownership was closed or revoked")
+        if (transferred) return
         if (attempted) {
-          const requiresRoot = (pending || deciding) && !guard.dispatched
+          const requiresRoot = pending || deciding
           if ((requiresRoot && !rootSelected()) || !same(snapshotLocation(context.location ?? context.data.location.default()), location)) throw new Error("Root view or TUI location changed")
         }
         const owned = retained ?? pending ?? deciding
@@ -170,10 +158,10 @@ const plugin: Definition = {
         setPresentation({ kind: "status", message: "Authorization claimed — implementation admission in progress…" })
         void authorizePublishedAttempt(context, captured, guard).then(
           (message) => {
-            guard.assertCurrent()
+            if (generation.revoked) return
             closeAuthority()
             showStatus(message)
-            present("Implementation gate", message)
+            present(message.startsWith("STOP") ? "STOP" : "Implementation gate", message)
           },
         ).catch(terminate)
       } catch (error) { terminate(error) }
@@ -298,12 +286,13 @@ const plugin: Definition = {
         setLayoutRevision((value) => value + 1)
       }).catch(terminate)
     })
-    // Notifications revoke on receipt; server read barriers independently catch delayed events.
+    // Before transfer, notifications invalidate TUI evidence on receipt;
+    // independent publication reads also catch delayed notifications.
     const removeEvents = context.data.listen(({ details: event }) => {
-      if (generation.revoked || closed || !creation) return
+      if (generation.revoked || closed || transferred || !creation) return
       // Registry events have empty data and scope in the Location.Ref envelope,
-      // not a session/project ID. Revoke before the session filter: policy can
-      // change during the final awaited child read after independent verification.
+      // not a session/project ID. Invalidate pending policy evidence before
+      // filtering by session identity.
       if (event.type === "agent.updated" || event.type === "model.updated") {
         if (event.location && same(snapshotLocation(event.location), location))
           terminate(new Error(`Unexpected ${event.type} at the attempt location; policy evidence invalidated`))
@@ -318,12 +307,11 @@ const plugin: Definition = {
         return
       }
       const bound = guard.bound
-      if (bound && event.type === "session.created" && event.data.parentID === creation.data.sessionID &&
-          sessionID !== bound?.planner.childID && sessionID !== guard.child?.id) {
+      if (bound && event.type === "session.created" && event.data.parentID === creation.data.sessionID && sessionID !== bound.planner.childID) {
         terminate(new Error("Unexpected child creation; attempt terminated"))
         return
       }
-      if (typeof sessionID !== "string" || ![creation.data.sessionID, bound?.planner.childID, guard.child?.id].includes(sessionID as string)) return
+      if (typeof sessionID !== "string" || ![creation.data.sessionID, bound?.planner.childID].includes(sessionID)) return
       if (event.id === completionID || ["session.viewed", "session.renamed", "session.usage.recorded", "session.usage.updated"].includes(event.type)) return
       if (event.type === "session.inbox.enqueued" && sessionID === creation.data.sessionID && guard.publishing) {
         const expected = guard.publishing
@@ -336,23 +324,6 @@ const plugin: Definition = {
           return
         }
       }
-      if (sessionID === guard.child?.id) {
-        if (event.type === "session.created" && childCreatedMatches(event, guard.child) && (!childEcho || childEcho === exactEvidence(event))) {
-          childEcho = exactEvidence(event)
-          if (!guard.dispatched) showStatus("Implementation child created — verifying admission…")
-          return
-        }
-        if (guard.dispatched && guard.prompt) {
-          const expected = guard.prompt
-          if (event.type === "session.inbox.enqueued" && event.data.inboxID === expected.id && !promptEnqueued &&
-              event.data.item.type === "user" && event.data.item.delivery === "steer" && event.data.item.payload.text === expected.text &&
-              !event.data.item.payload.files?.length && !event.data.item.payload.agents?.length && !event.data.item.payload.skills?.length && event.data.item.payload.metadata === undefined) { promptEnqueued = true; return }
-          if (event.type === "session.inbox.delivered" && event.data.inboxID === expected.id && promptEnqueued && !promptDelivered) { promptDelivered = true; return }
-          if (event.type === "session.execution.started" && promptEnqueued && !executionStarted) { executionStarted = true; showStatus("Implementation running — verifying exact result and Git scope…"); return }
-          if (event.type === "session.execution.succeeded" && executionStarted && !executionSucceeded) { executionSucceeded = true; return }
-          if (executionStarted && !executionSucceeded && /^session\.(step\.|text\.|reasoning\.|tool\.|usage\.|instructions\.)/.test(event.type)) return
-        }
-      }
       terminate(new Error(`Unexpected ${event.type}; attempt terminated`))
     })
     const resized = () => {
@@ -361,9 +332,9 @@ const plugin: Definition = {
       invalidateLayout?.()
       setLayoutRevision((value) => value + 1)
     }
-    const rendererLost = () => terminate(new Error("TUI renderer was lost"))
+    const rendererLost = () => { if (!transferred) terminate(new Error("TUI renderer was lost")) }
     const decidingFrame = () => {
-      if (!deciding || guard.dispatched || closed) return
+      if (!deciding || transferred || closed) return
       try { guard.assertCurrent() } catch (error) { terminate(error) }
     }
     context.renderer.on("frame", decidingFrame)
@@ -374,8 +345,8 @@ const plugin: Definition = {
     const disposeWatch = createRoot((dispose) => {
       createEffect(() => {
         layoutRevision()
-        if (closed || generation.revoked || !attempted) return
-        // Track these reads during the entire claimed continuation, after strip removal too.
+        if (closed || generation.revoked || transferred || !attempted) return
+        // Track retained/pending preparation and the positive decision until transfer.
         context.ui.router.current()
         context.data.session.message.list(creation!.data.sessionID)
         context.data.session.pending.list(creation!.data.sessionID)
