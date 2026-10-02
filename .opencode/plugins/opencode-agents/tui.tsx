@@ -92,8 +92,9 @@ const plugin: Definition = {
         if (closed || generation.revoked) throw new Error("Attempt ownership was closed or revoked")
         if (transferred) return
         if (attempted) {
-          const requiresRoot = pending || deciding
-          if ((requiresRoot && !rootSelected()) || !same(snapshotLocation(context.location ?? context.data.location.default()), location)) throw new Error("Root view or TUI location changed")
+          // A pending Plan belongs to the attempt, not the mounted route.
+          // Only a claimed decision must retain the root view until transfer.
+          if ((deciding && !rootSelected()) || !same(snapshotLocation(context.location ?? context.data.location.default()), location)) throw new Error("Root view or TUI location changed")
         }
         const owned = retained ?? pending ?? deciding
         if (owned) {
@@ -123,8 +124,8 @@ const plugin: Definition = {
     const armRetained = () => {
       if (!retained || closed || generation.revoked || !rootSelected()) return
       const captured = retained
-      // Transfer once before any await. Departure now closes root-bound ownership;
-      // it never transfers back to retention or starts another preparation.
+      // Prepare this exact Plan once. Pending ownership survives route changes;
+      // navigation never starts another preparation or publication.
       retained = undefined
       pending = captured
       void verifyPublishedAttempt(context, captured, guard).then(() => {
@@ -140,7 +141,7 @@ const plugin: Definition = {
       if (closed || generation.revoked || pending !== captured || deciding || generation.busy) return
       try {
         guard.assertCurrent()
-        if (!rootSelected()) throw new Error("Root view or TUI location changed")
+        if (!rootSelected()) { invalidateLayout?.(); return }
         // Only a complete current frame can support a pending human decision.
         // Invalid geometry leaves this exact attempt pending for a later frame.
         if (!pendingSurfaceUsable?.()) { invalidateLayout?.(); return }
@@ -218,6 +219,7 @@ const plugin: Definition = {
         if (closed || pending !== captured) return
         invalidate()
         guard.assertCurrent()
+        if (!rootSelected()) return
         if (!live(surface)) {
           terminate(new Error("Authorization surface is unavailable"))
           return
@@ -239,9 +241,13 @@ const plugin: Definition = {
         pendingSurfaceUsable = undefined
         invalidateLayout = undefined
         if (pending === captured && !closed) {
-          // The view is already disposing. Close ownership synchronously while
-          // leaving the root-scoped status contribution registered.
-          terminate(new Error("Authorization view was lost"))
+          // The host keys SessionFrame by route.sessionID and disposes this
+          // slot on ordinary navigation. Drop its proof, retaining the exact
+          // pending Plan. Loss while the root is still selected fails closed.
+          try {
+            guard.assertCurrent()
+            if (rootSelected()) terminate(new Error("Authorization view was lost"))
+          } catch (error) { terminate(error) }
         }
       })
       return <box ref={(node) => { surface = node }} flexDirection="column" flexShrink={0} height={rootLines() + 3}>
@@ -347,10 +353,12 @@ const plugin: Definition = {
         layoutRevision()
         if (closed || generation.revoked || transferred || !attempted) return
         // Track retained/pending preparation and the positive decision until transfer.
-        context.ui.router.current()
         context.data.session.message.list(creation!.data.sessionID)
         context.data.session.pending.list(creation!.data.sessionID)
         try {
+          // The host returns a store proxy. Read its route fields even while
+          // pending; current() alone cannot retain the departure subscription.
+          rootSelected()
           guard.assertCurrent()
           armRetained()
         } catch (error) { terminate(error) }

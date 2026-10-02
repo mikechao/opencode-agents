@@ -128,8 +128,13 @@ Final fresh clean checks MUST remain independent of that initial proof.
 
 The root-only unregistered local pointer closure MUST require exact pending
 ownership, current trusted evidence and a completed readable-frame proof.
-The same retained Plan may publish while Planner is inspected; root return
-MUST revalidate it and require a fresh root frame. Pending resize invalidates
+The same retained or pending Plan MUST survive ordinary Planner inspection and
+route-driven disposal of the root composer slot. Navigation MUST discard the
+old readable-frame proof, not pending ownership; root return requires a fresh
+root frame. The positive decision MUST revalidate exact Planner/publication,
+candidate, HEAD and location evidence before claim transfer. Actual trusted-state
+loss, or surface loss while the root remains selected, MUST fail closed.
+Pending resize invalidates
 readiness until a new valid frame. The positive click synchronously claims the
 exact object and removes callbacks. Cancel MUST send no RPC and no wake.
 Model replies, Form/Question answers and generic permissions MUST NOT authorize.

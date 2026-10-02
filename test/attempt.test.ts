@@ -12,7 +12,7 @@ import { activationEvidence, initiallyAuthorizable, assertPublishedCoherence, ex
   authorizePublishedAttempt, implementerPrompt, plannerInput, publishPlan as publish, snapshotLocation, verifyPublishedAttempt,
   type DecisionOwner, type PublishedAttempt } from "../src/attempt.ts"
 import { createRoot, createEffect, createMemo, createComponent, createSignal } from "solid-js"
-import { createStore } from "solid-js/store"
+import { createStore, reconcile } from "solid-js/store"
 import { EventEmitter } from "node:events"
 
 // Test-scoped JSX property/handler capture. No renderer, terminal, or native UI integration.
@@ -774,14 +774,161 @@ snapshotTest("root wake during publication permanently stops before installing c
 })
 
 
-snapshotTest("lost view, navigation, projection mutation, and cleanup cannot restore controls", async (observer) => {
-  for (const loss of ["unmount", "navigation", "location", "projection", "wake", "cleanup"] as const) {
+snapshotTest("completed Planner navigation disposes the host view but retains exact pending authorization", async (observer) => {
+  const root = snapshotFixture(observer)
+  for (const backing of ["signal", "store"] as const) for (const decision of ["authorize", "cancel"] as const) {
+    const f = fake(root)
+    const [signal, setSignal] = createSignal<any>({ type: "session", sessionID: "parent" })
+    const [store, setStore] = createStore<any>({ type: "session", sessionID: "parent" })
+    ;(f.context.ui.router as any).current = () => backing === "store" ? store : signal()
+    const setRoute = (route: any) => backing === "store" ? setStore(reconcile(route)) : setSignal(route)
+    const cleanup = await activate(f)
+    const publication = structuredClone(f.calls.synthetic[0])
+    const view = mount(f)
+    let child: ReturnType<typeof mount> | undefined, returned: ReturnType<typeof mount> | undefined
+    try {
+      // Native Subagent.onClick changes route; app.tsx's keyed SessionFrame
+      // disposes the root composer/slot and mounts the child's own slot.
+      setRoute({ type: "session", sessionID: "planner-child" })
+      view.dispose()
+      f.emit({ type: "session.viewed", id: "view-child", data: { sessionID: "planner-child" } })
+      expect(f.calls.toasts).toEqual([])
+      child = mount(f, "planner-child")
+      expect(child.buttons).toEqual([])
+      f.renderer.emit("resize"); f.renderer.emit("frame")
+      view.click(0); view.click(1)
+      expectNoImplementation(f)
+      expect(f.calls.synthetic).toEqual([publication])
+      expect(f.slots).toHaveLength(1)
+      expect(f.slots[0].removed).toBe(false)
+
+      setRoute({ type: "session", sessionID: "parent" })
+      child.dispose()
+      f.emit({ type: "session.viewed", id: "view-root", data: { sessionID: "parent" } })
+      returned = mount(f, "parent", false)
+      expect(returned.buttons).toHaveLength(2)
+      returned.click(0); returned.click(1)
+      expectNoImplementation(f) // The old readable frame cannot authorize.
+      f.renderer.emit("frame")
+      view.click(0); view.click(1) // Old view closures stay inert on return.
+      expectNoImplementation(f)
+      returned.click(decision === "authorize" ? 0 : 1)
+      await settleUntil(() => f.calls.toasts.length > 0)
+      expect(f.calls.toasts[0]).toContain(decision === "authorize" ? "Implementation gate complete" : "Cancelled")
+      expect(f.calls.claims).toHaveLength(decision === "authorize" ? 1 : 0)
+      expect(f.calls.synthetic).toEqual([publication])
+    } finally { cleanup(); view.dispose(); child?.dispose(); returned?.dispose() }
+  }
+})
+
+snapshotTest("store-backed pending round trip retains route tracking and closes a departed pre-transfer decision", async (observer) => {
+  const root = snapshotFixture(observer), f = fake(root)
+  // OpenCode RouteProvider uses createStore/reconcile, and router.current()
+  // returns that same proxy. Reading current() alone observes no route fields.
+  const [route, setRoute] = createStore<any>({ type: "session", sessionID: "parent" })
+  ;(f.context.ui.router as any).current = () => route
+  const select = (sessionID: string) => setRoute(reconcile({ type: "session", sessionID }))
+  const cleanup = await activate(f), view = mount(f)
+  let release!: () => void, waiting = false
+  const paused = new Promise<void>((resolve) => { release = resolve })
+  let returned: ReturnType<typeof mount> | undefined, status: ReturnType<typeof mount> | undefined
+  try {
+    select("planner-child"); view.dispose()
+    expect(f.calls.toasts).toEqual([])
+    select("parent")
+    returned = mount(f)
+    expect(returned.buttons).toHaveLength(2)
+    expect(f.calls.toasts).toEqual([])
+
+    const get = f.context.client.session.get
+    ;(f.context.client.session as any).get = async (input: any) => {
+      const result = await get(input)
+      waiting = true; await paused
+      return result
+    }
+    returned.click(0)
+    await settleUntil(() => waiting)
+    expectNoImplementation(f)
+    select("planner-child")
+    const departureStatus = [...f.calls.toasts]
+    returned.dispose()
+    // Return before releasing verification, with no new completed frame.
+    select("parent")
+    release()
+    await settleUntil(() => f.calls.toasts.length > 0)
+    for (let i = 0; i < 100; i++) await Promise.resolve()
+    expectNoImplementation(f)
+    expect(departureStatus).toHaveLength(1)
+    expect(departureStatus[0]).toContain("Root view or TUI location changed")
+    expect(f.calls.toasts).toEqual(departureStatus)
+    status = mount(f)
+    expect(status.buttons).toEqual([])
+    expect(status.text()).toContain("STOP — Implementation was not admitted")
+    f.renderer.emit("frame")
+    view.click(0); returned.click(0); returned.click(1)
+    expectNoImplementation(f)
+    expect(f.calls.synthetic).toHaveLength(1)
+  } finally { release(); cleanup(); view.dispose(); returned?.dispose(); status?.dispose() }
+})
+
+snapshotTest("pending authorization rejects changed trusted evidence after Planner navigation", async (observer) => {
+  const root = snapshotFixture(observer)
+  for (const mutation of ["head", "dirty", "publication", "identity", "projection", "candidate", "root", "location", "wake", "cleanup"] as const) {
+    observer.configure(root)
+    const f = fake(root)
+    const [route, setRoute] = createSignal<any>({ type: "session", sessionID: "parent" })
+    ;(f.context.ui.router as any).current = route
+    const cleanup = await activate(f), view = mount(f)
+    let returned: ReturnType<typeof mount> | undefined
+    try {
+      setRoute({ type: "session", sessionID: "planner-child" })
+      view.dispose()
+      expect(f.calls.toasts).toEqual([])
+      const saved = structuredClone({ sessions: f.sessions, histories: f.histories, cache: f.cache, inboxes: f.inboxes })
+      if (mutation === "head") observer.configure(root, "2".repeat(40))
+      if (mutation === "dirty") observer.configure(root, HEAD, ["old.txt"])
+      if (mutation === "publication") f.inboxes.parent[0].time.created++
+      if (mutation === "identity") f.inboxes.parent[0].payload.metadata.planHash = "different"
+      if (mutation === "projection") f.cache.parent.at(-1).description += " changed"
+      if (mutation === "candidate") {
+        const different = JSON.stringify({ ...JSON.parse(proposal), intent: "A different candidate" })
+        f.histories["planner-child"][1].content[0].text = different
+        f.histories.parent[1].content[0].state.content[0].text = `<subagent sessionID="planner-child" state="completed">\n${different}\n</subagent>`
+      }
+      if (mutation === "root") f.sessions.parent.agent = "build"
+      if (mutation === "location") (f.context as any).location.directory = "different"
+      if (mutation === "wake") f.emit({ type: "session.execution.started", id: "wake", data: { sessionID: "parent" } })
+      if (mutation === "cleanup") cleanup()
+      f.renderer.emit("resize"); f.renderer.emit("frame")
+      setRoute({ type: "session", sessionID: "parent" })
+      if (mutation !== "cleanup") {
+        returned = mount(f)
+        returned.click(0)
+        await settleUntil(() => f.calls.toasts.length > 0)
+        expect(f.calls.toasts[0]).toContain("STOP — Implementation was not admitted")
+      }
+      expectNoImplementation(f)
+      // Restoring the route and evidence cannot revive a genuinely closed owner.
+      observer.configure(root)
+      Object.assign(f.sessions, saved.sessions); Object.assign(f.histories, saved.histories)
+      Object.assign(f.cache, saved.cache); Object.assign(f.inboxes, saved.inboxes)
+      ;(f.context as any).location.directory = root
+      setRoute({ type: "session", sessionID: "planner-child" }); setRoute({ type: "session", sessionID: "parent" })
+      f.renderer.emit("resize"); f.renderer.emit("frame")
+      returned?.click(0); returned?.click(1); view.click(0)
+      expectNoImplementation(f)
+      expect(f.calls.synthetic).toHaveLength(1)
+    } finally { cleanup(); view.dispose(); returned?.dispose() }
+  }
+})
+
+snapshotTest("lost root surface, projection mutation, and cleanup cannot restore controls", async (observer) => {
+  for (const loss of ["unmount", "location", "projection", "wake", "cleanup"] as const) {
     const root = snapshotFixture(observer)
     const f = fake(root)
     const cleanup = await activate(f)
     const view = mount(f)
     if (loss === "unmount") view.dispose()
-    if (loss === "navigation") (f.context.ui.router as any).current = () => ({ type: "session", sessionID: "planner-child" })
     if (loss === "location") (f.context as any).location.directory = "different"
     if (loss === "projection") f.cache.parent.at(-1).description += " changed"
     if (loss === "wake") f.emit({ type: "session.execution.started", id: "evt_wake", data: { sessionID: "parent" } })
@@ -1101,7 +1248,7 @@ snapshotTest("Planner inspection before completion or during publication retains
 })
 
 
-snapshotTest("stale root preparation cannot install a surface after navigation, cleanup, failure, or ownership closure", async (observer) => {
+snapshotTest("root preparation tolerates navigation but cannot survive cleanup, failure, or ownership closure", async (observer) => {
   for (const loss of ["navigation", "cleanup", "replacement-activation", "native-event", "renderer", "completed-verification-cleanup"] as const) {
     const root = snapshotFixture(observer)
     const f = fake(root)
@@ -1132,7 +1279,7 @@ snapshotTest("stale root preparation cannot install a surface after navigation, 
       attempt.select("parent")
       await settleUntil(() => waiting)
       expect(f.slots).toEqual([])
-      if (loss === "navigation") { attempt.select("planner-child"); attempt.select("parent") }
+      if (loss === "navigation") attempt.select("planner-child")
       const revoked = loss === "cleanup" || loss === "replacement-activation" || loss === "completed-verification-cleanup"
       if (revoked) attempt.cleanup()
       if (loss === "replacement-activation") replacement = await plugin.setup(f.context)
@@ -1144,6 +1291,14 @@ snapshotTest("stale root preparation cannot install a surface after navigation, 
       attempt.select("planner-child"); attempt.select("parent")
       f.emit(attempt.completed); f.renderer.emit("resize"); f.renderer.emit("frame")
       if (revoked) expect(f.slots).toEqual([])
+      else if (loss === "navigation") {
+        expect(f.calls.toasts).toEqual([])
+        const view = mount(f)
+        expect(view.buttons).toHaveLength(2)
+        view.click(1)
+        expect(f.calls.toasts).toEqual(["Cancelled — no implementation admitted"])
+        view.dispose()
+      }
       else {
         expect(f.calls.toasts).toHaveLength(1)
         expect(f.calls.toasts[0]).toContain("STOP — Implementation was not admitted")

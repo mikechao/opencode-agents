@@ -11,6 +11,12 @@ exact native Planner binding, trusted Plan publication, root return preparation,
 and completed readable-frame Authorize/Cancel controls. Publication can happen
 while Planner is inspected; a dirty or ambiguous initial baseline remains
 planning-only. Publication uses `delivery:"steer", resume:false`.
+Native Planner navigation changes the route and disposes the keyed SessionFrame
+and composer slot. The TUI retains exact pending Plan ownership across this
+normal disposal and requires a new readable root frame on return. Old callbacks
+and frame proofs stay inert. Trusted-state invalidation and surface loss while
+the root remains selected close the attempt; a positive decision still performs
+all exact Planner/publication and fresh Git/location checks before transfer.
 
 ```text
 clean initial Git observation → fresh Orchestrator → native read-only Planner
