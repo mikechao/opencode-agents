@@ -1,7 +1,7 @@
 import type { Context } from "@opencode/plugin/tui/context"
 import type { LocationRef, OpenCodeEvent, SessionInboxInfo, SessionInfo, SessionMessageInfo } from "@opencode/client"
 import { createHash, randomUUID } from "node:crypto"
-import { assertLive, frozenCopy, type Generation } from "./cap.ts"
+import { assertLive, exactKeys, frozenCopy, type Generation } from "./cap.ts"
 import { observeGit, requireFresh, type GitSnapshot } from "./git.ts"
 import { candidateIntact, makeCandidate, parseProposal, renderPlan } from "./proposal.ts"
 import type { IntentCandidate } from "./proposal.ts"
@@ -23,6 +23,35 @@ export function implementerPrompt(candidate: IntentCandidate): string {
 }
 
 export const plannerInput = (request: string) => `User request:\n${request}`
+export const plannerReceiptKey = "opencodeAgentsPlannerInput"
+export function plannerArguments(value: unknown) {
+  if (
+    !exactKeys(value, ["agent", "description", "prompt"]) ||
+    value.agent !== "planner" ||
+    typeof value.description !== "string" ||
+    !value.description ||
+    typeof value.prompt !== "string" ||
+    !value.prompt
+  )
+    stop("native subagent arguments differ from the fixed contract")
+  return { agent: "planner" as const, description: value.description, prompt: value.prompt }
+}
+export const plannerReceipt = (userID: string, description: string, request: string) => ({
+  userID,
+  input: { agent: "planner" as const, description, prompt: plannerInput(request) },
+})
+function effectivePlannerReceipt(
+  value: unknown,
+  userID: string,
+  request: string,
+  proposed: ReturnType<typeof plannerArguments>,
+) {
+  if (!exactKeys(value, ["userID", "input"])) stop("missing or malformed trusted Planner input receipt")
+  plannerArguments(value.input)
+  const expected = plannerReceipt(userID, proposed.description, request)
+  if (!same(value, expected)) stop("trusted Planner input receipt differs from the root request")
+  return expected
+}
 // Pinned native bootstrap; authorized payload remains exact.
 export const nativeBootstrap = (prompt: string): string => `You are a subagent spawned by another session.\n${prompt}`
 
@@ -35,7 +64,13 @@ export function snapshotLocation(location: LocationRef): Readonly<LocationRef> {
   const { directory, workspaceID } = location
   return Object.freeze({ directory, ...(workspaceID === undefined ? {} : { workspaceID }) })
 }
-type Call = Readonly<{ messageID: string; toolID: string; childID: string; prompt: string; agent: "planner" }>
+type Call = Readonly<{
+  messageID: string
+  toolID: string
+  childID: string
+  proposed: Readonly<ReturnType<typeof plannerArguments>>
+  effective: Readonly<ReturnType<typeof plannerReceipt>>
+}>
 type Child = Readonly<{ inputID: string; finalID: string; text: string }>
 export type Bound = Readonly<{
   parentID: string
@@ -210,23 +245,14 @@ function finalText(message: Assistant): string {
     .map((part) => part.text)
     .join("")
 }
-function completedCall(messageID: string, tool: Tool, agent: Call["agent"]): Call {
+function completedCall(messageID: string, tool: Tool, userID: string, request: string): Call {
   if (tool.name !== "subagent" || tool.state.status !== "completed") stop("unexpected parent tool")
-  const input = tool.state.input
-  const keys = Object.keys(input).sort()
-  if (
-    JSON.stringify(keys) !== JSON.stringify(["agent", "description", "prompt"].sort()) ||
-    input.agent !== agent ||
-    typeof input.description !== "string" ||
-    !input.description ||
-    typeof input.prompt !== "string" ||
-    !input.prompt
-  )
-    stop("native subagent arguments differ from the fixed contract")
+  const proposed = plannerArguments(tool.state.input)
   const childID = tool.state.metadata?.sessionID
   if (typeof childID !== "string" || tool.state.metadata?.status !== "completed")
     stop("missing completed native child metadata")
-  return { messageID, toolID: tool.id, childID, prompt: input.prompt, agent }
+  const effective = effectivePlannerReceipt(tool.state.metadata?.[plannerReceiptKey], userID, request, proposed)
+  return { messageID, toolID: tool.id, childID, proposed, effective }
 }
 function parentCalls(history: SessionMessageInfo[]): { userID: string; request: string; planner: Call } {
   const users = history.filter((message) => message.type === "user")
@@ -248,11 +274,10 @@ function parentCalls(history: SessionMessageInfo[]): { userID: string; request: 
   )
   if (tools.length !== 1 || tools[0]?.part.name !== "subagent")
     stop("parent did not make exactly one native Planner call")
-  const planner = completedCall(tools[0].messageID, tools[0].part, "planner")
-  if (planner.prompt !== plannerInput(users[0].text)) stop("native Planner prompt or identity differs from contract")
+  const planner = completedCall(tools[0].messageID, tools[0].part, users[0].id, users[0].text)
   return { userID: users[0].id, request: users[0].text, planner }
 }
-function verifyChildHistory(history: SessionMessageInfo[], agent: Call["agent"], prompt: string): Child {
+function verifyChildHistory(history: SessionMessageInfo[], agent: "planner", prompt: string): Child {
   const users = history.filter((message) => message.type === "user")
   if (
     users.length !== 1 ||
@@ -303,7 +328,7 @@ async function bindNativeAttempt(
   successful(planner, calls.planner.childID, "planner", location, parentID)
   await idle(context, planner.id, check)
   const history = await messages(context, planner.id, check)
-  const plannerChild = verifyChildHistory(history, "planner", calls.planner.prompt)
+  const plannerChild = verifyChildHistory(history, "planner", calls.planner.effective.input.prompt)
   return frozenCopy({ parentID, ...calls, plannerChild, parentCreatedAt: parent.time.created })
 }
 function checkedPublication(
@@ -328,7 +353,7 @@ export function assertPublishedCoherence(published: PublishedAttempt): void {
   if (
     bound.parentID !== activation.creation.data.sessionID ||
     (Number.isFinite(activation.creation.created) && bound.parentCreatedAt !== activation.creation.created) ||
-    bound.planner.prompt !== plannerInput(bound.request) ||
+    !same(bound.planner.effective, plannerReceipt(bound.userID, bound.planner.proposed.description, bound.request)) ||
     !candidateIntact(candidate) ||
     candidate.root !== activation.baseline.root ||
     candidate.head !== activation.baseline.head ||
@@ -377,7 +402,7 @@ async function verifyParentPlanner(context: Context, published: PublishedAttempt
   successful(planner, bound.planner.childID, "planner", activation.location, bound.parentID)
   await idle(context, bound.planner.childID, check)
   const history = await messages(context, bound.planner.childID, check)
-  const child = verifyChildHistory(history, "planner", bound.planner.prompt)
+  const child = verifyChildHistory(history, "planner", bound.planner.effective.input.prompt)
   if (!same(child, bound.plannerChild)) stop("Planner result changed")
 }
 function observePublication(activation: ActivationEvidence): void {

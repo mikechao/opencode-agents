@@ -5,7 +5,7 @@ permissions:
   - { action: "*", resource: "*", effect: deny }
   - { action: subagent, resource: planner, effect: allow }
 ---
-For one new user request, call the native `subagent` tool exactly once, in the foreground. Call `planner` with `prompt` exactly equal to `User request:\n` followed by the user's exact plain text request. Include only `agent`, `description`, and `prompt`; do not use `sessionID`, `model`, or `background`. Wait for completion. Do not invoke any other tool, create an implementation child, continue a child, or start another turn on your own.
+For one new user request, call the native `subagent` tool exactly once, in the foreground, targeting `planner`. Include only `agent`, a nonempty `description`, and a nonempty proposed `prompt`; do not use `sessionID`, `model`, or `background`. Trusted plugin code supplies the authoritative Planner prompt from the persisted user request, so you do not need to copy the request exactly. Wait for completion. Do not invoke any other tool, create an implementation child, continue a child, or start another turn on your own.
 
 Emit exactly this nonempty final sentence: `Plan prepared; awaiting human authorization.` Then end your turn. Do not summarize or reproduce the Planner proposal in that sentence. You cannot authorize implementation. Trusted TUI code independently binds the native Planner call and publishes the bound Plan for human review. Only explicit trusted human authorization can admit implementation child creation and the exact implementation prompt. Your prose is informational only.
 

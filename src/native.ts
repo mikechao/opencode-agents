@@ -7,8 +7,16 @@ import type { PermissionEvaluation } from "@opencode/plugin/effect/permission"
 import { SessionMessage } from "@opencode/schema/session-message"
 import { Agent } from "@opencode/schema/agent"
 import { randomUUID } from "node:crypto"
-import { NativeCap, exactKeys, type Reservation } from "./cap.ts"
-import { exactEvidence, implementerPrompt, snapshotLocation, nativeBootstrap } from "./attempt.ts"
+import { NativeCap, exactKeys, frozenCopy, type Reservation } from "./cap.ts"
+import {
+  exactEvidence,
+  implementerPrompt,
+  snapshotLocation,
+  nativeBootstrap,
+  plannerArguments,
+  plannerReceipt,
+  plannerReceiptKey,
+} from "./attempt.ts"
 import { parseProposal, candidateIntact, displayPath, type IntentCandidate } from "./proposal.ts"
 import { observeGit, requireFresh, requireInScope } from "./git.ts"
 
@@ -140,13 +148,101 @@ export function nativeAdmission(context: Context) {
         Effect.onInterrupt(() => Effect.sync(() => cap.close())),
       )
     })
+  const executePlanner = (original: Tool.Info["execute"], input: unknown, invocation: Tool.Context) =>
+    Effect.gen(function* () {
+      const location = snapshotLocation(context.location)
+      const root = yield* context.session.get({ sessionID: invocation.sessionID })
+      // A nested Orchestrator is outside the initial root boundary.
+      if (root.id === invocation.sessionID && root.parentID) return yield* original(input, invocation)
+      const history = yield* context.session.context({ sessionID: invocation.sessionID })
+      const current = yield* context.session.get({ sessionID: invocation.sessionID })
+      const receipt = yield* attempt(() => {
+        cap.live()
+        if (cap.rootSessionID === invocation.sessionID) throw new Error("Planner follows an admitted CAP claim")
+        if (!location.directory || !same(root.time.created, current.time.created))
+          throw new Error("Initial Planner root creation or location changed")
+        for (const session of [root, current]) {
+          if (
+            session.id !== invocation.sessionID ||
+            session.agent !== "orchestrator" ||
+            session.parentID ||
+            session.fork ||
+            session.revert ||
+            session.time.archived ||
+            !same(snapshotLocation(session.location), location) ||
+            !emptyPermissions(session.permissions)
+          )
+            throw new Error("Initial Planner root identity changed")
+        }
+        if (!same(snapshotLocation(context.location), location)) throw new Error("Server location changed")
+        const users = history.filter((message) => message.type === "user")
+        const user = users[0]
+        if (
+          users.length !== 1 ||
+          !user ||
+          history[0] !== user ||
+          !user.text ||
+          [user.files, user.agents, user.skills].some((items) => items && items.length) ||
+          new Set(history.map((message) => message.id)).size !== history.length ||
+          history.some((message) => !["user", "assistant", "model-switched"].includes(message.type))
+        )
+          throw new Error("Planner is not bound to one initial plain root request")
+        const assistants = history.filter((message) => message.type === "assistant")
+        if (assistants.some((message) => message.agent !== "orchestrator" || message.error))
+          throw new Error("Initial Planner assistant identity changed")
+        const tools = assistants.flatMap((message) =>
+          message.content.flatMap((part) => (part.type === "tool" ? [{ messageID: message.id, part }] : [])),
+        )
+        const call = tools[0]
+        if (
+          tools.length !== 1 ||
+          !call ||
+          call.messageID !== invocation.messageID ||
+          call.part.id !== invocation.id ||
+          call.part.name !== "subagent" ||
+          call.part.state.status !== "running"
+        )
+          throw new Error("Initial Planner native contender identity changed")
+        // Published proposal precedes host normalization/decoding; reject stripped keys too.
+        const proposed = plannerArguments(call.part.state.input)
+        if (!same(plannerArguments(input), proposed)) throw new Error("Decoded Planner proposal changed")
+        return frozenCopy(plannerReceipt(user.id, proposed.description, user.text))
+      })
+      // Keep native permissions, parent/source IDs, child creation and progress unchanged.
+      const result = yield* original(receipt.input, invocation)
+      yield* attempt(() => {
+        cap.live()
+        if (
+          !exactKeys(result.output, ["sessionID", "status", "output"]) ||
+          typeof result.output.sessionID !== "string" ||
+          !result.output.sessionID ||
+          result.output.sessionID === invocation.sessionID ||
+          result.output.status !== "completed" ||
+          result.metadata?.sessionID !== result.output.sessionID ||
+          result.metadata?.status !== "completed"
+        )
+          throw new Error("Planner did not return a completed native child")
+      })
+      // Tool.Called retains proposed state.input. Only terminal result metadata records execution.
+      return { ...result, metadata: { ...result.metadata, [plannerReceiptKey]: receipt } }
+    })
   const execute = (original: Tool.Info["execute"]) => (input: unknown, invocation: Tool.Context) =>
     Effect.gen(function* () {
       yield* attempt(() => cap.live())
       const governed =
         invocation.sessionID === cap.rootSessionID ||
         (!!input && typeof input === "object" && "agent" in input && input.agent === target)
-      if (!governed) return yield* original(input, invocation)
+      if (!governed) {
+        if (
+          invocation.agent === "orchestrator" &&
+          input !== null &&
+          typeof input === "object" &&
+          "agent" in input &&
+          input.agent === "planner"
+        )
+          return yield* executePlanner(original, input, invocation)
+        return yield* original(input, invocation)
+      }
       const call: Reservation = {
         sessionID: invocation.sessionID,
         agent: invocation.agent,
