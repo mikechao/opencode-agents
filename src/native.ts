@@ -1,4 +1,4 @@
-import { Cause, Effect, Schema } from "effect"
+import { Cause, Effect, Schema, SchemaIssue } from "effect"
 import { Tool } from "@opencode/schema/tool"
 import { Session } from "@opencode/schema/session"
 import type { Context } from "@opencode/plugin/effect/plugin"
@@ -203,16 +203,22 @@ export function nativeAdmission(context: Context) {
 // arguments before decoding can discard extras. Planner calls remain native.
 export function strictNativeInput(input: Tool.ValueSchema<any>, cap: NativeCap): Tool.ValueSchema<any> {
   if (!Schema.isSchema(input)) throw new Error("Pinned native subagent input codec is unavailable")
-  const native = Schema.toStandardSchemaV1(input)
-  const json = Schema.toStandardJSONSchemaV1(input)
+  // The 2.0.21 input is plain validated data (no decoding transformations or
+  // constructor defaults). Its own public maker retains the host's parser;
+  // compiling its AST with the plugin's separate Effect instance mixes private
+  // parser sentinels. JSON conversion is detached: it mutates its schema object.
+  const json = Schema.toStandardJSONSchemaV1(input.rebuild(input.ast))
+  const format = SchemaIssue.makeFormatterStandardSchemaV1()
   return { "~standard": {
-    ...native["~standard"], ...json["~standard"],
+    ...json["~standard"],
     validate: (value: unknown) => {
       try {
         cap.live()
         if (value && typeof value === "object" && "agent" in value && value.agent === target) exactArguments(value, cap.claim.candidate)
       } catch (error) { return { issues: [{ message: String(error) }] } }
-      return native["~standard"].validate(value)
+      return Effect.runPromise(input.makeEffect(value, { parseOptions: { errors: "all" } }).pipe(Effect.match({
+        onFailure: format, onSuccess: (value) => ({ value }),
+      })))
     },
   } }
 }

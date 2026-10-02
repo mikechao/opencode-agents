@@ -1285,7 +1285,7 @@ function sponsorHost(browser = false) {
   return { transforms, permissionHooks, roles, appendConfig, evaluate }
 }
 
-function serverFake(root: string, observer: SnapshotObserver, workspaceID?: string) {
+function serverFake(root: string, observer: SnapshotObserver, workspaceID?: string, inputSchema: NativeTool.ValueSchema<any> = nativeInput) {
   const location = { directory: root, ...(workspaceID ? { workspaceID } : {}) }
   const candidate = makeCandidate(parseProposal(proposal, root), root, HEAD)
   const claim = { purpose: "implement", candidate, rootSessionID: "ses_parent", location, publicationID: "published-plan" }
@@ -1325,6 +1325,9 @@ function serverFake(root: string, observer: SnapshotObserver, workspaceID?: stri
     },
   } as any
   const admission = nativeAdmission(context)
+  host.transforms.push((editor) => editor.update("orchestrator", (agent: any) => {
+    agent.permissions = [{ action: "*", resource: "*", effect: "deny" }, { action: "subagent", resource: "planner", effect: "allow" }]
+  }))
   host.transforms.push((editor) => editor.update(admission.actor, (agent: any) => {
     agent.mode = "subagent"; agent.hidden = true
     agent.permissions = [{ action: "*", resource: "*", effect: "deny" }, { action: "subagent", resource: "authorized_implementer", effect: "allow" }]
@@ -1336,18 +1339,20 @@ function serverFake(root: string, observer: SnapshotObserver, workspaceID?: stri
     const effect = yield* host.evaluate(invocation.agent, "subagent", [input.agent])
     if (effect !== "allow") return yield* Effect.fail(new NativeTool.Error({ message: `Native permission ${effect}` }))
     originals.push({ input: structuredClone(input), context: invocation })
-    sessions.ses_child = { id: "ses_child", parentID: "ses_parent", agent: "authorized_implementer", location: structuredClone(location), permissions: [], outcome: "succeeded", time: { idle: 2 } }
-    histories.ses_child = [user("native-input", prefix + input.prompt), answer("ses_child-final", "authorized_implementer", "Done"), idle("ses_child-idle")]
-    for (const update of f.nativeProgress) yield* invocation.progress(update)
+    const output = input.agent === "planner" ? proposal : "Done"
+    const childID = input.agent === "planner" ? "ses_planner" : "ses_child"
+    sessions[childID] = { id: childID, parentID: "ses_parent", agent: input.agent, location: structuredClone(location), permissions: [], outcome: "succeeded", time: { idle: 2 } }
+    histories[childID] = [user("native-input", prefix + input.prompt), answer(`${childID}-final`, input.agent, output), idle(`${childID}-idle`)]
+    for (const update of f.nativeProgress) yield* invocation.progress(input.agent === "planner" ? { ...update, sessionID: childID } : update)
     yield* Effect.promise(async () => { await f.onNative?.() })
     if (f.nativeError) throw new Error("native invocation outcome unknown")
-    const result = { output: { sessionID: "ses_child", status: "completed", output: "Done" },
-      content: '<subagent sessionID="ses_child" state="completed">\nDone\n</subagent>', metadata: { sessionID: "ses_child", status: "completed" } }
+    const result = { output: { sessionID: childID, status: "completed", output },
+      content: `<subagent sessionID="${childID}" state="completed">\n${output}\n</subagent>`, metadata: { sessionID: childID, status: "completed" } }
     f.nativeResultMutation?.(result)
     return result
   }).pipe(Effect.mapError((error) => new NativeTool.Error({ message: String(error) })))
   const wrapped = admission.execute(original)
-  const codec = strictNativeInput(nativeInput, admission.cap) as any
+  const codec = strictNativeInput(inputSchema, admission.cap) as any
   const dispatch = async (raw: any = nativeArguments(candidate), opts: { id?: string; messageID?: string; tool?: string; agent?: string; decoded?: any; beforeInput?: any; codecInput?: any } = {}) => {
     const id = opts.id ?? "native-call", messageID = opts.messageID ?? "native-message", tool = opts.tool ?? "subagent", agent = opts.agent ?? "orchestrator"
     const part: any = { type: "tool", id, name: tool, state: { status: "running", input: structuredClone(raw), metadata: {} } }
@@ -1371,6 +1376,60 @@ function serverFake(root: string, observer: SnapshotObserver, workspaceID?: stri
   const authorize = (input: unknown = claim) => Effect.runPromise(admission.authorize(input))
   return { ...f, state: f, context, admission, original, wrapped, codec, dispatch, authorize }
 }
+
+snapshotTest("ordinary Planner delegation validates a bundled host schema without CAP sponsorship or shared-schema mutation", async (observer) => {
+  const root = snapshotFixture(observer)
+  const build = await Bun.build({ entrypoints: [path.join(import.meta.dir, "fixtures/native-host.ts")], target: "bun" })
+  expect(build.success).toBe(true)
+  const modulePath = path.join(root, "native-host.mjs")
+  writeFileSync(modulePath, await build.outputs[0]!.text())
+  const host = await import(modulePath)
+  const args = { agent: "planner", description: "Plan README append change",
+    prompt: "User request:\nUpdate README.md by appending exactly this line at the end of the file:\n# issue-9-dogfood" }
+  expect(await host.decode(args)).toEqual(args)
+  const descriptors = Object.getOwnPropertyDescriptors(host.Input)
+  const f = serverFake(root, observer, undefined, host.Input)
+  const consumes = spyOn(f.admission.cap, "consume")
+  try {
+    // Preserve native validation/decoding, including optional branded IDs,
+    // stripped extras and errors. The former same-instance double hid this bug.
+    for (const value of [args, { ...args, sessionID: "ses_existing", background: false, model: "provider/model" },
+      { ...args, extra: "native strips this" }, { ...args, sessionID: "" }, { ...args, sessionID: 1 },
+      { ...args, background: "false" }, { ...args, agent: 1 }, { agent: "planner" }, null]) {
+      expect(await f.codec["~standard"].validate(value)).toEqual(await host.validate(value))
+    }
+    expect(f.codec["~standard"].jsonSchema.input({ target: "draft-2020-12" })).toEqual(
+      host.json(host.Input.rebuild(host.Input.ast))["~standard"].jsonSchema.input({ target: "draft-2020-12" }))
+    expect(await f.dispatch(args)).toMatchObject({ output: { status: "completed", output: proposal } })
+    expect(f.originals).toHaveLength(1)
+    expect(f.originals[0].input).toEqual(args)
+    expect(f.originals[0].context).toMatchObject({ agent: "orchestrator", sessionID: "ses_parent", messageID: "native-message", id: "native-call" })
+    expect(f.sessions.ses_planner.agent).toBe("planner")
+    expect(f.progress).toEqual([{ sessionID: "ses_planner", status: "running" }])
+    expect(f.wakes).toHaveLength(0)
+    expect(f.reads).toHaveLength(0)
+    expect(f.admission.cap.rootSessionID).toBeUndefined()
+    expect(f.admission.cap.childID).toBeUndefined()
+    expect(consumes).not.toHaveBeenCalled()
+    expect(f.sessions.ses_parent.permissions).toEqual([])
+    expect(f.host.roles().get("orchestrator").permissions.slice(0, 2)).toEqual([
+      { action: "*", resource: "*", effect: "deny" }, { action: "subagent", resource: "planner", effect: "allow" },
+    ])
+    expect(Object.getOwnPropertyDescriptors(host.Input)).toEqual(descriptors)
+    // The same foreign codec must still enforce the exact Implementer gate.
+    f.state.run = async () => {
+      for (const extra of [{ background: false }, { model: "" }, { sessionID: "" }, { extra: "" }]) {
+        expect((await f.codec["~standard"].validate({ ...nativeArguments(f.candidate), ...extra })).issues).toBeDefined()
+      }
+      await f.dispatch(undefined, { id: "implementer-call", messageID: "implementer-message" })
+    }
+    expect(await f.authorize()).toContain("Implementation gate complete")
+    expect(consumes).toHaveBeenCalledTimes(1)
+    expect(f.originals).toHaveLength(2)
+    expect(f.originals[1].context.agent).toBe(f.admission.actor)
+    expect(Object.getOwnPropertyDescriptors(host.Input)).toEqual(descriptors)
+  } finally { consumes.mockRestore() }
+})
 
 snapshotTest("native Authorize transfers one frozen claim, wakes once and forwards native identities/progress/result", async (observer) => {
   const root = snapshotFixture(observer), f = serverFake(root, observer, "local-workspace")

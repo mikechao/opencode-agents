@@ -61,6 +61,12 @@ and exact preceding control. Original input is checked before native decoding,
 including optional empty fields that the native hook may remove. The schema
 adapter preserves the native decoder and compares authority-bearing input before
 it can drop extras; the executor makes a final comparison.
+The pinned 2.0.21 input contains only validated data, without decode transforms or
+constructor defaults. Its schema-owned public maker keeps validation within the
+host's bundled Effect parser; the plugin must not compile that AST with its own
+Effect instance. JSON-schema conversion uses a detached schema object. Ordinary
+Planner calls retain native validation and invocation identities without sponsor
+substitution or shared-schema mutation.
 
 All awaited admission reads finish before synchronous local/path/Git checks and
 consumption. No session/root permission is elevated. The installed root still
