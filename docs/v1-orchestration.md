@@ -87,9 +87,12 @@ close admission (the built-in browser deny is harmless). A sponsor-only deny hoo
 constrains appended allows to the exact Implementer target and never overrides
 a host deny or ask. Root/session permissions remain untouched.
 
-The returned native output, progress child ID, metadata, persisted call result,
-and actual successful child parent/role/location/input/result must agree. A separate
-fresh Git observation verifies unchanged HEAD and exact changed-path membership.
+OpenCode owns Implementer child creation, execution, lifecycle, row and
+navigation. `opencode-agents` owns the narrow one-use CAP admission and the
+independent Git/result gate. The returned native output, progress child ID,
+metadata, persisted call result, and actual successful child
+parent/role/location/input/result must agree. A separate fresh Git observation
+verifies unchanged HEAD and exact changed-path membership.
 The root must settle successfully before a verified outcome is returned. Harmless
 prose is allowed; refusal/prose without admission closes unused authority.
 There is no provider-request counting, retry/compaction policing, or follow-up
@@ -105,9 +108,9 @@ CAP admission. Lost verification never becomes verified success. Reviewer and
 Commit remain unauthorized.
 
 Native creation inherits the root's full location, including workspace identity.
-The import API's workspace restriction is gone; a supported attempt still needs
-proven canonical local Git/worktree correspondence. This is not remote topology
-attestation, an external filesystem lock, or exhaustive shell-effect detection.
+A supported attempt still needs proven canonical local Git/worktree
+correspondence. This is not remote topology attestation, an external filesystem
+lock, or exhaustive shell-effect detection.
 
 ## Validation and status
 
@@ -129,10 +132,19 @@ bun test
 git diff --check
 ```
 
-No live OpenCode execution or dogfood was performed for this implementation.
-Native row/navigation and installed plugin behavior still require later live
-verification. Independent `/review` is the next user-owned step. Reviewer,
-reviewed-target construction and Commit are future work.
+### Live validation on OpenCode 2.0.21
+
+The final live dogfood began with a clean Git baseline and a native Planner.
+The trusted Plan preserved the exact `README.md` scope and bound HEAD. Navigating
+into and out of Planner preserved pending authorization, while returning to the
+root required a fresh readable frame. An explicit Authorize decision admitted
+a genuine native `authorized_implementer` subagent row and session. The native
+Implementer received the frozen proposal and exact path scope. Implementation
+changed exactly `README.md`; HEAD stayed unchanged, the trusted Git gate passed,
+and execution stopped before Reviewer / Commit. In a separate check after
+Planner completion, Cancel admitted no Implementer and left the worktree clean.
+
+Reviewer, reviewed-target construction and Commit are future work.
 
 Historical OpenCode 2.0.20 dogfood and Issue #4 resize results describe prior
 paths, not validation of this native path. See the retained

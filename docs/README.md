@@ -22,9 +22,10 @@ Trusted TUI Planner binding, Plan publication, clean initial eligibility and
 readable-frame pointer authorization are preserved. Authorize transfers a
 frozen claim to one local RPC; a private server slot reserves/consumes one exact
 native invocation and verifies its result plus fresh Git scope before STOP.
-The root's static denial and all session permissions stay intact. OpenCode
-owns child lifecycle and native presentation; Issue #8's custom-row work is
-superseded.
+The root's static denial and all session permissions stay intact. OpenCode owns
+Implementer child creation, execution, lifecycle, row and navigation;
+`opencode-agents` owns one-use CAP admission and the independent Git/result gate.
+Issue #8's custom-row work is superseded.
 
 The trusted TUI is the intended producer of Authorize claims. Same-user local
 processes and localhost OpenCode RPC access belong to the trusted host boundary;
@@ -38,10 +39,11 @@ never reopen authority. Restart cannot reconstruct a claim from transcripts;
 ordinary native recovery of the same admitted child remains supported.
 
 Automated checks use trusted host/transport/Git-observer/JSX doubles; real Git
-remains limited to Git semantics. No live execution or dogfood was performed
-for this change. Independent `/review` is the next user-owned step. Native
-presentation under the installed host remains unverified live. Reviewer,
-reviewed-target construction and Commit are later work.
+remains limited to Git semantics. Final OpenCode 2.0.21 live dogfood verified
+the native Planner and Implementer path, navigation and readable-frame behavior,
+the exact `README.md` Git gate, and post-Planner Cancel. See
+[live validation](v1-orchestration.md#live-validation-on-opencode-2021).
+Reviewer, reviewed-target construction and Commit are later work.
 
 The runtime modules are `attempt.ts`, `cap.ts`, `authorize-rpc.ts`, `native.ts`,
 `git.ts` and `proposal.ts`, with directory TUI and Effect server entries.
