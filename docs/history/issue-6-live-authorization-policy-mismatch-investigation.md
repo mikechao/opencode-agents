@@ -35,7 +35,7 @@ Evidence sources are `/Users/mike/.local/share/opencode/opencode.db`, especially
 | 20:52:03.122 | Single root user input persisted. |
 | 20:52:05.440 | Planner child created, `time_created=1790887925440`. Root transcript contains one completed native `subagent` call targeting this child. |
 | 20:52:11.795 / .802 | Planner final completed / successful idle. No Planner tool call is present. Its proposal names only `README.md`. |
-| 20:52:12.943 / .945 | Root final completed / successful idle; final text is `Plan prepared; awaiting human authorization.` |
+| 20:52:12.943 / .945 | Root final completed / successful idle; historical model prose reported that the Plan was prepared and awaiting human authorization. |
 | 20:52:14.304 | Trusted synthetic Plan enqueued, `msg_17f616a0-f4cd-473a-994d-972dd3830870`, delivery `steer`, metadata `{source:"planner",planHash:"280e96824eed"}`. It remains in the root inbox. |
 | After publication; exact time unavailable | Authorize click, popup, and STOP are user-reported. The click and trusted closure state are not persisted in these tables or logs. |
 | 20:54:28.282 | Log records interruption of the TUI event-stream request. This suggests the end of its connected UI interval; it does not timestamp the click or STOP. |

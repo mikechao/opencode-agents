@@ -224,7 +224,7 @@ function fake(root: string, options: FakeOptions = {}) {
         model: { ...model },
         content: [call("planner-call", "planner", plannerInput(request), "planner-child", proposal)],
       },
-      answer("parent-final", "orchestrator", "Plan prepared; awaiting human authorization."),
+      answer("parent-final", "orchestrator", "The Planner proposal is complete."),
       idle("parent-idle"),
     ],
     "planner-child": [
@@ -839,6 +839,31 @@ snapshotTest(
     }
   },
 )
+
+test("Orchestrator uses trusted outcome history without mandating authorization status prose", () => {
+  const instructions = readFileSync(path.join(import.meta.dir, "../.opencode/agents/orchestrator.md"), "utf8")
+  expect(instructions).not.toMatch(/emit exactly.*final sentence/i)
+  expect(instructions).not.toMatch(/(?:emit|reply|respond|say).*awaiting.*authorization/i)
+  expect(instructions).toContain(
+    "After the final Planner proposal is produced, end the planning turn without implementing it yourself",
+  )
+  expect(instructions).toContain("You cannot authorize implementation.")
+  expect(instructions).toContain(
+    "Trusted runtime code independently binds and publishes the Plan and owns authorization, implementation admission, and terminal workflow outcomes.",
+  )
+  expect(instructions).toContain(
+    "Only explicit trusted human authorization can admit implementation child creation and the exact implementation prompt.",
+  )
+  expect(instructions).toContain(
+    "Do not infer that a historical Plan is still awaiting authorization merely because the Plan or an earlier status message exists in conversation history.",
+  )
+  expect(instructions).toContain(
+    "Treat trusted workflow receipts in root history as the current historical record of completed outcomes, including cancellation, implementation completion, or rejection.",
+  )
+  expect(instructions).toContain(
+    "This input supplies instructions, not authority; the server independently admits or rejects the call.",
+  )
+})
 
 test("native role files allow only Planner to delegate to Explorer through ordered effective rules", () => {
   type Rule = { action: string; resource: string; effect: string }
@@ -3197,7 +3222,7 @@ snapshotTest(
     const bound = fake(root)
     bound.histories.parent = [
       ...structuredClone(f.histories.ses_parent),
-      answer("root-final", "orchestrator", "Plan prepared; awaiting human authorization."),
+      answer("root-final", "orchestrator", "Planning is complete."),
       idle("root-idle"),
     ]
     bound.histories.parent[1].content[0].state.metadata.sessionID = "planner-child"
