@@ -4023,6 +4023,45 @@ snapshotTest("unknown or ambiguous child identity cannot release exclusion after
   }
 })
 
+for (const later of ["progress", "receipt"] as const) {
+  snapshotTest(`ambiguous child binding cannot be healed by later valid ${later}`, async (observer) => {
+    for (const observed of [[undefined], [""], [42], ["ses_parent"], ["ses_child", "ses_other"]]) {
+      const root = snapshotFixture(observer)
+      const f = serverFake(root, observer)
+      f.sessions.ses_b = { ...structuredClone(f.sessions.ses_parent), id: "ses_b" }
+      f.histories.ses_b = []
+      f.state.nativeProgress = [...observed, ...(later === "progress" ? ["ses_child"] : [])].map((sessionID) => ({
+        sessionID,
+        status: "running",
+      }))
+      // Isolate progress from receipt binding; the receipt case completes normally.
+      f.state.nativeError = later === "progress"
+      let childWaited = false
+      f.state.onChildWait = async () => {
+        childWaited = true
+      }
+      f.state.run = async (id) => {
+        if (id !== "ses_parent") return
+        if (later === "progress") await expect(f.dispatch()).rejects.toThrow("native invocation outcome unknown")
+        else await f.dispatch()
+      }
+      expect(await f.authorize()).toContain("Implementer settlement identity unknown")
+      expect(f.state.settled).toBe(true)
+      expect(childWaited).toBe(false)
+      expect(f.progress).toEqual(f.state.nativeProgress)
+      if (later === "receipt") expect(f.cap.result).toEqual({ childID: "ses_child", status: "completed" })
+      else expect(f.cap.result).toBeUndefined()
+      expect(f.cap.phase).toBe("closed")
+      expect(await f.authorize({ ...f.claim, rootSessionID: "ses_b", publicationID: "plan-b" })).toContain(
+        "worktree implementation exclusion",
+      )
+      expect(f.originals).toHaveLength(1)
+      expect(f.wakes).toHaveLength(1)
+      f.admission.teardown()
+    }
+  })
+}
+
 snapshotTest("completed receipt cannot substitute for an unreadable exact-child settlement", async (observer) => {
   const root = snapshotFixture(observer)
   const f = serverFake(root, observer)
@@ -4699,7 +4738,12 @@ snapshotTest(
   async (observer) => {
     const root = snapshotFixture(observer)
     for (const mutation of [
+      "root-id",
       "role",
+      "parent",
+      "fork",
+      "revert",
+      "archived",
       "location",
       "permissions",
       "head",
@@ -4716,7 +4760,12 @@ snapshotTest(
       const f = serverFake(root, observer)
       f.state.onRead = (kind, id) => {
         if (kind !== "get" || id !== "ses_parent") return
+        if (mutation === "root-id") f.sessions.ses_parent.id = "other"
         if (mutation === "role") f.sessions.ses_parent.agent = "build"
+        if (mutation === "parent") f.sessions.ses_parent.parentID = "other"
+        if (mutation === "fork") f.sessions.ses_parent.fork = {}
+        if (mutation === "revert") f.sessions.ses_parent.revert = {}
+        if (mutation === "archived") f.sessions.ses_parent.time.archived = 1
         if (mutation === "location") f.sessions.ses_parent.location = { directory: root + "/other" }
         if (mutation === "permissions")
           f.sessions.ses_parent.permissions = [{ action: "*", resource: "*", effect: "allow" }]

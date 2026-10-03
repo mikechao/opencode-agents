@@ -49,6 +49,25 @@ function exactArguments(value: unknown, candidate: IntentCandidate): void {
 const emptyPermissions = (permissions: unknown) =>
   permissions === undefined || (Array.isArray(permissions) && permissions.length === 0)
 
+function orchestratorRootMatches(
+  root: Session.Info,
+  rootSessionID: string,
+  location: ReturnType<typeof snapshotLocation>,
+): boolean {
+  return (
+    root.id === rootSessionID &&
+    root.agent === "orchestrator" &&
+    !root.parentID &&
+    !root.fork &&
+    !root.revert &&
+    !root.time.archived &&
+    same(snapshotLocation(root.location), location) &&
+    emptyPermissions(root.permissions)
+  )
+}
+
+type ChildBinding = { kind: "unknown" } | { kind: "exact"; childID: string } | { kind: "ambiguous" }
+
 // Server-only host adapter. All reads use the supported Effect session API.
 // Root-local one-shot slots live only in this closure; no transcript recovery.
 export function nativeAdmission(context: Context) {
@@ -56,7 +75,7 @@ export function nativeAdmission(context: Context) {
   let revoked = false
   // The location-scoped host activation owns one worktree. Hold exclusion from
   // before the wake through settlement/verification, independently of the root slots.
-  let executing: { cap: NativeCap; native?: { call: Reservation; childID?: string; ambiguous: boolean } } | undefined
+  let executing: { cap: NativeCap; native?: { call: Reservation; child: ChildBinding } } | undefined
   const live = () => {
     if (revoked) throw new Error("Server CAP activation was revoked")
   }
@@ -83,16 +102,7 @@ export function nativeAdmission(context: Context) {
   }
   const rootIdentity = (cap: NativeCap, root: Session.Info) => {
     const claim = cap.claim
-    if (
-      root.id !== claim.rootSessionID ||
-      root.agent !== "orchestrator" ||
-      root.parentID ||
-      root.fork ||
-      root.revert ||
-      root.time.archived ||
-      !same(snapshotLocation(root.location), claim.location) ||
-      !emptyPermissions(root.permissions)
-    )
+    if (!orchestratorRootMatches(root, claim.rootSessionID, claim.location))
       throw new Error("Root role, location, or permissions changed")
   }
   const baseline = (cap: NativeCap) => ({ root: cap.claim.candidate.root, head: cap.claim.candidate.head, paths: [] })
@@ -178,16 +188,7 @@ export function nativeAdmission(context: Context) {
         if (!location.directory || !same(root.time.created, current.time.created))
           throw new Error("Initial Planner root creation or location changed")
         for (const session of [root, current]) {
-          if (
-            session.id !== invocation.sessionID ||
-            session.agent !== "orchestrator" ||
-            session.parentID ||
-            session.fork ||
-            session.revert ||
-            session.time.archived ||
-            !same(snapshotLocation(session.location), location) ||
-            !emptyPermissions(session.permissions)
-          )
+          if (!orchestratorRootMatches(session, invocation.sessionID, location))
             throw new Error("Initial Planner root identity changed")
         }
         if (!same(snapshotLocation(context.location), location)) throw new Error("Server location changed")
@@ -284,19 +285,20 @@ export function nativeAdmission(context: Context) {
           cap.consume(call)
           return executing
         })
-        const execution = { call, childID: undefined as string | undefined, ambiguous: false }
+        const execution: { call: Reservation; child: ChildBinding } = { call, child: { kind: "unknown" } }
         lease.native = execution
         const bindChild = (childID: unknown) => {
+          if (execution.child.kind === "ambiguous") return
           if (
             typeof childID !== "string" ||
             !childID ||
             childID === call.sessionID ||
-            (execution.childID !== undefined && execution.childID !== childID)
+            (execution.child.kind === "exact" && execution.child.childID !== childID)
           ) {
-            execution.ambiguous = true
+            execution.child = { kind: "ambiguous" }
             return
           }
-          execution.childID = childID
+          execution.child = { kind: "exact", childID }
         }
         // Pinned OpenCode seam: native Permission.assert uses this explicit actor,
         // the real parent/source IDs, and effective policy before creating a child.
@@ -460,9 +462,9 @@ export function nativeAdmission(context: Context) {
           const execution = lease.native
           const childSettled = yield* Effect.gen(function* () {
             const childID = yield* attempt(() => {
-              if (execution.ambiguous || !execution.childID) throw new Error("Implementer settlement identity unknown")
+              if (execution.child.kind !== "exact") throw new Error("Implementer settlement identity unknown")
               if (execution.call.sessionID !== rootSessionID) throw new Error("Implementer settlement root changed")
-              return Session.ID.make(execution.childID)
+              return Session.ID.make(execution.child.childID)
             })
             yield* context.session.wait({ sessionID: childID })
             const child = yield* context.session.get({ sessionID: childID })
