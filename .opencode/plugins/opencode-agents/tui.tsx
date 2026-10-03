@@ -504,7 +504,11 @@ const plugin: Definition = {
       // Cosmetic/registry notifications do not carry authority. Known changes to
       // task, lifecycle, policy or location invalidate immediately; decision-time
       // reads independently verify the bound request/call/child and pending Plan.
+      // OpenCode's session/message-updater.ts also projects direct history
+      // appends and assistant mutations without an inbox or execution-start event.
+      // No-text instruction baselines and stream timing do not change this evidence.
       if (
+        (event.type === "session.instructions.updated" && event.data.text !== undefined) ||
         [
           "session.deleted",
           "session.moved",
@@ -518,6 +522,23 @@ const plugin: Definition = {
           "session.inbox.cancelled",
           "session.inbox.delivery.changed",
           "session.message.content.updated",
+          "session.synthetic",
+          "session.skill.activated",
+          "session.shell.started",
+          "session.shell.ended",
+          "session.step.started",
+          "session.step.ended",
+          "session.step.failed",
+          "session.text.started",
+          "session.text.ended",
+          "session.tool.input.started",
+          "session.tool.input.ended",
+          "session.tool.called",
+          "session.tool.success",
+          "session.tool.failed",
+          "session.compaction.started",
+          "session.compaction.ended",
+          "session.compaction.failed",
           "session.forked",
           "session.revert.staged",
           "session.revert.cleared",

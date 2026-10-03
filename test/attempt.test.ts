@@ -302,6 +302,17 @@ function fake(root: string, options: FakeOptions = {}) {
     },
     client: {
       session: {
+        list: async ({ parentID, cursor }: { parentID: string; cursor?: string }) => {
+          options.onRead?.("children", parentID)
+          const all = Object.values(sessions).filter((session) => session.parentID === parentID)
+          return structuredClone(
+            options.singlePage
+              ? { data: all, cursor: {} }
+              : cursor
+                ? { data: all.slice(2), cursor: {} }
+                : { data: all.slice(0, 2), cursor: { next: "rest" } },
+          )
+        },
         get: async ({ sessionID }: { sessionID: string }) => {
           options.onRead?.("get", sessionID)
           options.onGet?.(sessionID)
@@ -437,6 +448,48 @@ function fake(root: string, options: FakeOptions = {}) {
   }
   fakes.set(context, f)
   return f
+}
+// Native transcript fixtures only; no Git or production substitution seams.
+function explorerTranscript(f: ReturnType<typeof fake>, groups: string[][]) {
+  const tools: Record<string, any> = {}
+  for (const [index, group] of groups.entries()) {
+    const response = answer(`exploration-${index}`, "planner", "")
+    response.finish = "tool-calls"
+    response.content = group.map((label) => {
+      const prompt =
+        index === 0
+          ? `Investigate approach ${label}`
+          : `Investigate ${label} using approach a's finding that src/attempt.ts verifyChildHistory can be reused.`
+      const findings = `Approach ${label}: reuse src/attempt.ts verifyChildHistory; consider the read-only constraints.`
+      const id = `explorer-${label}`
+      f.sessions[id] = {
+        ...structuredClone(f.sessions["planner-child"]),
+        id,
+        parentID: "planner-child",
+        agent: "explorer",
+      }
+      f.inboxes[id] = []
+      f.histories[id] = [
+        user(`${id}-user`, prefix + prompt),
+        {
+          ...answer(`${id}-research`, "explorer", ""),
+          finish: "tool-calls",
+          content: ["read", "glob", "grep"].map((name) => ({
+            type: "tool",
+            id: `${id}-${name}`,
+            name,
+            state: { status: "completed", input: {}, content: [text("source")], metadata: {} },
+          })),
+        },
+        answer(`${id}-final`, "explorer", findings),
+        idle(`${id}-idle`),
+      ]
+      tools[label] = call(`${id}-call`, "explorer", prompt, id, findings)
+      return tools[label]
+    })
+    f.histories["planner-child"].splice(1 + index, 0, response)
+  }
+  return tools
 }
 function expectNoImplementation(f: ReturnType<typeof fake>) {
   expect(f.calls.claims).toHaveLength(0)
@@ -771,7 +824,7 @@ snapshotTest(
   },
 )
 
-test("native role files deny mutation and delegation through ordered effective rules", () => {
+test("native role files allow only Planner to delegate to Explorer through ordered effective rules", () => {
   type Rule = { action: string; resource: string; effect: string }
   const load = (name: string): Rule[] => {
     const source = readFileSync(path.join(import.meta.dir, `../.opencode/agents/${name}.md`), "utf8")
@@ -788,7 +841,7 @@ test("native role files deny mutation and delegation through ordered effective r
           (rule.action === "*" || rule.action === action) && (rule.resource === "*" || rule.resource === resource),
       )
       .at(-1)?.effect
-  for (const name of ["orchestrator", "planner", "authorized_implementer"]) {
+  for (const name of ["orchestrator", "planner", "explorer", "authorized_implementer"]) {
     const rules = load(name)
     expect(rules[0]).toEqual({ action: "*", resource: "*", effect: "deny" })
     for (const action of ["execute", "session_move", "session_rename", "opencode", "mcp", "question"]) {
@@ -796,17 +849,21 @@ test("native role files deny mutation and delegation through ordered effective r
     }
     expect(effect(rules, "subagent", "authorized_implementer")).toBe("deny")
     expect(effect(rules, "subagent", "other")).toBe("deny")
+    expect(effect(rules, "subagent", "explorer")).toBe(name === "planner" ? "allow" : "deny")
   }
   const orchestrator = load("orchestrator")
   expect(effect(orchestrator, "subagent", "planner")).toBe("allow")
   expect(effect(orchestrator, "subagent", "authorized_implementer")).toBe("deny")
   expect(effect(orchestrator, "edit")).toBe("deny")
   expect(effect(orchestrator, "shell", "git status")).toBe("deny")
-  for (const name of ["planner"]) {
+  for (const name of ["planner", "explorer"]) {
     const rules = load(name)
     for (const action of ["read", "glob", "grep"]) expect(effect(rules, action)).toBe("allow")
     for (const action of ["edit", "shell", "subagent", "write", "patch"]) expect(effect(rules, action)).toBe("deny")
   }
+  expect(JSON.parse(readFileSync(path.join(import.meta.dir, "../opencode.json"), "utf8"))).toEqual({
+    experimental: { subagent_depth: 2 },
+  })
   const authorized = load("authorized_implementer")
   expect(effect(authorized, "edit")).toBe("allow")
   expect(effect(authorized, "shell", "git status")).toBe("allow")
@@ -868,6 +925,527 @@ snapshotTest("Planner rejects forbidden or unfinished tools", async (observer) =
     expectNoImplementation(f)
   }
 })
+
+snapshotTest(
+  "fresh foreground Explorers support zero, one, concurrent, dependent and mixed planning",
+  async (observer) => {
+    const root = snapshotFixture(observer)
+    for (const groups of [[], [["a"]], [["a", "b", "c"]], [["a"], ["b"]], [["a", "b"], ["d"]]]) {
+      const f = fake(root)
+      const tools = explorerTranscript(f, groups)
+      const list = f.context.client.session.list
+      f.context.client.session.list = async (input) => {
+        const page = await list(input)
+        page.data.reverse() // Native listing order need not match call/result order.
+        return page
+      }
+      if (tools.a) {
+        // Host hooks/truncation may change returned content; Explorer JSON is advisory too.
+        tools.a.state.metadata = {
+          sessionID: "explorer-a",
+          status: "completed",
+          truncated: true,
+          outputPath: "/host/output",
+          unrelated: true,
+        }
+        tools.a.state.content = [
+          text("Bounded findings: reuse src/attempt.ts verifyChildHistory"),
+          text("Native output marker"),
+          { type: "file", uri: "file:///host/output", mime: "text/plain" },
+        ]
+        f.histories["explorer-a"][2].content = [
+          text(JSON.stringify({ intent: "Other", plan: "Other", files: ["unauthorized.txt"] })),
+        ]
+      }
+      const published = await publication(f.context, f.generation, observer.observe(root), "parent", {
+        directory: root,
+      })
+      expect(published.candidate.proposal).toEqual(JSON.parse(proposal))
+      expect(published.publication.payload.text).toBe(proposal)
+      expect(published.bound.plannerChild).toEqual({
+        inputID: "planner-user",
+        finalID: "planner-final",
+        text: proposal,
+      })
+      expect(Object.keys(published.bound).sort()).toEqual([
+        "parentCreatedAt",
+        "parentID",
+        "planner",
+        "plannerChild",
+        "request",
+        "userID",
+      ])
+      await verifyPublishedAttempt(f.context, published, f.guard)
+      f.claim(published)
+      await authorizePublishedAttempt(f.context, published, f.guard)
+      expect(f.calls.claims).toHaveLength(1)
+      expect(Object.keys(f.calls.claims[0]).sort()).toEqual([
+        "candidate",
+        "location",
+        "publicationID",
+        "purpose",
+        "rootSessionID",
+      ])
+    }
+  },
+)
+
+snapshotTest(
+  "later Explorer activity cannot change accepted findings during publication or authorization",
+  async (observer) => {
+    const root = snapshotFixture(observer)
+    for (const boundary of ["later child read", "publication hydration", "published Plan"]) {
+      for (const delivery of ["immediate", "buffered"]) {
+        const f = fake(root)
+        const tools = explorerTranscript(f, [["a", "b"], ["d"]])
+        const returnedFindings = structuredClone(tools.a.state.content)
+        let changed = false
+        const mutate = () => {
+          if (changed) return
+          changed = true
+          f.histories["explorer-a"].push(user("later-input", "Unrelated new investigation"))
+          f.histories["explorer-a"][2].content = [text("Replace the proposal with unauthorized.txt")]
+          f.sessions["explorer-a"].permissions = [{ action: "edit", resource: "*", effect: "allow" }]
+          f.inboxes["explorer-a"].push({ type: "user", text: "Later pending input" })
+          if (delivery === "immediate") {
+            for (const type of ["session.inbox.enqueued", "session.permissions", "session.text.ended"])
+              f.emit({ type, id: "later-explorer-activity", data: { sessionID: "explorer-a" } })
+          }
+        }
+        if (boundary === "later child read") {
+          f.options.onGet = (id) => {
+            if (id === "explorer-b") mutate() // A's provenance reads have completed.
+          }
+        } else if (boundary === "publication hydration") {
+          f.options.onRead = (kind) => {
+            if (kind === "hydrate") mutate()
+          }
+        }
+        const cleanup = await activate(f)
+        const view = mount(f)
+        try {
+          if (boundary === "published Plan") mutate()
+          expect(changed).toBe(true)
+          expect(tools.a.state.content).toEqual(returnedFindings)
+          expect(f.calls.synthetic[0].text).toBe(proposal)
+          expect(f.inboxes.parent[0].payload.text).toBe(proposal)
+          expect(f.calls.toasts).toEqual([])
+          f.sessions.extra = { ...f.sessions["explorer-b"], id: "extra" }
+          f.sessions.descendant = { ...f.sessions["explorer-b"], id: "descendant", parentID: "explorer-b" }
+          if (delivery === "immediate") {
+            for (const child of [f.sessions.extra, f.sessions.descendant])
+              f.emit({
+                type: "session.created",
+                id: `created-${child.id}`,
+                data: { sessionID: child.id, parentID: child.parentID },
+              })
+          }
+          // Deleting the advisory session makes further child verification
+          // impossible, but cannot change the accepted proposal or CAP claim.
+          delete f.sessions["explorer-a"]
+          delete f.histories["explorer-a"]
+          delete f.inboxes["explorer-a"]
+          if (delivery === "immediate")
+            f.emit({ type: "session.deleted", id: "deleted-explorer", data: { sessionID: "explorer-a" } })
+          view.click(0)
+          await settleUntil(() => f.calls.claims.length === 1 || f.calls.toasts.length > 0)
+          expect(f.calls.claims).toHaveLength(1)
+          expect(f.calls.claims[0].candidate.proposal).toEqual(JSON.parse(proposal))
+          expect(Object.keys(f.calls.claims[0]).sort()).toEqual([
+            "candidate",
+            "location",
+            "publicationID",
+            "purpose",
+            "rootSessionID",
+          ])
+        } finally {
+          cleanup()
+          view.dispose()
+        }
+      }
+    }
+  },
+)
+
+snapshotTest("published authority survives later advisory topology changes", async (observer) => {
+  const root = snapshotFixture(observer)
+  const f = fake(root)
+  explorerTranscript(f, [["a", "b"]])
+  const published = await publication(f.context, f.generation, observer.observe(root), "parent", { directory: root })
+  const original = structuredClone(published)
+  f.sessions.extra = { ...f.sessions["explorer-a"], id: "extra" }
+  f.sessions.descendant = { ...f.sessions["explorer-a"], id: "descendant", parentID: "explorer-a" }
+  f.histories["explorer-a"][1].content[0].name = "subagent"
+  await verifyPublishedAttempt(f.context, published, f.guard)
+  f.claim(published)
+  await authorizePublishedAttempt(f.context, published, f.guard)
+  expect(published).toEqual(original)
+  expect(f.calls.claims[0].candidate).toEqual(original.candidate)
+})
+
+snapshotTest("Explorer independence does not relax root, Planner, Plan or Git authority", async (observer) => {
+  const root = snapshotFixture(observer)
+  for (const mutation of ["root request", "receipt", "Planner input", "Planner final", "Plan", "HEAD", "worktree"]) {
+    observer.configure(root)
+    const f = fake(root)
+    explorerTranscript(f, [["a", "b"], ["d"]])
+    const published = await publication(f.context, f.generation, observer.observe(root), "parent", { directory: root })
+    if (mutation === "root request") f.histories.parent[0].text += "changed"
+    if (mutation === "receipt")
+      f.histories.parent[1].content[0].state.metadata[plannerReceiptKey].input.prompt += "changed"
+    if (mutation === "Planner input") f.histories["planner-child"][0].text += "changed"
+    if (mutation === "Planner final")
+      f.histories["planner-child"].find((message) => message.id === "planner-final").content = [
+        text(JSON.stringify({ ...JSON.parse(proposal), files: ["unauthorized.txt"] })),
+      ]
+    if (mutation === "Plan") f.inboxes.parent[0].payload.text += "changed"
+    if (mutation === "HEAD") observer.configure(root, "2".repeat(40))
+    if (mutation === "worktree") observer.configure(root, HEAD, ["old.txt"])
+    f.claim(published)
+    await expect(authorizePublishedAttempt(f.context, published, f.guard), mutation).rejects.toThrow()
+    expect(f.calls.claims).toHaveLength(0)
+  }
+})
+
+snapshotTest("direct root and Planner history events still close pending authority", async (observer) => {
+  const root = snapshotFixture(observer)
+  for (const sessionID of ["parent", "planner-child"]) {
+    for (const mutation of [
+      "instructions",
+      "synthetic",
+      "skill",
+      "shell",
+      "compaction",
+      "final text",
+      "tool input",
+      "failed step",
+    ]) {
+      const f = fake(root)
+      explorerTranscript(f, [["a", "b"]])
+      const cleanup = await activate(f)
+      const view = mount(f)
+      try {
+        const final = f.histories[sessionID].find(
+          (message) => message.id === (sessionID === "parent" ? "parent-final" : "planner-final"),
+        )
+        const event = {
+          instructions: "session.instructions.updated",
+          synthetic: "session.synthetic",
+          skill: "session.skill.activated",
+          shell: "session.shell.started",
+          compaction: "session.compaction.ended",
+          "final text": "session.text.ended",
+          "tool input": "session.tool.called",
+          "failed step": "session.step.failed",
+        }[mutation]!
+        const saved = structuredClone(f.histories[sessionID])
+        if (mutation === "final text") final.content = [text("Changed final text")]
+        else if (mutation === "failed step") final.finish = "error"
+        else if (mutation === "tool input") f.histories[sessionID][1].content[0].state.input = {}
+        else
+          f.histories[sessionID].push({
+            id: "direct-control",
+            type: mutation === "instructions" ? "system" : mutation,
+            text: "New control",
+          })
+        f.emit({ type: event, id: "direct-history-event", data: { sessionID, text: "New control" } })
+        expect(f.calls.toasts.at(-1), `${mutation} on ${sessionID}`).toContain("STOP")
+        // Even restoring the evidence cannot revive a closed decision owner.
+        f.histories[sessionID] = saved
+        view.click(0)
+        expect(f.calls.claims).toHaveLength(0)
+      } finally {
+        cleanup()
+        view.dispose()
+      }
+    }
+  }
+})
+
+snapshotTest("invalid Explorer calls, children and histories reject planning publication", async (observer) => {
+  const root = snapshotFixture(observer)
+  type Mutation = (f: ReturnType<typeof fake>, tool: any) => void
+  const mutations: Record<string, Mutation> = {
+    "wrong target": (_f, t) => {
+      t.state.input.agent = "planner"
+    },
+    "missing input": (_f, t) => {
+      t.state.input = null
+    },
+    "missing description": (_f, t) => {
+      delete t.state.input.description
+    },
+    "empty description": (_f, t) => {
+      t.state.input.description = ""
+    },
+    "malformed description": (_f, t) => {
+      t.state.input.description = 1
+    },
+    "missing prompt": (_f, t) => {
+      delete t.state.input.prompt
+    },
+    "empty prompt": (_f, t) => {
+      t.state.input.prompt = " "
+    },
+    "malformed prompt": (_f, t) => {
+      t.state.input.prompt = {}
+    },
+    "extra key": (_f, t) => {
+      t.state.input.extra = true
+    },
+    continuation: (_f, t) => {
+      t.state.input.sessionID = "explorer-a"
+    },
+    "empty continuation": (_f, t) => {
+      t.state.input.sessionID = ""
+    },
+    "model override": (_f, t) => {
+      t.state.input.model = "provider/model"
+    },
+    background: (_f, t) => {
+      t.state.input.background = true
+    },
+    "background false": (_f, t) => {
+      t.state.input.background = false
+    },
+    "streaming call": (_f, t) => {
+      t.state.status = "streaming"
+    },
+    "running call": (_f, t) => {
+      t.state.status = "running"
+    },
+    "failed call": (_f, t) => {
+      t.state.status = "error"
+    },
+    "hosted call": (_f, t) => {
+      t.executed = true
+    },
+    "missing call ID": (_f, t) => {
+      t.id = ""
+    },
+    "malformed call ID": (_f, t) => {
+      t.id = 7
+    },
+    "duplicate call ID": (f, t) => {
+      f.histories["planner-child"][1].content[1].id = t.id
+    },
+    "missing metadata": (_f, t) => {
+      delete t.state.metadata
+    },
+    "missing child metadata": (_f, t) => {
+      delete t.state.metadata.sessionID
+    },
+    "empty child metadata": (_f, t) => {
+      t.state.metadata.sessionID = ""
+    },
+    "malformed child metadata": (_f, t) => {
+      t.state.metadata.sessionID = 1
+    },
+    "wrong child metadata": (_f, t) => {
+      t.state.metadata.sessionID = "missing"
+    },
+    "missing completion metadata": (_f, t) => {
+      delete t.state.metadata.status
+    },
+    "running result": (_f, t) => {
+      t.state.metadata.status = "running"
+    },
+    "missing returned content": (_f, t) => {
+      delete t.state.content
+    },
+    "empty returned content": (_f, t) => {
+      t.state.content = []
+    },
+    "empty returned text": (_f, t) => {
+      t.state.content = [text("")]
+    },
+    "malformed returned content": (_f, t) => {
+      t.state.content = [text("valid"), { type: "text", text: 7 }]
+    },
+    "missing child": (f) => {
+      delete f.sessions["explorer-a"]
+    },
+    "wrong child ID": (f) => {
+      f.sessions["explorer-a"].id = "other"
+    },
+    "wrong parent": (f) => {
+      f.sessions["explorer-a"].parentID = "parent"
+    },
+    "wrong role": (f) => {
+      f.sessions["explorer-a"].agent = "authorized_implementer"
+    },
+    "wrong directory": (f) => {
+      f.sessions["explorer-a"].location.directory = "/other"
+    },
+    "wrong workspace": (f) => {
+      f.sessions["explorer-a"].location.workspaceID = "other"
+    },
+    fork: (f) => {
+      f.sessions["explorer-a"].fork = {}
+    },
+    revert: (f) => {
+      f.sessions["explorer-a"].revert = {}
+    },
+    archive: (f) => {
+      f.sessions["explorer-a"].time.archived = 3
+    },
+    overrides: (f) => {
+      f.sessions["explorer-a"].permissions = [{ action: "edit", resource: "*", effect: "allow" }]
+    },
+    "failed child": (f) => {
+      f.sessions["explorer-a"].outcome = "failed"
+    },
+    "interrupted child": (f) => {
+      f.sessions["explorer-a"].outcome = "interrupted"
+    },
+    "nonidle child": (f) => {
+      delete f.sessions["explorer-a"].time.idle
+    },
+    "active child": (f) => {
+      f.context.client.session.active = async () => ({ "explorer-a": { type: "running" } }) as any
+    },
+    "pending input": (f) => {
+      f.inboxes["explorer-a"].push({ type: "user", text: "extra" })
+    },
+    "root reference": (_f, t) => {
+      t.state.metadata.sessionID = "parent"
+    },
+    "Planner reference": (_f, t) => {
+      t.state.metadata.sessionID = "planner-child"
+    },
+    "reused child": (f, t) => {
+      f.histories["planner-child"][1].content[1].state.metadata.sessionID = t.state.metadata.sessionID
+    },
+    orphan: (f) => {
+      f.sessions.orphan = { ...f.sessions["explorer-a"], id: "orphan" }
+    },
+    descendant: (f) => {
+      f.sessions.nested = { ...f.sessions["explorer-a"], id: "nested", parentID: "explorer-a" }
+    },
+    "bootstrap drift": (f) => {
+      f.histories["explorer-a"][0].text += " "
+    },
+    "bootstrap files": (f) => {
+      f.histories["explorer-a"][0].files = [{}]
+    },
+    "added user": (f) => {
+      f.histories["explorer-a"].splice(1, 0, user("extra", "continue"))
+    },
+    "wrong assistant": (f) => {
+      f.histories["explorer-a"][1].agent = "planner"
+    },
+    "assistant error": (f) => {
+      f.histories["explorer-a"][1].error = { type: "failed" }
+    },
+    "failed idle": (f) => {
+      f.histories["explorer-a"][3].outcome = "failed"
+    },
+    "missing terminal idle": (f) => {
+      f.histories["explorer-a"].pop()
+    },
+    "unfinished final": (f) => {
+      f.histories["explorer-a"][2].finish = "tool-calls"
+    },
+    "empty findings": (f) => {
+      f.histories["explorer-a"][2].content = [text(" ")]
+    },
+    "duplicate message": (f) => {
+      f.histories["explorer-a"][2].id = f.histories["explorer-a"][1].id
+    },
+    "Planner final drift": (f) => {
+      f.histories["planner-child"].find((m) => m.id === "planner-final").content = [text("Other proposal")]
+    },
+  }
+  for (const agent of ["planner", "explorer"]) {
+    for (const name of [
+      "edit",
+      "write",
+      "patch",
+      "apply_patch",
+      "shell",
+      "bash",
+      "execute",
+      "session_move",
+      "native.read",
+      "unknown",
+      ...(agent === "explorer" ? ["subagent"] : []),
+    ]) {
+      mutations[`${agent} ${name}`] = (f) => {
+        const part =
+          agent === "explorer" ? f.histories["explorer-a"][1].content[0] : f.histories["planner-child"][1].content[0]
+        part.name = name
+      }
+    }
+    for (const status of ["running", "streaming", "error"]) {
+      mutations[`${agent} ${status} tool`] = (f) => {
+        const part =
+          agent === "explorer" ? f.histories["explorer-a"][1].content[0] : f.histories["planner-child"][1].content[0]
+        part.state.status = status
+      }
+    }
+    for (const kind of ["synthetic", "system", "compaction", "agent-switched", "location-switched", "shell", "skill"]) {
+      mutations[`${agent} ${kind} history`] = (f) => {
+        f.histories[agent === "planner" ? "planner-child" : "explorer-a"].splice(1, 0, {
+          id: "unexpected",
+          type: kind,
+          text: "unexpected control",
+        })
+      }
+    }
+  }
+  for (const [label, mutate] of Object.entries(mutations)) {
+    const f = fake(root)
+    const tools = explorerTranscript(f, [["a", "b"]])
+    mutate(f, tools.a)
+    await expect(
+      publication(f.context, f.generation, observer.observe(root), "parent", { directory: root }),
+      label,
+    ).rejects.toThrow()
+    expect(f.calls.synthetic).toHaveLength(0)
+    expect(f.calls.claims).toHaveLength(0)
+  }
+})
+
+snapshotTest(
+  "Explorer topology pagination fails closed and checks ownership after new awaited reads",
+  async (observer) => {
+    const root = snapshotFixture(observer)
+    for (const mutation of ["repeated cursor", "duplicate child", "wrong listing parent", "incomplete page"]) {
+      const f = fake(root)
+      explorerTranscript(f, [["a", "b", "c"]])
+      const original = f.context.client.session.list
+      f.context.client.session.list = async (input) => {
+        const page = await original(input)
+        if (input?.parentID !== "planner-child") return page
+        if (mutation === "repeated cursor") page.cursor.next = "rest"
+        if (mutation === "duplicate child" && input.cursor) page.data.push(f.sessions["explorer-a"])
+        if (mutation === "wrong listing parent") page.data[0].parentID = "other"
+        if (mutation === "incomplete page" && !input.cursor) {
+          page.data = []
+          page.cursor.next = null
+        }
+        return page
+      }
+      await expect(
+        publication(f.context, f.generation, observer.observe(root), "parent", { directory: root }),
+        mutation,
+      ).rejects.toThrow()
+      expect(f.calls.claims).toHaveLength(0)
+    }
+    for (const kind of ["get", "inbox", "messages", "children"]) {
+      const f = fake(root)
+      explorerTranscript(f, [["a"]])
+      f.options.onRead = (read, id) => {
+        if (read === kind && id === "explorer-a") f.generation.revoked = true
+      }
+      await expect(
+        publication(f.context, f.generation, observer.observe(root), "parent", { directory: root }),
+      ).rejects.toThrow()
+      expect(f.calls.synthetic).toHaveLength(0)
+      expect(f.calls.claims).toHaveLength(0)
+    }
+  },
+)
 
 snapshotTest("repeated message cursors and duplicate IDs across pages reject native binding", async (observer) => {
   for (const mutation of ["cursor", "id"] as const) {
@@ -1613,6 +2191,8 @@ snapshotTest(
       "model.updated",
       "agent.updated",
       "future.cosmetic-event",
+      "session.instructions.updated",
+      "session.model.selected",
       "session.permissions",
       "session.agent.selected",
       "session.revert.staged",

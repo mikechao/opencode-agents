@@ -46,3 +46,32 @@ test("pinned OpenCode permission uses explicit actor/session policy and effectiv
   expect(assertion.indexOf("newBlockedError(")).toBeGreaterThan(blocked)
   expect(ask).toBeGreaterThan(assertion.indexOf("newBlockedError("))
 })
+
+test("pinned OpenCode nesting and foreground result expose fresh child completion evidence", () => {
+  const native = source("tool/plugin/subagent.ts")
+  expect(native).toContain('Config.latest(yield*config.entries(),"experimental")?.subagent_depth??1')
+  const gate = native.indexOf("if(depth>=limit)")
+  expect(gate).toBeGreaterThan(-1)
+  expect(gate).toBeLessThan(native.indexOf("sessions.create({"))
+  expect(native).toContain("input.sessionID===undefined?undefined:")
+  expect(native).toContain("yield*jobs.block({id:child.id,sessionID:context.sessionID})")
+  expect(native).toContain('status:"completed"asconst,output:result?.info.output??SubagentCompletion.NO_TEXT')
+  expect(native).toContain("metadata:{sessionID:output.sessionID,status:output.status}")
+  expect(source("session/subagent-job.ts")).toContain("returnSubagentCompletion.text(assistant)")
+})
+
+test("pinned OpenCode joins local foreground calls and replays persisted tool content into model context", () => {
+  const step = source("session/runner/step.ts")
+  expect(step).toContain("Effect.forkScoped")
+  expect(step).toContain("Fiber.awaitAll(toolRuns.map((run)=>run.fiber))")
+  expect(step).toContain("Effect.flatMap(toolOutput.truncate)")
+  const projection = source("session/message-updater.ts")
+  expect(projection).toContain('status:"completed",input:match.state.input,content:event.data.content')
+  const lowering = source("session/runner/to-llm-message.ts")
+  expect(lowering).toContain("constcontent=tool.state.content")
+  expect(lowering).toContain('single?.type==="text"?{type:"text"asconst,value:single.text}')
+  expect(lowering).toContain(".map(Message.tool)")
+  expect(source("session/model-request.ts")).toContain(
+    "messages:toLLMMessages(input.messages,input.model.ref,providerMetadataKey)",
+  )
+})

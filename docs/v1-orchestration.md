@@ -49,6 +49,64 @@ completion, are rejected throughout that activation.
 
 ## Host boundaries
 
+### Planner exploration
+
+Planner may use zero, one, or multiple fresh native `explorer` children to
+investigate existing mechanisms, viable approaches, constraints, and trade-offs.
+Planner owns orchestration: independent foreground `subagent` calls may be
+issued together in one response and execute through OpenCode's native tool
+concurrency; dependent follow-ups may be issued after earlier findings return.
+The host returns completed findings into Planner's ordinary tool-result/model
+context and provides native child-session navigation. Project `opencode.json`
+sets `experimental.subagent_depth: 2` for Orchestrator → Planner → Explorer.
+
+Planner allows only read/glob/grep and `subagent:explorer`; Explorer allows only
+read/glob/grep and cannot delegate or implement. Calls contain exactly `agent`,
+`description`, and `prompt`, with no continuation, model override, or background
+key. Background/running results and later synthetic notifications are unsupported.
+There is no custom scheduler, join state, result store, or Explorer workflow state.
+
+When accepting the planning execution before publication, trusted code verifies
+completed calls against their unique fresh Explorer children, exact bootstrap,
+role, parent, location/workspace, empty permission overrides, successful idle
+history, and read-only tool allowlist. Complete native child listing must match
+the call set exactly, and each Explorer must have no descendants. Verification
+accepts multiple foreground calls in one response without execution-order
+conditions. Malformed calls, incomplete/failed results, forbidden activity, or
+unexpected children observed during this verification prevent publication.
+Unsupported synthetic/system/compaction history still fails closed, including
+native nested instruction injection; this does not expand supported histories.
+Native result normalization/truncation need not match full child prose byte for
+byte.
+
+Explorer is advisory planning provenance. OpenCode captures its completed
+foreground result and persists returned content in Planner's own tool history;
+subsequent Planner model requests consume that content. Later child history or
+policy changes cannot retroactively change that result without a separate
+Planner-history mutation. Planner owns synthesis. Trusted code binds the exact
+final Planner proposal, its input/final identities, and the existing root-request
+and native Planner-call evidence; only that proposal becomes Plan authority.
+No separate Explorer identity, findings, history, or topology evidence enters
+`Bound`, the candidate, CAP state, or the Authorize RPC payload.
+
+Publication severs ongoing Explorer session liveness from authorization authority.
+The provenance reads are admission observations, not an atomic snapshot or a
+promise that every advisory child stays idle and unchanged. Even between a child's
+last verification read and publication, unrelated later child activity cannot
+change the findings already returned to Planner or its accepted final proposal.
+No Explorer watch, event synchronization, or freshness fence is required.
+
+Authorization revalidates authority-bearing state: the exact root request and
+Issue #11 effective-input receipt; root/Planner identity, location, supported
+history, bootstrap and exact final proposal; candidate integrity; exact pending
+Plan and displayed publication; repository root/HEAD and Git freshness; and the
+existing one-shot decision ownership. Explorer sessions are not reopened.
+Root/Planner task, policy, location, and direct history-mutation events continue
+to close local authority before transfer. These notifications supplement trusted
+reads; they do not create an Explorer lifecycle or a host-ordered freshness fence.
+
+### Implementation admission
+
 [`server.ts`](../.opencode/plugins/opencode-agents/server.ts) is the Effect entry.
 [`authorize-rpc.ts`](../src/authorize-rpc.ts) defines the local Authorize RPC.
 [`cap.ts`](../src/cap.ts) owns the private claim, control ID/text, phase,

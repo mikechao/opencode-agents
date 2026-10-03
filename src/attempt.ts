@@ -1,4 +1,6 @@
 import type { Context } from "@opencode/plugin/tui/context"
+import { Content as ToolContent } from "@opencode/schema/tool"
+import { Schema } from "effect"
 import type { LocationRef, OpenCodeEvent, SessionInboxInfo, SessionInfo, SessionMessageInfo } from "@opencode/client"
 import { createHash, randomUUID } from "node:crypto"
 import { assertLive, exactKeys, frozenCopy, type Generation } from "./cap.ts"
@@ -277,7 +279,7 @@ function parentCalls(history: SessionMessageInfo[]): { userID: string; request: 
   const planner = completedCall(tools[0].messageID, tools[0].part, users[0].id, users[0].text)
   return { userID: users[0].id, request: users[0].text, planner }
 }
-function verifyChildHistory(history: SessionMessageInfo[], agent: "planner", prompt: string): Child {
+function verifyChildHistory(history: SessionMessageInfo[], agent: "planner" | "explorer", prompt: string): Child {
   const users = history.filter((message) => message.type === "user")
   if (
     users.length !== 1 ||
@@ -293,24 +295,102 @@ function verifyChildHistory(history: SessionMessageInfo[], agent: "planner", pro
     stop(`unexpected ${agent} bootstrap completion`)
   }
   const final = oneFinal(history, agent)
-  if (
-    history.some(
-      (message) =>
-        message.type === "assistant" &&
-        message.content.some(
-          (part) =>
-            part.type === "tool" &&
-            (["edit", "write", "apply_patch", "bash", "subagent", "execute"].includes(part.name) ||
-              part.name.startsWith("session_") ||
-              part.state.status !== "completed"),
-        ),
-    )
-  ) {
-    stop(`${agent} used a disallowed tool during bootstrap`)
+  const toolIDs = new Set<string>()
+  for (const message of history) {
+    if (message.type !== "assistant") continue
+    for (const part of message.content) {
+      if (part.type !== "tool") continue
+      if (
+        part.state.status !== "completed" ||
+        part.executed === true ||
+        !(["read", "glob", "grep"].includes(part.name) || (agent === "planner" && part.name === "subagent"))
+      )
+        stop(`${agent} used a disallowed tool during bootstrap`)
+      if (typeof part.id !== "string" || !part.id.trim() || toolIDs.has(part.id))
+        stop(`duplicate or missing ${agent} tool ID`)
+      toolIDs.add(part.id)
+    }
   }
   const text = finalText(final)
-  if (!text) stop(`unexpected ${agent} final text`)
+  if (!text.trim()) stop(`unexpected ${agent} final text`)
   return { inputID: users[0].id, finalID: final.id, text }
+}
+// Complete native topology observations are transient verification evidence.
+// Do not filter by location: that could hide an unexpectedly moved child.
+async function children(context: Context, parentID: string, check: () => void): Promise<Set<string>> {
+  const ids = new Set<string>()
+  const cursors = new Set<string>()
+  let cursor: string | undefined
+  do {
+    const page = await after(
+      check,
+      context.client.session.list({ parentID, limit: 200, ...(cursor ? { cursor } : { order: "asc" }) }),
+    )
+    for (const child of page.data) {
+      if (typeof child.id !== "string" || !child.id.trim() || child.parentID !== parentID || ids.has(child.id))
+        stop("unexpected or duplicate child session")
+      ids.add(child.id)
+    }
+    cursor = page.cursor.next ?? undefined
+    if (cursor && cursors.has(cursor)) stop("child pagination repeated a cursor")
+    if (cursor) cursors.add(cursor)
+  } while (cursor)
+  return ids
+}
+async function verifyPlannerHistory(
+  context: Context,
+  check: () => void,
+  planner: SessionInfo,
+  prompt: string,
+): Promise<Child> {
+  const history = await messages(context, planner.id, check)
+  const result = verifyChildHistory(history, "planner", prompt)
+  const explorerIDs = new Set<string>()
+  const explorers: { id: string; prompt: string }[] = []
+  for (const message of history) {
+    if (message.type !== "assistant") continue
+    for (const tool of message.content) {
+      if (tool.type !== "tool" || tool.name !== "subagent") continue
+      if (tool.state.status !== "completed") stop("incomplete Explorer call")
+      const input = tool.state.input
+      if (
+        !exactKeys(input, ["agent", "description", "prompt"]) ||
+        input.agent !== "explorer" ||
+        typeof input.description !== "string" ||
+        !input.description.trim() ||
+        typeof input.prompt !== "string" ||
+        !input.prompt.trim()
+      )
+        stop("unexpected Explorer call input")
+      const childID = tool.state.metadata?.sessionID
+      if (
+        typeof childID !== "string" ||
+        !childID.trim() ||
+        tool.state.metadata?.status !== "completed" ||
+        !Array.isArray(tool.state.content) ||
+        !tool.state.content.every(Schema.is(ToolContent)) ||
+        !tool.state.content.some((part) => part?.type === "text" && typeof part.text === "string" && part.text.trim())
+      )
+        stop("missing completed Explorer result")
+      if (childID === planner.id || childID === planner.parentID || explorerIDs.has(childID))
+        stop("Explorer is not a unique fresh child")
+      explorerIDs.add(childID)
+      explorers.push({ id: childID, prompt: input.prompt })
+    }
+  }
+  // Advisory provenance is observed once when accepting this planning execution.
+  // Later child activity cannot rewrite the completed tool result in Planner history.
+  for (const child of explorers) {
+    const explorer = await after(check, context.client.session.get({ sessionID: child.id }))
+    successful(explorer, child.id, "explorer", planner.location, planner.id)
+    await idle(context, child.id, check)
+    verifyChildHistory(await messages(context, child.id, check), "explorer", child.prompt)
+    if ((await children(context, child.id, check)).size) stop("Explorer has unexpected descendants")
+  }
+  const actual = await children(context, planner.id, check)
+  if (actual.size !== explorerIDs.size || [...actual].some((id) => !explorerIDs.has(id)))
+    stop("Planner children differ from completed Explorer calls")
+  return result // Only the existing exact final Planner binding becomes authority.
 }
 async function bindNativeAttempt(
   context: Context,
@@ -327,8 +407,7 @@ async function bindNativeAttempt(
   const planner = await after(check, context.client.session.get({ sessionID: calls.planner.childID }))
   successful(planner, calls.planner.childID, "planner", location, parentID)
   await idle(context, planner.id, check)
-  const history = await messages(context, planner.id, check)
-  const plannerChild = verifyChildHistory(history, "planner", calls.planner.effective.input.prompt)
+  const plannerChild = await verifyPlannerHistory(context, check, planner, calls.planner.effective.input.prompt)
   return frozenCopy({ parentID, ...calls, plannerChild, parentCreatedAt: parent.time.created })
 }
 function checkedPublication(
@@ -401,8 +480,13 @@ async function verifyParentPlanner(context: Context, published: PublishedAttempt
   const planner = await after(check, context.client.session.get({ sessionID: bound.planner.childID }))
   successful(planner, bound.planner.childID, "planner", activation.location, bound.parentID)
   await idle(context, bound.planner.childID, check)
-  const history = await messages(context, bound.planner.childID, check)
-  const child = verifyChildHistory(history, "planner", bound.planner.effective.input.prompt)
+  // Publication binds the exact Planner proposal. Explorer sessions are no longer
+  // authority; revalidate the existing root/Planner binding without reopening them.
+  const child = verifyChildHistory(
+    await messages(context, planner.id, check),
+    "planner",
+    bound.planner.effective.input.prompt,
+  )
   if (!same(child, bound.plannerChild)) stop("Planner result changed")
 }
 function observePublication(activation: ActivationEvidence): void {
