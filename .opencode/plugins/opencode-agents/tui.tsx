@@ -12,6 +12,7 @@ import {
   initiallyAuthorizable,
   publishedPresentationMatches,
   publishPlan,
+  publishTerminalReceipt,
   snapshotLocation,
   verifyPublishedAttempt,
   type DecisionOwner,
@@ -60,6 +61,10 @@ const plugin: Definition = {
       ownership = { kind: "closed" }
       guard.bound = undefined
       guard.publishing = undefined
+      setPresentation(undefined)
+      const remove = removePresentation
+      removePresentation = undefined
+      remove?.()
     }
     const present = (title: string, message: string) => {
       if (generation.revoked) return
@@ -71,7 +76,7 @@ const plugin: Definition = {
           variant: title === "STOP" ? "error" : "info",
         })
       } catch {
-        /* The persistent composer status remains the trusted outcome. */
+        /* Toast presentation never changes the settled outcome. */
       }
     }
     const terminate = (error: unknown) => {
@@ -82,8 +87,23 @@ const plugin: Definition = {
           ? `STOP — Authorized server attempt outcome unknown; no claim or wake will be resent. ${reason}`
           : `STOP — Implementation was not admitted. ${reason}`
       closeAuthority()
-      if (rootSessionID) showStatus(message)
       present("STOP", message)
+    }
+    const publishReceipt = (sessionID: string, receipt: string) => {
+      void publishTerminalReceipt(context, sessionID, receipt).catch(() => {
+        present("Receipt unavailable", "The terminal receipt could not be published. The attempt remains closed.")
+      })
+    }
+    // Operation failures have a genuine owner. Render/mount loss and uncertain
+    // post-transfer transport failures never publish a competing disposition.
+    const admissionFailed = (error: unknown) => {
+      if (ownership.kind === "closed" || generation.revoked) return
+      const sessionID = ownership.kind === "transferred" ? undefined : rootSessionID
+      terminate(error)
+      if (sessionID) {
+        const reason = error instanceof Error ? error.message : String(error)
+        publishReceipt(sessionID, `Implementation was not admitted.\nReason: ${reason}`)
+      }
     }
     const rootSelected = () => {
       const route = context.ui.router.current()
@@ -147,11 +167,6 @@ const plugin: Definition = {
         ),
       })
     }
-    const showStatus = (message: string) => {
-      if (!rootSessionID) return
-      ensurePresentation(rootSessionID)
-      setPresentation({ kind: "status", message })
-    }
     const armRetained = () => {
       if (ownership.kind !== "retained" || generation.revoked || !rootSelected()) return
       const captured = ownership.published
@@ -168,7 +183,7 @@ const plugin: Definition = {
           ensurePresentation(captured.bound.parentID)
           setPresentation({ kind: "pending", published: captured })
         })
-        .catch(terminate)
+        .catch(admissionFailed)
     }
     const decide = (captured: PublishedAttempt, decision: "authorize" | "cancel") => {
       if (ownership.kind !== "pending" || generation.revoked || ownership.published !== captured || generation.busy)
@@ -191,7 +206,7 @@ const plugin: Definition = {
         if (decision === "cancel") {
           const message = "Cancelled — no implementation admitted"
           closeAuthority()
-          showStatus(message)
+          publishReceipt(captured.bound.parentID, "The published plan was cancelled before authorization.")
           present("Cancelled", message)
           return
         }
@@ -200,12 +215,11 @@ const plugin: Definition = {
           .then((message) => {
             if (generation.revoked) return
             closeAuthority()
-            showStatus(message)
-            present(message.startsWith("STOP") ? "STOP" : "Implementation gate", message)
+            present(message.includes("unverified") ? "STOP" : "Implementation gate", message)
           })
-          .catch(terminate)
+          .catch(admissionFailed)
       } catch (error) {
-        terminate(error)
+        admissionFailed(error)
       }
     }
     const mouseDecision = (captured: PublishedAttempt, decision: "authorize" | "cancel", event: MouseEvent) => {
@@ -442,15 +456,20 @@ const plugin: Definition = {
               ? dirtyStatus
               : "Planning only — clean-before-bootstrap ordering could not be proven. Start a new attempt from a clean worktree to enable implementation."
             closeAuthority()
-            ensurePresentation(published.bound.parentID)
-            setPresentation({ kind: "status", message })
+            present("Planning only", message)
+            publishReceipt(
+              published.bound.parentID,
+              baseline!.paths.length
+                ? "Implementation was not admitted because the worktree was dirty when this attempt started."
+                : "Implementation was not admitted because clean-before-bootstrap ordering could not be proven.",
+            )
             return
           }
           requireFresh(observeGit(location.directory!, baseline), baseline!)
           ownership = { kind: "retained", creation, published }
           setLayoutRevision((value) => value + 1)
         })
-        .catch(terminate)
+        .catch(admissionFailed)
     })
     // Before transfer, notifications invalidate TUI evidence on receipt;
     // independent publication reads also catch delayed notifications.

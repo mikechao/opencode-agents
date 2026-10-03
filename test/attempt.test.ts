@@ -209,6 +209,7 @@ type FakeOptions = {
   onWait?: (sessionID: string) => void | Promise<void>
   onGet?: (sessionID: string) => void
   onRead?: (kind: string, sessionID?: string) => void
+  onReceipt?: (input: any) => void | Promise<void>
 }
 const fakes = new WeakMap<Context, ReturnType<typeof fake>>()
 function fake(root: string, options: FakeOptions = {}) {
@@ -260,7 +261,13 @@ function fake(root: string, options: FakeOptions = {}) {
   const listeners = new Set<(event: any) => void>()
   const slots: any[] = []
   const renderer = Object.assign(new EventEmitter(), { terminalWidth: 120, terminalHeight: 60, isDestroyed: false })
-  const calls = { claims: [] as any[], decided: [] as string[], synthetic: [] as any[], toasts: [] as string[] }
+  const calls = {
+    claims: [] as any[],
+    decided: [] as string[],
+    synthetic: [] as any[],
+    receipts: [] as any[],
+    toasts: [] as string[],
+  }
   const syncCache = (sessionID: string) => {
     cache[sessionID] = structuredClone([
       ...histories[sessionID],
@@ -334,9 +341,12 @@ function fake(root: string, options: FakeOptions = {}) {
           await options.onWait?.(sessionID)
         },
         synthetic: async (input: any) => {
-          calls.synthetic.push(input)
+          if (input.metadata?.source === "opencode-agents") {
+            calls.receipts.push(input)
+            await options.onReceipt?.(input)
+          } else calls.synthetic.push(input)
           const admitted = {
-            id: input.id,
+            id: input.id ?? `receipt-${calls.receipts.length}`,
             type: "synthetic",
             sessionID: input.sessionID,
             delivery: input.delivery,
@@ -545,13 +555,19 @@ async function activate(f: ReturnType<typeof fake>, created?: number) {
   }
 }
 function mount(f: ReturnType<typeof fake>, sessionID = "parent", completeLayout = true) {
-  const registration = f.slots.at(-1)!
+  const registration = f.slots.at(-1) ?? { removed: true, claim: { append: "session.composer.top" } }
   expect(registration.claim.append).toBe("session.composer.top")
   const begin = elements.length
-  let dispose!: () => void
+  let releaseRoot!: () => void
+  let disposed = false
+  const dispose = () => {
+    if (disposed) return
+    disposed = true
+    releaseRoot()
+  }
   const view = createRoot((release) => {
-    dispose = release
-    return registration.claim.render({ sessionID })
+    releaseRoot = release
+    return registration.removed ? undefined : registration.claim.render({ sessionID })
   })
   const mounted = elements.slice(begin)
   registration.dispose = dispose
@@ -1619,10 +1635,10 @@ snapshotTest("TUI startup location evidence survives proxy mutation and rejects 
     await settleUntil(() => f.calls.toasts.length > 0)
     expect(f.calls.toasts.at(-1)).toContain("TUI location changed")
     expect(f.calls.synthetic).toEqual([])
-    expect(f.slots).toHaveLength(1)
+    expect(f.slots).toHaveLength(0)
     const view = mount(f)
     expect(view.buttons).toEqual([])
-    expect(view.text()).toContain("STOP — Implementation was not admitted")
+    expect(view.text()).toBe("")
     view.dispose()
     expectNoImplementation(f)
     if (typeof cleanup === "function") cleanup()
@@ -1850,16 +1866,34 @@ snapshotTest("Cancel wins once, keeps the Plan, and stale Authorize stays inert"
   view.click(0)
   view.click(1)
   expect(f.calls.toasts).toEqual(["Cancelled — no implementation admitted"])
-  expect(view.text()).toContain("Cancelled — no implementation admitted")
+  expect(f.slots.at(-1).removed).toBe(true)
   expectNoImplementation(f)
   expect(f.cache.parent).toEqual(plan)
   expect(f.inboxes.parent).toHaveLength(1)
   expect(f.inboxes.parent).toEqual(publication)
+  await settleUntil(() => f.calls.receipts.length === 1)
+  expect(f.calls.receipts[0]).toMatchObject({
+    sessionID: "parent",
+    delivery: "steer",
+    resume: false,
+    text: "The published plan was cancelled before authorization.",
+    description: "The published plan was cancelled before authorization.",
+  })
+  expect(f.inboxes.parent).toHaveLength(2)
+  const returned = mount(f)
+  returned.click(0)
+  returned.click(1)
+  f.emit({ type: "session.execution.succeeded", data: { sessionID: "parent" } })
+  await Promise.resolve()
+  expect(returned.buttons).toEqual([])
+  expect(f.calls.receipts).toHaveLength(1)
+  expectNoImplementation(f)
+  returned.dispose()
   cleanup()
   view.dispose()
 })
 
-snapshotTest("trusted STOP status persists before dispatch and keeps the Plan unchanged", async (observer) => {
+snapshotTest("trusted invalidation retires controls before dispatch and keeps the Plan unchanged", async (observer) => {
   const root = snapshotFixture(observer)
   const f = fake(root)
   const cleanup = await activate(f)
@@ -1867,7 +1901,8 @@ snapshotTest("trusted STOP status persists before dispatch and keeps the Plan un
   const retainedCache = structuredClone(f.cache.parent)
   const retainedPublication = structuredClone(f.inboxes.parent)
   f.emit({ type: "session.execution.started", id: "evt_unexpected", data: { sessionID: "parent" } })
-  expect(view.text()).toContain("STOP — Implementation was not admitted.")
+  expect(f.calls.toasts[0]).toContain("STOP — Implementation was not admitted.")
+  expect(f.slots.at(-1).removed).toBe(true)
   expectNoImplementation(f)
   expect(f.cache.parent).toEqual(retainedCache)
   expect(f.inboxes.parent).toEqual(retainedPublication)
@@ -1884,25 +1919,18 @@ snapshotTest(
     observer.configure(root, HEAD, ["old.txt"])
     const f = fake(root)
     const cleanup = await activate(f)
-    const view = mount(f)
-    expect(view.buttons).toEqual([])
-    expect(
-      view.mounted
-        .filter((node) => node.type === "literal")
-        .map((node) => String(node.value))
-        .join(" "),
-    ).toContain("worktree was dirty")
+    await settleUntil(() => f.calls.receipts.length === 1)
+    expect(f.calls.receipts[0].text).toContain("worktree was dirty")
     observer.configure(root)
     f.renderer.emit("resize")
-    expect(f.slots).toHaveLength(1)
+    expect(f.slots).toHaveLength(0)
     expectNoImplementation(f)
     expect(f.calls.synthetic).toHaveLength(1)
     cleanup()
-    view.dispose()
   },
 )
 
-snapshotTest("buffered, equal, and missing Created times only publish non-authorizing status", async (observer) => {
+snapshotTest("buffered, equal, and missing Created times publish a non-authorizing receipt", async (observer) => {
   for (const time of [1, undefined]) {
     const root = snapshotFixture(observer)
     const f = fake(root)
@@ -1910,16 +1938,10 @@ snapshotTest("buffered, equal, and missing Created times only publish non-author
     f.emit({ ...f.created(), created: time })
     f.emit({ type: "session.execution.succeeded", id: "evt_completed", data: { sessionID: "parent" } })
     await settleUntil(() => f.slots.length > 0 || f.calls.toasts.length > 0)
-    const view = mount(f)
-    expect(view.buttons).toEqual([])
-    expect(
-      view.mounted
-        .filter((node) => node.type === "literal")
-        .map((node) => String(node.value))
-        .join(" "),
-    ).toContain("ordering could not be proven")
+    await settleUntil(() => f.calls.receipts.length === 1)
+    expect(f.slots).toEqual([])
+    expect(f.calls.receipts[0].text).toContain("ordering could not be proven")
     if (typeof cleanup === "function") cleanup()
-    view.dispose()
   }
 })
 
@@ -1934,11 +1956,11 @@ snapshotTest("root wake during publication permanently stops before installing c
     return admitted
   }
   const cleanup = await activate(f)
-  expect(f.slots).toHaveLength(1)
+  expect(f.slots).toHaveLength(0)
   expect(f.calls.toasts.at(-1)).toContain("Unexpected session.execution.started")
   const view = mount(f)
   expect(view.buttons).toEqual([])
-  expect(view.text()).toContain("STOP — Implementation was not admitted")
+  expect(view.text()).toBe("")
   view.dispose()
   expectNoImplementation(f)
   cleanup()
@@ -2055,7 +2077,7 @@ snapshotTest(
       expect(f.calls.toasts).toEqual(departureStatus)
       status = mount(f)
       expect(status.buttons).toEqual([])
-      expect(status.text()).toContain("STOP — Implementation was not admitted")
+      expect(status.text()).toBe("")
       f.renderer.emit("frame")
       view.click(0)
       returned.click(0)
@@ -2174,7 +2196,7 @@ snapshotTest("lost root surface, projection mutation, and cleanup cannot restore
     if (loss === "unmount") {
       const later = mount(f)
       expect(later.buttons).toEqual([])
-      expect(later.text()).toContain("STOP — Implementation was not admitted")
+      expect(later.text()).toBe("")
       later.dispose()
     }
     cleanup()
@@ -2714,7 +2736,7 @@ snapshotTest(
           expect(f.calls.toasts[0]).toContain("STOP — Implementation was not admitted")
           const status = mount(f)
           expect(status.buttons).toEqual([])
-          expect(status.text()).toContain("STOP")
+          expect(status.text()).toBe("")
           status.dispose()
         }
         expect(f.calls.synthetic).toHaveLength(1)
@@ -2955,6 +2977,7 @@ function serverFake(root: string, _observer: SnapshotObserver, workspaceID?: str
     histories,
     sessions,
     wakes,
+    receipts: [] as any[],
     originals,
     nativeEntries,
     progress,
@@ -2970,6 +2993,9 @@ function serverFake(root: string, _observer: SnapshotObserver, workspaceID?: str
     nativeError: false,
     wakeError: false,
     waitError: false,
+    receiptError: false,
+    settled: false,
+    onReceipt: undefined as ((input: any) => void | Promise<void>) | undefined,
     read: (kind: string, id: string, value: () => any) =>
       Effect.promise(async () => {
         reads.push(`${kind}:${id}`)
@@ -2984,6 +3010,12 @@ function serverFake(root: string, _observer: SnapshotObserver, workspaceID?: str
       context: ({ sessionID }: any) => f.read("context", sessionID, () => histories[sessionID]),
       synthetic: (input: any) =>
         Effect.promise(async () => {
+          if (input.resume === false) {
+            f.receipts.push(structuredClone(input))
+            await f.onReceipt?.(input)
+            if (f.receiptError) throw new Error("receipt transport unavailable")
+            return { sessionID: input.sessionID, type: "synthetic", delivery: input.delivery, payload: input }
+          }
           wakes.push(structuredClone(input))
           const wake = {
             id: input.id,
@@ -3001,6 +3033,7 @@ function serverFake(root: string, _observer: SnapshotObserver, workspaceID?: str
         Effect.promise(async () => {
           await f.run?.()
           if (f.waitError) throw new Error("lost root settlement")
+          f.settled = true
         }),
     },
   } as any
@@ -3856,7 +3889,7 @@ snapshotTest(
       f.state.run = async () => {
         if (failure === "refusal")
           f.histories.ses_parent.push(answer("refusal", "orchestrator", "I cannot implement this."))
-        else if (failure === "native") await expect(f.dispatch()).rejects.toThrow()
+        else if (failure === "native" || failure === "wake") await expect(f.dispatch()).rejects.toThrow()
         else await f.dispatch()
       }
       expect(await f.authorize()).toContain("unverified")
@@ -4055,6 +4088,191 @@ snapshotTest(
 )
 
 snapshotTest(
+  "terminal success publishes once after root settlement and CAP closure even when receipt transport fails",
+  async (observer) => {
+    for (const failure of ["none", "effect", "synchronous"] as const) {
+      const root = snapshotFixture(observer),
+        f = serverFake(root, observer)
+      f.state.run = async () => {
+        await f.dispatch()
+        observer.configure(root, HEAD, ["old.txt"])
+      }
+      f.state.onReceipt = () => {
+        expect(f.state.settled).toBe(true)
+        expect(f.admission.cap.phase).toBe("closed")
+      }
+      f.state.receiptError = failure === "effect"
+      if (failure === "synchronous") {
+        const synthetic = f.context.session.synthetic
+        f.context.session.synthetic = (input: any) => {
+          if (input.resume !== false) return synthetic(input)
+          expect(f.state.settled).toBe(true)
+          expect(f.admission.cap.phase).toBe("closed")
+          f.receipts.push(input)
+          throw new Error("receipt call failed synchronously")
+        }
+      }
+      const outcome = await f.authorize()
+      expect(outcome).toBe(
+        `Implementation gate completed successfully.\nHEAD ${HEAD} remained unchanged.\nResulting paths (1): "old.txt".\nThis attempt ended after the implementation gate; Reviewer and Commit were not run.`,
+      )
+      expect(f.receipts).toHaveLength(1)
+      expect(f.receipts[0]).toEqual({
+        sessionID: "ses_parent",
+        delivery: "steer",
+        resume: false,
+        text: outcome,
+        description: outcome,
+        metadata: { source: "opencode-agents" },
+      })
+      expect(outcome).not.toContain("STOP")
+      f.admission.cap.close()
+      f.admission.cap.close()
+      expect(await f.authorize()).toContain("One governed")
+      expect(f.receipts).toHaveLength(1)
+      expect(f.wakes).toHaveLength(1)
+      expect(f.originals).toHaveLength(1)
+    }
+  },
+)
+
+snapshotTest("settled Git, admission and native failures publish only the accepted owner's facts", async (observer) => {
+  for (const failure of ["scope", "head", "admission", "native", "binding"] as const) {
+    const root = snapshotFixture(observer),
+      f = serverFake(root, observer)
+    if (failure === "admission") observer.configure(root, HEAD, ["old.txt"])
+    else
+      f.state.run = async () => {
+        if (failure === "native") {
+          f.state.nativeError = true
+          await expect(f.dispatch()).rejects.toThrow()
+        } else await f.dispatch()
+        if (failure === "scope") observer.configure(root, HEAD, ["outside.txt"])
+        if (failure === "head") observer.configure(root, "2".repeat(40))
+        if (failure === "binding") f.sessions.ses_child.outcome = "failed"
+      }
+    f.state.onReceipt = () => {
+      expect(f.state.settled).toBe(true)
+      expect(f.admission.cap.phase).toBe("closed")
+    }
+    const outcome = await f.authorize()
+    expect(outcome).toContain("outcome was unverified")
+    const reason = {
+      scope: "Out-of-scope Git delta: outside.txt",
+      head: "Worktree root or HEAD changed",
+      admission: "cleanliness changed before admission",
+      native: "Root settled without a verified native execution",
+      binding: "Native root/child completion binding failed",
+    }[failure]
+    expect(outcome).toContain(reason)
+    expect(outcome).not.toContain("STOP")
+    expect(f.receipts).toHaveLength(1)
+    expect(f.receipts[0].text).toBe(outcome)
+    expect(f.receipts[0].description).toBe(outcome)
+    f.admission.cap.close()
+    expect(await f.authorize()).toContain("One governed")
+    expect(f.receipts).toHaveLength(1)
+  }
+})
+
+snapshotTest("losing in-flight RPC and unreadable settlement do not publish terminal receipts", async (observer) => {
+  const root = snapshotFixture(observer),
+    f = serverFake(root, observer)
+  let release!: () => void
+  const paused = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  let waiting = false
+  f.state.onWake = async () => {
+    waiting = true
+    await paused
+  }
+  f.state.run = async () => {
+    await f.dispatch()
+  }
+  f.state.waitError = true
+  const owner = f.authorize()
+  await settleUntil(() => waiting)
+  expect(await f.authorize()).toContain("One governed")
+  expect(f.receipts).toEqual([])
+  release()
+  expect(await owner).toContain("lost root settlement")
+  expect(f.admission.cap.phase).toBe("closed")
+  expect(f.receipts).toEqual([])
+  expect(f.wakes).toHaveLength(1)
+  expect(f.originals).toHaveLength(1)
+})
+
+snapshotTest(
+  "cancellation retires authority immediately and waits for settlement before publishing",
+  async (observer) => {
+    const root = snapshotFixture(observer),
+      f = fake(root)
+    const cleanup = await activate(f),
+      view = mount(f)
+    let release!: () => void
+    const paused = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let waiting = false
+    f.options.onWait = async () => {
+      waiting = true
+      await paused
+    }
+    f.options.onReceipt = () => {
+      view.click(0)
+      expectNoImplementation(f)
+      expect(f.slots.at(-1).removed).toBe(true)
+    }
+    view.click(1)
+    await settleUntil(() => waiting)
+    expect(f.slots.at(-1).removed).toBe(true)
+    expect(f.calls.receipts).toEqual([])
+    view.click(0)
+    cleanup()
+    release()
+    await settleUntil(() => f.inboxes.parent.length === 2)
+    expect(f.calls.receipts).toHaveLength(1)
+    expectNoImplementation(f)
+    view.dispose()
+  },
+)
+
+snapshotTest(
+  "local admission and cancellation receipt failures never restore controls or send a claim",
+  async (observer) => {
+    for (const decision of ["authorize", "cancel"] as const) {
+      const root = snapshotFixture(observer),
+        f = fake(root)
+      const cleanup = await activate(f),
+        view = mount(f)
+      if (decision === "authorize") observer.configure(root, HEAD, ["old.txt"])
+      f.options.onReceipt = () => {
+        expect(f.slots.at(-1).removed).toBe(true)
+        throw new Error("receipt publication unavailable")
+      }
+      view.click(decision === "authorize" ? 0 : 1)
+      await settleUntil(() => f.calls.toasts.some((message) => message.includes("receipt could not be published")))
+      expect(f.calls.receipts).toHaveLength(1)
+      expect(f.calls.receipts[0].text).toContain(
+        decision === "authorize" ? "Implementation was not admitted" : "cancelled before authorization",
+      )
+      expect(f.calls.receipts[0].resume).toBe(false)
+      view.click(0)
+      view.click(1)
+      const returned = mount(f)
+      expect(returned.buttons).toEqual([])
+      returned.click(0)
+      expect(f.calls.receipts).toHaveLength(1)
+      expectNoImplementation(f)
+      cleanup()
+      returned.dispose()
+      view.dispose()
+    }
+  },
+)
+
+snapshotTest(
   "positive readable-frame callback transfers one exact verified claim and receives trusted RPC outcome",
   async (observer) => {
     const root = snapshotFixture(observer),
@@ -4075,7 +4293,8 @@ snapshotTest(
       location: { directory: root },
       publicationID: f.inboxes.parent[0].id,
     })
-    expect(view.text()).toContain("Implementation gate complete")
+    expect(f.slots.at(-1).removed).toBe(true)
+    expect(f.calls.toasts[0]).toContain("Implementation gate complete")
     expect(f.calls.synthetic).toHaveLength(1) // Plan publication only; server owns the wake.
     cleanup()
     view.dispose()
@@ -4112,7 +4331,7 @@ snapshotTest(
 )
 
 snapshotTest(
-  "lost Authorize response never resubmits the claim and leaves an uncertain trusted status",
+  "lost Authorize response retires controls without a competing receipt or resubmission",
   async (observer) => {
     const root = snapshotFixture(observer),
       f = fake(root)
@@ -4123,7 +4342,9 @@ snapshotTest(
       view = mount(f)
     view.click(0)
     await settleUntil(() => f.calls.toasts.length > 0)
-    expect(view.text()).toContain("Authorized server attempt outcome unknown")
+    expect(f.slots.at(-1).removed).toBe(true)
+    expect(f.calls.toasts[0]).toContain("Authorized server attempt outcome unknown")
+    expect(f.calls.receipts).toEqual([])
     view.click(0)
     view.click(1)
     expect(f.calls.claims).toHaveLength(1)

@@ -31,6 +31,7 @@ clean initial Git observation → fresh Orchestrator → native read-only Planne
 → native child creation/prompt/progress/result/row/navigation
 → root settlement → trusted native receipt + child/result binding
 → unchanged HEAD + exact changed-path gate → STOP before Reviewer / Commit
+→ closed authority → terminal synthetic root receipt → composer controls retired
 ```
 
 The trusted TUI is the intended producer of Authorize claims. Same-user local
@@ -185,6 +186,38 @@ Native creation inherits the root's full location, including workspace identity.
 A supported attempt still needs proven canonical local Git/worktree
 correspondence. This is not remote topology attestation, an external filesystem
 lock, or exhaustive shell-effect detection.
+
+### Terminal workflow receipts
+
+Issue #10 separates terminal evidence from active decision presentation. The
+composer-top slot contains the pending Plan decision and transient admission
+progress; closing local ownership clears and unregisters the slot. Terminal
+results are never retained there. The existing native Plan publication remains
+authorization provenance; a terminal receipt cannot authorize or reopen it.
+
+The accepted server RPC owns one terminal receipt after root execution settles
+and CAP closes. Verified success records unchanged HEAD and resulting paths;
+Git/scope rejection and native admission/result failures record only the trusted
+unverified disposition and retained reason. Duplicate losing RPCs and repeated
+CAP closure do not publish. Cancellation and definitive local operation failures
+close their TUI owner before waiting for root settlement and publishing. Render,
+mount, navigation and teardown callbacks never publish receipts. Planning-only
+eligibility rejection also records its established admission reason.
+
+Receipts use the supported native synthetic API with an explicit root session,
+`delivery:"steer", resume:false`, and identical factual, historical `text` and
+`description`. They remain persisted and visible while pending. A later normal
+user continuation delivers the earlier receipt before the new user prompt;
+its text becomes user-role model context. Receipts contain no imperative STOP
+instruction and do not duplicate Implementer output.
+
+Receipt publication errors are presentation failures: the server logs a warning
+and preserves its governed result; local publication errors use a transient
+toast. Neither path retries publication, authorization or execution. An unreadable
+root settlement withholds publication rather than steering a possibly active
+loop. A lost post-transfer RPC response produces only an uncertainty toast;
+the server remains the terminal receipt owner. Normal explicit inbox cancellation,
+session deletion and history revert may remove native receipts.
 
 ## Validation and status
 

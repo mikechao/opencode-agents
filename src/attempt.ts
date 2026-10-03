@@ -8,6 +8,7 @@ import { observeGit, requireFresh, type GitSnapshot } from "./git.ts"
 import { candidateIntact, makeCandidate, parseProposal, renderPlan } from "./proposal.ts"
 import type { IntentCandidate } from "./proposal.ts"
 import { authorizeRpc } from "./authorize-rpc.ts"
+import { receiptInput } from "./receipt.ts"
 
 export function implementerPrompt(candidate: IntentCandidate): string {
   return [
@@ -593,4 +594,11 @@ export async function authorizePublishedAttempt(
   } finally {
     activation.generation.busy = false
   }
+}
+
+// The decision owner has already closed. Waiting never wakes or retries work;
+// a failed settlement read must not inject a receipt into an active execution.
+export async function publishTerminalReceipt(context: Context, rootSessionID: string, receipt: string): Promise<void> {
+  await context.client.session.wait({ sessionID: rootSessionID })
+  await context.client.session.synthetic(receiptInput(rootSessionID, receipt))
 }

@@ -1,4 +1,4 @@
-import { Cause, Effect } from "effect"
+import { Cause, Effect, Exit } from "effect"
 import { Tool } from "@opencode/schema/tool"
 import { Session } from "@opencode/schema/session"
 import type { Context } from "@opencode/plugin/effect/plugin"
@@ -19,6 +19,7 @@ import {
 } from "./attempt.ts"
 import { parseProposal, candidateIntact, displayPath, type IntentCandidate } from "./proposal.ts"
 import { observeGit, requireFresh, requireInScope } from "./git.ts"
+import { receiptInput } from "./receipt.ts"
 
 const target = "authorized_implementer"
 export const sponsorRules = [
@@ -336,7 +337,12 @@ export function nativeAdmission(context: Context) {
           claim.candidate.proposal.files,
         )
         cap.live()
-        return `Implementation gate complete: HEAD ${claim.candidate.head} unchanged. Resulting paths (${paths.length}): ${paths.map(displayPath).join(", ") || "(none)"}. STOP before Reviewer / Commit.`
+        return [
+          "Implementation gate completed successfully.",
+          `HEAD ${claim.candidate.head} remained unchanged.`,
+          `Resulting paths (${paths.length}): ${paths.map(displayPath).join(", ") || "(none)"}.`,
+          "This attempt ended after the implementation gate; Reviewer and Commit were not run.",
+        ].join("\n")
       })
     })
   const authorize = (input: unknown) =>
@@ -344,39 +350,55 @@ export function nativeAdmission(context: Context) {
       yield* attempt(() => {
         cap.accept(input, controlText)
       })
+      const rootSessionID = cap.claim.rootSessionID
       return yield* Effect.gen(function* () {
-        yield* attempt(() => {
-          local()
-          requireFresh(observeGit(cap.claim.location.directory!, baseline()), baseline())
-        })
-        const { id, text } = cap.control
-        const wake = yield* context.session.synthetic({
-          sessionID: Session.ID.make(cap.claim.rootSessionID),
-          id: SessionMessage.ID.make(id),
-          text,
-          delivery: "steer",
-          resume: true,
-        })
-        yield* attempt(() => {
-          cap.live()
-          if (
-            wake.id !== id ||
-            wake.sessionID !== cap.rootSessionID ||
-            wake.type !== "synthetic" ||
-            wake.delivery !== "steer" ||
-            wake.payload.text !== text
-          )
-            throw new Error("Synthetic wake admission changed")
-        })
-        yield* context.session.wait({ sessionID: Session.ID.make(cap.claim.rootSessionID) })
-        return yield* verifyResult()
+        const admission = yield* Effect.gen(function* () {
+          yield* attempt(() => {
+            local()
+            requireFresh(observeGit(cap.claim.location.directory!, baseline()), baseline())
+          })
+          const { id, text } = cap.control
+          const wake = yield* context.session.synthetic({
+            sessionID: Session.ID.make(cap.claim.rootSessionID),
+            id: SessionMessage.ID.make(id),
+            text,
+            delivery: "steer",
+            resume: true,
+          })
+          yield* attempt(() => {
+            cap.live()
+            if (
+              wake.id !== id ||
+              wake.sessionID !== cap.rootSessionID ||
+              wake.type !== "synthetic" ||
+              wake.delivery !== "steer" ||
+              wake.payload.text !== text
+            )
+              throw new Error("Synthetic wake admission changed")
+          })
+        }).pipe(Effect.exit)
+        if (Exit.isFailure(admission)) cap.close()
+        // Even ambiguous wake/admission failures must finish their native busy
+        // period before a new steer can safely be presentation-only.
+        const settled = yield* context.session.wait({ sessionID: Session.ID.make(rootSessionID) }).pipe(Effect.exit)
+        if (Exit.isFailure(settled)) return unverified(settled.cause)
+        const outcome = Exit.isFailure(admission)
+          ? unverified(admission.cause)
+          : yield* verifyResult().pipe(Effect.catchCause((cause) => Effect.succeed(unverified(cause))))
+        cap.close()
+        // This accepted RPC alone owns terminal publication. Losing RPCs never
+        // reach it; publication failure cannot change or retry the outcome.
+        yield* Effect.suspend(() =>
+          context.session.synthetic(receiptInput(Session.ID.make(rootSessionID), outcome)),
+        ).pipe(
+          Effect.catchCause((cause) => Effect.logWarning("Terminal receipt publication failed", Cause.pretty(cause))),
+        )
+        return outcome
       }).pipe(Effect.ensuring(Effect.sync(() => cap.close())))
-    }).pipe(
-      Effect.catchCause((cause) =>
-        Effect.succeed(
-          `STOP — Native implementation outcome unverified; no retry or replacement. ${String(Cause.squash(cause))}`,
-        ),
-      ),
-    )
+    }).pipe(Effect.catchCause((cause) => Effect.succeed(unverified(cause))))
   return { before, execute, authorize, teardown: () => cap.teardown(), sponsorPermission, actor, cap }
+}
+
+function unverified(cause: Cause.Cause<unknown>): string {
+  return `Native implementation outcome was unverified. No retry or replacement was issued.\nReason: ${String(Cause.squash(cause))}`
 }
