@@ -507,7 +507,7 @@ export async function verifyPublishedAttempt(
   check()
 }
 
-// One publication per activation; no implementation authority is created here.
+// One publication per root attempt; no implementation authority is created here.
 export async function publishPlan(
   context: Context,
   activation: ActivationEvidence,

@@ -13,8 +13,9 @@ one native Implementer admission. Trusted native result binding and independent
 unchanged-HEAD/exact-path verification must pass before STOP. Reviewer and
 Commit remain future obligations.
 
-Issue #9 preserves **one governed implementation attempt per plugin activation**.
-Multiple sequential authorized attempts within an activation are out of scope.
+Issue #9's one-shot CAP semantics remain intact. Issue #16 gives each eligible
+root its own governed attempt within the plugin activation, with shared-worktree
+implementation exclusion. Repeated authorization of the same root is rejected.
 
 ## Authority and trust
 

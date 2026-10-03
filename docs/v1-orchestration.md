@@ -42,11 +42,35 @@ handshake, credential, enrollment, authentication, status protocol or recovery
 store. The server copies/freezes the verified TUI claim and checks integrity;
 it does not reconstruct the Planner or publication history after transfer.
 
-Issue #9 preserves **one governed implementation attempt per plugin activation**.
-Multiple sequential authorized attempts within an activation are out of scope.
-The server occupies its only slot before any RPC await. Subsequent submissions,
-including lost-response retransmission and submissions after successful or failed
-completion, are rejected throughout that activation.
+Issue #16 gives each eligible root independent ephemeral TUI ownership and one
+server CAP slot. Initial setup observes Git for the first root; entering the
+new-session home route observes Git for each later root before submission creates
+it. The pinned host's optimistic session record and Solid `session.creating(id)`
+identify the exact pending creation before its deferred create RPC starts. Each
+home observation is bound to that ID, and only its matching creation event can
+consume it once. Missing correlation fails closed; delayed or out-of-order echoes
+cannot borrow another root's observation. A rejected unacknowledged creation
+removes its optimistic session-info record. A route-independent watcher retires
+that ID's preparation and tombstones the ID for this activation; neither retries
+reusing the ID nor delayed creation echoes can govern it. Ordinary cache eviction
+preserves session info. Teardown clears these ephemeral tombstones. Returning to
+roots or Planner children never recreates ownership or refreshes a bound baseline.
+
+Issue #9's one-shot semantics apply independently to each root throughout the
+activation. The server occupies that root's slot before any RPC await. Duplicate
+submissions, lost-response retransmission, and submissions after successful or
+failed completion remain rejected for that root. Closed slots are never reset.
+Worktree implementation exclusion is separate: another root cannot start an
+Implementer until the exact admitted Implementer child settles. The runtime lease
+records its native call and child ID from trusted built-in progress (or the
+completed structured receipt), awaits `session.wait(childID)`, and checks that
+exact child's root, role, location and terminal outcome. Root idle and CAP closure
+alone never release exclusion. Unknown or ambiguous child settlement keeps
+exclusion held until server teardown. Result verification and CAP authority remain
+separate from this execution exclusion. Pending Plans in other
+roots retain ownership, but authorization still requires fresh Git evidence.
+Plugin/server teardown revokes all of its root instances; none are persisted or
+reconstructed from session history.
 
 ## Host boundaries
 

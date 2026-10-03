@@ -50,9 +50,16 @@ const emptyPermissions = (permissions: unknown) =>
   permissions === undefined || (Array.isArray(permissions) && permissions.length === 0)
 
 // Server-only host adapter. All reads use the supported Effect session API.
-// The slot belongs to this closure, with no persistence or transcript recovery.
+// Root-local one-shot slots live only in this closure; no transcript recovery.
 export function nativeAdmission(context: Context) {
-  const cap = new NativeCap()
+  const caps = new Map<string, NativeCap>()
+  let revoked = false
+  // The location-scoped host activation owns one worktree. Hold exclusion from
+  // before the wake through settlement/verification, independently of the root slots.
+  let executing: { cap: NativeCap; native?: { call: Reservation; childID?: string; ambiguous: boolean } } | undefined
+  const live = () => {
+    if (revoked) throw new Error("Server CAP activation was revoked")
+  }
   const actor = Agent.ID.make(`cap_sponsor_${randomUUID()}`)
   // ConfigAgentPlugin runs after external plugins and appends global/agent
   // rules. Narrow even configured allows, without ever elevating a host deny.
@@ -67,13 +74,14 @@ export function nativeAdmission(context: Context) {
       )
         event.effect = "deny"
     })
-  const local = () => {
+  const local = (cap: NativeCap) => {
+    live()
     cap.live()
     const claim = cap.claim
     if (!same(snapshotLocation(context.location), claim.location)) throw new Error("Server location changed")
     parseProposal(JSON.stringify(claim.candidate.proposal), claim.candidate.root)
   }
-  const rootIdentity = (root: Session.Info) => {
+  const rootIdentity = (cap: NativeCap, root: Session.Info) => {
     const claim = cap.claim
     if (
       root.id !== claim.rootSessionID ||
@@ -87,8 +95,13 @@ export function nativeAdmission(context: Context) {
     )
       throw new Error("Root role, location, or permissions changed")
   }
-  const baseline = () => ({ root: cap.claim.candidate.root, head: cap.claim.candidate.head, paths: [] })
-  const actualCall = (history: readonly SessionMessage.Info[], call: Reservation, status: "running" | "completed") => {
+  const baseline = (cap: NativeCap) => ({ root: cap.claim.candidate.root, head: cap.claim.candidate.head, paths: [] })
+  const actualCall = (
+    cap: NativeCap,
+    history: readonly SessionMessage.Info[],
+    call: Reservation,
+    status: "running" | "completed",
+  ) => {
     const control = cap.control
     const controls = history.filter((message) => message.id === control.id)
     const messages = history.filter((message) => message.id === call.messageID)
@@ -132,8 +145,9 @@ export function nativeAdmission(context: Context) {
   }
   const before = (event: ToolHooks["execute.before"]) =>
     Effect.gen(function* () {
-      yield* attempt(() => cap.live())
-      if (event.sessionID !== cap.rootSessionID) {
+      yield* attempt(live)
+      const cap = caps.get(event.sessionID)
+      if (!cap || event.sessionID !== cap.rootSessionID) {
         if (event.input && typeof event.input === "object" && "agent" in event.input && event.input.agent === target)
           yield* Effect.fail(fail("No reserved Implementer call"))
         return
@@ -158,8 +172,9 @@ export function nativeAdmission(context: Context) {
       const history = yield* context.session.context({ sessionID: invocation.sessionID })
       const current = yield* context.session.get({ sessionID: invocation.sessionID })
       const receipt = yield* attempt(() => {
-        cap.live()
-        if (cap.rootSessionID === invocation.sessionID) throw new Error("Planner follows an admitted CAP claim")
+        live()
+        if (caps.get(invocation.sessionID)?.rootSessionID === invocation.sessionID)
+          throw new Error("Planner follows an admitted CAP claim")
         if (!location.directory || !same(root.time.created, current.time.created))
           throw new Error("Initial Planner root creation or location changed")
         for (const session of [root, current]) {
@@ -212,7 +227,7 @@ export function nativeAdmission(context: Context) {
       // Keep native permissions, parent/source IDs, child creation and progress unchanged.
       const result = yield* original(receipt.input, invocation)
       yield* attempt(() => {
-        cap.live()
+        live()
         if (
           !exactKeys(result.output, ["sessionID", "status", "output"]) ||
           typeof result.output.sessionID !== "string" ||
@@ -229,9 +244,10 @@ export function nativeAdmission(context: Context) {
     })
   const execute = (original: Tool.Info["execute"]) => (input: unknown, invocation: Tool.Context) =>
     Effect.gen(function* () {
-      yield* attempt(() => cap.live())
+      yield* attempt(live)
+      const cap = caps.get(invocation.sessionID)
       const governed =
-        invocation.sessionID === cap.rootSessionID ||
+        (!!cap && invocation.sessionID === cap.rootSessionID) ||
         (!!input && typeof input === "object" && "agent" in input && input.agent === target)
       if (!governed) {
         if (
@@ -250,34 +266,59 @@ export function nativeAdmission(context: Context) {
         messageID: invocation.messageID,
         id: invocation.id,
       }
+      if (!cap) return yield* Effect.fail(fail("No reserved Implementer call"))
       // Executor losers also cannot change an in-flight owner's state.
       yield* attempt(() => cap.enter(call))
       return yield* Effect.gen(function* () {
         const history = yield* context.session.context({ sessionID: invocation.sessionID })
-        yield* attempt(() => actualCall(history, call, "running"))
+        yield* attempt(() => actualCall(cap, history, call, "running"))
         const root = yield* context.session.get({ sessionID: invocation.sessionID })
         // All awaited reads precede the final synchronous freshness/consume barrier.
-        yield* attempt(() => {
-          rootIdentity(root)
-          local()
+        const lease = yield* attempt(() => {
+          rootIdentity(cap, root)
+          local(cap)
           exactArguments(input, cap.claim.candidate)
           if (!candidateIntact(cap.claim.candidate)) throw new Error("Frozen claim integrity changed")
-          requireFresh(observeGit(cap.claim.location.directory!, baseline()), baseline())
+          if (executing?.cap !== cap) throw new Error("Root does not own worktree implementation exclusion")
+          requireFresh(observeGit(cap.claim.location.directory!, baseline(cap)), baseline(cap))
           cap.consume(call)
+          return executing
         })
+        const execution = { call, childID: undefined as string | undefined, ambiguous: false }
+        lease.native = execution
+        const bindChild = (childID: unknown) => {
+          if (
+            typeof childID !== "string" ||
+            !childID ||
+            childID === call.sessionID ||
+            (execution.childID !== undefined && execution.childID !== childID)
+          ) {
+            execution.ambiguous = true
+            return
+          }
+          execution.childID = childID
+        }
         // Pinned OpenCode seam: native Permission.assert uses this explicit actor,
         // the real parent/source IDs, and effective policy before creating a child.
-        const result = yield* original(input, { ...invocation, agent: actor })
-        yield* attempt(() => cap.receipt(result))
+        const result = yield* original(input, {
+          ...invocation,
+          agent: actor,
+          progress: (update) =>
+            Effect.sync(() => bindChild(update.sessionID)).pipe(Effect.andThen(() => invocation.progress(update))),
+        })
+        yield* attempt(() => {
+          cap.receipt(result)
+          bindChild(cap.childID)
+        })
         return result // Native output normalization, after hooks and publication remain native.
       }).pipe(
         Effect.onError(() => Effect.sync(() => cap.close())),
         Effect.onInterrupt(() => Effect.sync(() => cap.close())),
       )
     }).pipe(Effect.mapError((error) => (error instanceof Tool.Error ? error : fail(String(error)))))
-  const verifyResult = () =>
+  const verifyResult = (cap: NativeCap) =>
     Effect.gen(function* () {
-      yield* attempt(local)
+      yield* attempt(() => local(cap))
       if (cap.phase !== "consumed" || !cap.childID || !cap.result)
         return yield* Effect.fail(fail("Root settled without a verified native execution"))
       const claim = cap.claim
@@ -287,8 +328,8 @@ export function nativeAdmission(context: Context) {
       const history = yield* context.session.context({ sessionID: Session.ID.make(claim.rootSessionID) })
       const childHistory = yield* context.session.context({ sessionID: childID })
       return yield* attempt(() => {
-        rootIdentity(root)
-        local()
+        rootIdentity(cap, root)
+        local(cap)
         if (
           root.outcome !== "succeeded" ||
           !root.time.idle ||
@@ -324,7 +365,7 @@ export function nativeAdmission(context: Context) {
         // Persisted display formatting/truncation supplies no authority.
         const reservation = cap.reservation
         cap.assertConsumed(reservation)
-        const part = actualCall(history, reservation, "completed")
+        const part = actualCall(cap, history, reservation, "completed")
         if (
           part.state.status !== "completed" ||
           part.state.metadata?.sessionID !== childID ||
@@ -332,8 +373,8 @@ export function nativeAdmission(context: Context) {
         )
           throw new Error("Published native completion identity changed")
         const paths = requireInScope(
-          observeGit(claim.location.directory!, baseline()),
-          baseline(),
+          observeGit(claim.location.directory!, baseline(cap)),
+          baseline(cap),
           claim.candidate.proposal.files,
         )
         cap.live()
@@ -347,15 +388,43 @@ export function nativeAdmission(context: Context) {
     })
   const authorize = (input: unknown) =>
     Effect.gen(function* () {
-      yield* attempt(() => {
-        cap.accept(input, controlText)
+      const cap = yield* attempt(() => {
+        live()
+        if (
+          !input ||
+          typeof input !== "object" ||
+          !("rootSessionID" in input) ||
+          typeof input.rootSessionID !== "string" ||
+          !input.rootSessionID
+        )
+          throw new Error("Malformed Authorize root identity")
+        const id = input.rootSessionID
+        let slot = caps.get(id)
+        if (!slot) {
+          slot = new NativeCap()
+          caps.set(id, slot)
+        }
+        slot.accept(input, controlText)
+        if (slot.rootSessionID !== id) {
+          slot.close()
+          throw new Error("Authorize root identity changed during transfer")
+        }
+        return slot
       })
       const rootSessionID = cap.claim.rootSessionID
+      let settlementProven = false
       return yield* Effect.gen(function* () {
         const admission = yield* Effect.gen(function* () {
           yield* attempt(() => {
-            local()
-            requireFresh(observeGit(cap.claim.location.directory!, baseline()), baseline())
+            local(cap)
+          })
+          const root = yield* context.session.get({ sessionID: Session.ID.make(rootSessionID) })
+          yield* attempt(() => {
+            rootIdentity(cap, root)
+            local(cap)
+            if (executing) throw new Error("Another root owns worktree implementation exclusion")
+            executing = { cap }
+            requireFresh(observeGit(cap.claim.location.directory!, baseline(cap)), baseline(cap))
           })
           const { id, text } = cap.control
           const wake = yield* context.session.synthetic({
@@ -382,9 +451,49 @@ export function nativeAdmission(context: Context) {
         // period before a new steer can safely be presentation-only.
         const settled = yield* context.session.wait({ sessionID: Session.ID.make(rootSessionID) }).pipe(Effect.exit)
         if (Exit.isFailure(settled)) return unverified(settled.cause)
+        const lease = executing?.cap === cap ? executing : undefined
+        let settlementFailure: Cause.Cause<unknown> | undefined
+        if (lease?.native) {
+          // Root idle does not settle a backgrounded native child. Progress is
+          // emitted by the built-in executor after creation and before its prompt;
+          // a completed structured receipt can supply the same identity.
+          const execution = lease.native
+          const childSettled = yield* Effect.gen(function* () {
+            const childID = yield* attempt(() => {
+              if (execution.ambiguous || !execution.childID) throw new Error("Implementer settlement identity unknown")
+              if (execution.call.sessionID !== rootSessionID) throw new Error("Implementer settlement root changed")
+              return Session.ID.make(execution.childID)
+            })
+            yield* context.session.wait({ sessionID: childID })
+            const child = yield* context.session.get({ sessionID: childID })
+            yield* attempt(() => {
+              live()
+              if (
+                child.id !== childID ||
+                child.parentID !== rootSessionID ||
+                child.agent !== target ||
+                child.fork ||
+                child.revert ||
+                child.time.archived ||
+                !same(snapshotLocation(child.location), cap.claim.location) ||
+                !child.time.idle ||
+                !["succeeded", "failed", "interrupted"].includes(child.outcome ?? "")
+              )
+                throw new Error("Exact Implementer terminal settlement was not proven")
+            })
+          }).pipe(Effect.exit)
+          settlementProven = Exit.isSuccess(childSettled)
+          if (Exit.isFailure(childSettled)) settlementFailure = childSettled.cause
+        } else {
+          // The root finished without entering the native executor. Closing its
+          // CAP prevents any later contender from creating a child.
+          settlementProven = true
+        }
         const outcome = Exit.isFailure(admission)
           ? unverified(admission.cause)
-          : yield* verifyResult().pipe(Effect.catchCause((cause) => Effect.succeed(unverified(cause))))
+          : settlementFailure
+            ? unverified(settlementFailure)
+            : yield* verifyResult(cap).pipe(Effect.catchCause((cause) => Effect.succeed(unverified(cause))))
         cap.close()
         // This accepted RPC alone owns terminal publication. Losing RPCs never
         // reach it; publication failure cannot change or retry the outcome.
@@ -394,9 +503,22 @@ export function nativeAdmission(context: Context) {
           Effect.catchCause((cause) => Effect.logWarning("Terminal receipt publication failed", Cause.pretty(cause))),
         )
         return outcome
-      }).pipe(Effect.ensuring(Effect.sync(() => cap.close())))
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            cap.close()
+            // Unknown settlement retains exclusion until activation teardown.
+            if (settlementProven && executing?.cap === cap) executing = undefined
+          }),
+        ),
+      )
     }).pipe(Effect.catchCause((cause) => Effect.succeed(unverified(cause))))
-  return { before, execute, authorize, teardown: () => cap.teardown(), sponsorPermission, actor, cap }
+  const teardown = () => {
+    revoked = true
+    for (const cap of caps.values()) cap.teardown()
+    executing = undefined
+  }
+  return { before, execute, authorize, teardown, sponsorPermission, actor, caps }
 }
 
 function unverified(cause: Cause.Cause<unknown>): string {

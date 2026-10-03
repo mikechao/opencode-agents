@@ -47,9 +47,9 @@ CAP is not an OS/process sandbox.
 - Keep a small, auditable authority contract and runtime with clear ownership.
 - Integrate trusted human authorization of the exact published Plan while
   preserving CAP's clean admission and freshness requirements. Issue #9
-  implements minimal native admission with one governed implementation attempt
-  per plugin activation; sequential authorized attempts within an activation
-  are out of scope.
+  implements minimal native admission with one-shot CAP semantics. Issue #16
+  scopes each governed attempt to its own root and keeps shared-worktree
+  implementation exclusion separate; repeated authorization of a root is rejected.
 - Preserve readable bound Plans and native child-session visibility.
 - Later establish an exact reviewed target, independent Reviewer-owned
   validation, and separate human-authorized Commit with verified Git outcome.

@@ -42,7 +42,7 @@ export function exactKeys(value: unknown, names: readonly string[]): value is Re
   )
 }
 
-// One slot for the entire server plugin activation. Even a rejected/ambiguous
+// One slot for one root in the server plugin activation. Even a rejected/ambiguous
 // submission occupies it forever; only phase changes, never the claim identity.
 export class NativeCap {
   #occupied = false
@@ -84,7 +84,7 @@ export class NativeCap {
 
   accept(input: unknown, controlText: (candidate: IntentCandidate) => string): void {
     this.live()
-    if (this.#occupied) throw new Error("One governed implementation attempt per plugin activation")
+    if (this.#occupied) throw new Error("One governed implementation attempt per root")
     this.#occupied = true // Before copying, validation, or any RPC await.
     try {
       if (!exactKeys(input, ["purpose", "candidate", "rootSessionID", "location", "publicationID"]))

@@ -32,8 +32,9 @@ processes and localhost OpenCode RPC access belong to the trusted host boundary;
 RPC caller origin is not independently authenticated. CAP is not an OS/process
 sandbox.
 
-Issue #9 preserves **one governed implementation attempt per plugin activation**.
-Multiple sequential authorized attempts within an activation are out of scope.
+Issue #9's one-shot CAP semantics remain intact. Issue #16 gives each eligible
+root its own governed attempt within the plugin activation, with shared-worktree
+implementation exclusion. Repeated authorization of the same root is rejected.
 Cancel sends no claim/wake. Failure, lost response, settlement and teardown
 never reopen authority. Restart cannot reconstruct a claim from transcripts;
 ordinary native recovery of the same admitted child remains supported.
