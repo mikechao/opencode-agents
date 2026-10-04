@@ -414,6 +414,7 @@ export async function inspectRootCompletion(
   check()
   return inspectCompletedRootTurn(await messages(context, activation.creation.data.sessionID, check), terminalIdleID)
 }
+// Native permissions govern observations; history binds supported input and final output.
 function verifyChildHistory(history: SessionMessageInfo[], agent: "planner" | "explorer", prompt: string): Child {
   const users = history.filter((message) => message.type === "user")
   if (
@@ -430,22 +431,6 @@ function verifyChildHistory(history: SessionMessageInfo[], agent: "planner" | "e
     stop(`unexpected ${agent} bootstrap completion`)
   }
   const final = oneFinal(history, agent)
-  const toolIDs = new Set<string>()
-  for (const message of history) {
-    if (message.type !== "assistant") continue
-    for (const part of message.content) {
-      if (part.type !== "tool") continue
-      if (
-        part.state.status !== "completed" ||
-        part.executed === true ||
-        !(["read", "glob", "grep"].includes(part.name) || (agent === "planner" && part.name === "subagent"))
-      )
-        stop(`${agent} used a disallowed tool during bootstrap`)
-      if (typeof part.id !== "string" || !part.id.trim() || toolIDs.has(part.id))
-        stop(`duplicate or missing ${agent} tool ID`)
-      toolIDs.add(part.id)
-    }
-  }
   const text = finalText(final)
   if (!text.trim()) stop(`unexpected ${agent} final text`)
   return { inputID: users[0].id, finalID: final.id, text }
@@ -480,38 +465,44 @@ async function verifyPlannerHistory(
 ): Promise<Child> {
   const history = await messages(context, planner.id, check)
   const result = verifyChildHistory(history, "planner", prompt)
+  const tools = history.flatMap((message) =>
+    message.type === "assistant" ? message.content.filter((part) => part.type === "tool") : [],
+  )
+  // Only delegation identities must be unambiguous; observation IDs are not certified.
+  const toolIDs = new Map<string, number>()
+  for (const tool of tools) toolIDs.set(tool.id, (toolIDs.get(tool.id) ?? 0) + 1)
   const explorerIDs = new Set<string>()
   const explorers: { id: string; prompt: string }[] = []
-  for (const message of history) {
-    if (message.type !== "assistant") continue
-    for (const tool of message.content) {
-      if (tool.type !== "tool" || tool.name !== "subagent") continue
-      if (tool.state.status !== "completed") stop("incomplete Explorer call")
-      const input = tool.state.input
-      if (
-        !exactKeys(input, ["agent", "description", "prompt"]) ||
-        input.agent !== "explorer" ||
-        typeof input.description !== "string" ||
-        !input.description.trim() ||
-        typeof input.prompt !== "string" ||
-        !input.prompt.trim()
-      )
-        stop("unexpected Explorer call input")
-      const childID = tool.state.metadata?.sessionID
-      if (
-        typeof childID !== "string" ||
-        !childID.trim() ||
-        tool.state.metadata?.status !== "completed" ||
-        !Array.isArray(tool.state.content) ||
-        !tool.state.content.every(Schema.is(ToolContent)) ||
-        !tool.state.content.some((part) => part?.type === "text" && typeof part.text === "string" && part.text.trim())
-      )
-        stop("missing completed Explorer result")
-      if (childID === planner.id || childID === planner.parentID || explorerIDs.has(childID))
-        stop("Explorer is not a unique fresh child")
-      explorerIDs.add(childID)
-      explorers.push({ id: childID, prompt: input.prompt })
-    }
+  for (const tool of tools) {
+    if (tool.name !== "subagent") continue
+    if (typeof tool.id !== "string" || !tool.id.trim() || toolIDs.get(tool.id) !== 1)
+      stop("duplicate or missing Explorer call ID")
+    if (tool.executed === true) stop("nonlocal Explorer call")
+    if (tool.state.status !== "completed") stop("incomplete Explorer call")
+    const input = tool.state.input
+    if (
+      !exactKeys(input, ["agent", "description", "prompt"]) ||
+      input.agent !== "explorer" ||
+      typeof input.description !== "string" ||
+      !input.description.trim() ||
+      typeof input.prompt !== "string" ||
+      !input.prompt.trim()
+    )
+      stop("unexpected Explorer call input")
+    const childID = tool.state.metadata?.sessionID
+    if (
+      typeof childID !== "string" ||
+      !childID.trim() ||
+      tool.state.metadata?.status !== "completed" ||
+      !Array.isArray(tool.state.content) ||
+      !tool.state.content.every(Schema.is(ToolContent)) ||
+      !tool.state.content.some((part) => part?.type === "text" && typeof part.text === "string" && part.text.trim())
+    )
+      stop("missing completed Explorer result")
+    if (childID === planner.id || childID === planner.parentID || explorerIDs.has(childID))
+      stop("Explorer is not a unique fresh child")
+    explorerIDs.add(childID)
+    explorers.push({ id: childID, prompt: input.prompt })
   }
   // Advisory provenance is observed once when accepting this planning execution.
   // Later child activity cannot rewrite the completed tool result in Planner history.

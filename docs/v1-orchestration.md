@@ -126,19 +126,22 @@ The host returns completed findings into Planner's ordinary tool-result/model
 context and provides native child-session navigation. Project `opencode.json`
 sets `experimental.subagent_depth: 2` for Orchestrator → Planner → Explorer.
 
-Planner allows only read/glob/grep and `subagent:explorer`; Explorer allows only
-read/glob/grep and cannot delegate or implement. Calls contain exactly `agent`,
+Native OpenCode role/tool permissions enforce Planner and Explorer capabilities;
+correctly loaded policies are trusted deployment input. Planner allows only
+read/glob/grep and `subagent:explorer`; Explorer allows only read/glob/grep and
+cannot delegate or implement. Explorer calls contain exactly `agent`,
 `description`, and `prompt`, with no continuation, model override, or background
 key. Background/running results and later synthetic notifications are unsupported.
 There is no custom scheduler, join state, result store, or Explorer workflow state.
 
 When accepting the planning execution before publication, trusted code verifies
-completed calls against their unique fresh Explorer children, exact bootstrap,
-role, parent, location/workspace, empty permission overrides, successful idle
-history, and read-only tool allowlist. Complete native child listing must match
-the call set exactly, and each Explorer must have no descendants. Verification
-accepts multiple foreground calls in one response without execution-order
-conditions. Malformed calls, incomplete/failed results, forbidden activity, or
+completed Explorer calls with unambiguous delegation IDs against their unique
+fresh Explorer children, exact bootstrap, role, parent, location/workspace, empty
+permission overrides, successful idle history, and native result metadata/content.
+Complete native child listing must match the call set exactly, and each Explorer
+must have no descendants. Verification accepts multiple foreground calls in one
+response without execution-order conditions. Malformed delegation calls,
+incomplete/failed Explorer results, or
 unexpected children observed during this verification prevent publication.
 Planner/Explorer synthetic/system/compaction history still fails closed, including
 native nested instruction injection. Earlier direct Orchestrator turns alone may
@@ -146,6 +149,18 @@ contain native read instruction records with exact `instruction.paths` metadata;
 these records are informational and never supply mutation authority.
 Native result normalization/truncation need not match full child prose byte for
 byte.
+
+Publication verifies planning provenance rather than replaying historical tool
+authorization. Ordinary advisory observations are not checked against a tool-name
+allowlist, tool-state policy, provider-execution prohibition, or observation-ID
+validity/uniqueness requirement. Successful, denied, failed, and provider-hosted
+observations do not independently veto an otherwise valid planning execution.
+Generic post-execution anomaly vetoes for those observations are intentionally
+absent: a historical scan cannot prevent or undo effects of broken native
+enforcement or deployment policy. Delegation call/result identities remain
+structurally verified; an observation cannot share a delegation's ID. Human
+Authorize, Git/currentness checks, and CAP admission remain independent and
+unchanged.
 
 Explorer is advisory planning provenance. OpenCode captures its completed
 foreground result and persists returned content in Planner's own tool history;

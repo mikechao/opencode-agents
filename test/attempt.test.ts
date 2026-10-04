@@ -1555,25 +1555,80 @@ snapshotTest(
   },
 )
 
-snapshotTest("Planner rejects forbidden or unfinished tools", async (observer) => {
-  for (const [name, status] of [
-    ["edit", "completed"],
-    ["read", "running"],
-  ]) {
-    const root = snapshotFixture(observer)
+snapshotTest("advisory observations do not veto planning publication or authorization", async (observer) => {
+  const root = snapshotFixture(observer)
+  for (const groups of [[], [["a", "b"], ["d"]]]) {
     const f = fake(root, { decision: true })
-    f.histories["planner-child"].splice(1, 0, {
-      type: "assistant",
-      id: "planner-tool",
-      agent: "planner",
-      model,
-      content: [{ type: "tool", id: "planner-call", name, state: { status, input: {}, content: [], metadata: {} } }],
-    })
-    await expect(implement(f.context, f.generation, observeGit(root), "parent", { directory: root })).rejects.toThrow(
-      "disallowed tool",
-    )
-    expect(f.calls.decided).toEqual([])
-    expectNoImplementation(f)
+    explorerTranscript(f, groups)
+    for (const [sessionID, session] of Object.entries(f.sessions)) {
+      if (session.agent !== "planner" && session.agent !== "explorer") continue
+      f.histories[sessionID].splice(1, 0, {
+        ...answer(`${sessionID}-observations`, session.agent, ""),
+        finish: "tool-calls",
+        content: [
+          {
+            type: "tool",
+            id: "",
+            name: "glob",
+            executed: false,
+            state: {
+              status: "error",
+              input: { pattern: "**/*", path: "../codex-agents" },
+              error: { type: "permission.rejected", message: "Permission denied: external_directory" },
+            },
+          },
+          {
+            type: "tool",
+            id: "observation",
+            name: "read",
+            executed: false,
+            state: {
+              status: "error",
+              input: { path: "old.txt", offset: 400 },
+              error: { type: "unknown", message: "Offset 400 is out of range" },
+            },
+          },
+          {
+            type: "tool",
+            id: "observation",
+            name: "edit",
+            executed: false,
+            state: {
+              status: "error",
+              input: { path: "old.txt", oldString: "initial", newString: "changed" },
+              error: { type: "permission.rejected", message: "Permission denied: edit" },
+            },
+          },
+          {
+            type: "tool",
+            name: "web_search",
+            executed: true,
+            state: { status: "completed", input: { query: "advisory evidence" }, content: [text("Findings")] },
+          },
+          {
+            type: "tool",
+            id: 7,
+            name: "websearch",
+            executed: false,
+            state: { status: "completed", input: { query: "external evidence" }, content: [text("Findings")] },
+          },
+          {
+            type: "tool",
+            id: "unsettled-observation",
+            name: "read",
+            state: { status: "running", input: { path: "old.txt" } },
+          },
+        ],
+      })
+    }
+    const published = await publication(f.context, f.generation, observer.observe(root), "parent", { directory: root })
+    expect(published.publication.payload.text).toBe(proposal)
+    expect(published.candidate.proposal).toEqual(JSON.parse(proposal))
+    await verifyPublishedAttempt(f.context, published, f.guard)
+    f.claim(published)
+    await authorizePublishedAttempt(f.context, published, f.guard)
+    expect(f.calls.claims).toHaveLength(1)
+    expect(f.calls.claims[0].candidate).toEqual(published.candidate)
   }
 })
 
@@ -1881,6 +1936,19 @@ snapshotTest("invalid Explorer calls, children and histories reject planning pub
     "duplicate call ID": (f, t) => {
       f.histories["planner-child"][1].content[1].id = t.id
     },
+    "call ID shared with observation": (f, t) => {
+      f.histories["planner-child"][1].content.push({
+        type: "tool",
+        id: t.id,
+        name: "read",
+        state: { status: "completed", input: {}, content: [text("source")] },
+      })
+    },
+    "duplicate call ID across responses": (f, t) => {
+      const later = explorerTranscript(f, [["d"]]).d
+      later.id = t.id
+      f.histories["planner-child"][1].id = "later-exploration"
+    },
     "missing metadata": (_f, t) => {
       delete t.state.metadata
     },
@@ -2009,32 +2077,6 @@ snapshotTest("invalid Explorer calls, children and histories reject planning pub
     },
   }
   for (const agent of ["planner", "explorer"]) {
-    for (const name of [
-      "edit",
-      "write",
-      "patch",
-      "apply_patch",
-      "shell",
-      "bash",
-      "execute",
-      "session_move",
-      "native.read",
-      "unknown",
-      ...(agent === "explorer" ? ["subagent"] : []),
-    ]) {
-      mutations[`${agent} ${name}`] = (f) => {
-        const part =
-          agent === "explorer" ? f.histories["explorer-a"][1].content[0] : f.histories["planner-child"][1].content[0]
-        part.name = name
-      }
-    }
-    for (const status of ["running", "streaming", "error"]) {
-      mutations[`${agent} ${status} tool`] = (f) => {
-        const part =
-          agent === "explorer" ? f.histories["explorer-a"][1].content[0] : f.histories["planner-child"][1].content[0]
-        part.state.status = status
-      }
-    }
     for (const kind of ["synthetic", "system", "compaction", "agent-switched", "location-switched", "shell", "skill"]) {
       mutations[`${agent} ${kind} history`] = (f) => {
         f.histories[agent === "planner" ? "planner-child" : "explorer-a"].splice(1, 0, {
@@ -2335,16 +2377,7 @@ snapshotTest(
 snapshotTest(
   "decision-time semantic planning evidence rejects changed request/call/child/proposal and added input",
   async (observer) => {
-    for (const mutation of [
-      "request",
-      "call",
-      "child",
-      "prompt",
-      "role",
-      "proposal",
-      "added-input",
-      "mutation-tool",
-    ] as const) {
+    for (const mutation of ["request", "call", "child", "prompt", "role", "proposal", "added-input"] as const) {
       const root = snapshotFixture(observer),
         f = fake(root)
       const published = await publication(f.context, f.generation, observeGit(root), "parent", { directory: root })
@@ -2356,13 +2389,6 @@ snapshotTest(
       if (mutation === "role") f.sessions["planner-child"].agent = "authorized_implementer"
       if (mutation === "proposal") f.histories["planner-child"][1].content[0].text += " "
       if (mutation === "added-input") f.histories["planner-child"].push(user("added", "extra task"))
-      if (mutation === "mutation-tool")
-        f.histories["planner-child"][1].content.push({
-          type: "tool",
-          name: "edit",
-          id: "edit",
-          state: { status: "completed" },
-        })
       f.claim(published)
       await expect(authorizePublishedAttempt(f.context, published, f.guard)).rejects.toThrow()
       expectNoImplementation(f)
