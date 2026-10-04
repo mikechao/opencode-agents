@@ -4,9 +4,13 @@ import { Effect, Schema } from "effect"
 import { Model } from "@opencode/schema/model"
 import { RolePreference, type agentModels } from "./agent-models.ts"
 
-// Promise/TUI RPC accepts portable Standard Schema contracts; Effect handlers
-// retain the same native schema types and validation on the server.
-const portable = Schema.toStandardSchemaV1
+// Expose only Standard Schema. toStandardSchemaV1 also retains the Effect AST;
+// the host would prefer that AST and decode it with a different Effect runtime,
+// which can omit optional fields. The validator keeps native Model.Ref decoding
+// in the runtime that owns the schema.
+const portable = <S extends Schema.ConstraintDecoder<unknown>>(schema: S) => ({
+  "~standard": Schema.toStandardSchemaV1(schema)["~standard"],
+})
 const nothing = portable(Schema.Void)
 const errors = { settings: nothing }
 export const agentModelsRpc = Rpc.define({

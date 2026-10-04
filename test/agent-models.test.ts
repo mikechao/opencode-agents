@@ -1,4 +1,9 @@
 import { expect, mock, test } from "bun:test"
+import { mkdtemp, rm } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { fileURLToPath } from "node:url"
+import type { StandardSchemaV1 } from "@standard-schema/spec"
 import type { Context } from "@opencode/plugin/effect/plugin"
 import type { Context as TuiContext } from "@opencode/plugin/tui/context"
 import { Model } from "@opencode/schema/model"
@@ -342,6 +347,21 @@ test("published-call verification rejects empty-key normalization, schema key lo
   expect(f.state.calls).toEqual([])
 })
 
+// Match pinned core/rpc.ts: Effect schemas take priority over Standard Schema.
+// Passing an independent runtime reproduces the compiled host/plugin boundary.
+async function hostParse(
+  schema: Schema.Codec<unknown, any> | StandardSchemaV1<any, any>,
+  value: unknown,
+  host = Schema,
+  encode = false,
+): Promise<any> {
+  if (host.isSchema(schema))
+    return encode ? host.encodeUnknownSync(schema)(value) : host.decodeUnknownSync(schema)(value)
+  const result = await schema["~standard"].validate(value)
+  if (result.issues) throw new Error(result.issues.map((issue) => issue.message).join("\n"))
+  return result.value
+}
+
 test("settings RPC contracts validate on both sides and expose no authorization method", async () => {
   const f = fixture(),
     handlers = agentModelsHandlers(f.settings)
@@ -350,10 +370,10 @@ test("settings RPC contracts validate on both sides and expose no authorization 
   expect(Object.keys(agentModelsRpc.methods)).toEqual(["list", "set", "reset"])
   expect(Object.keys(authorizeRpc.methods)).toEqual(["authorize"])
   const request = { role: "planner", model: chosen }
-  const decoded = Schema.decodeUnknownSync(agentModelsRpc.methods.set.input)(request)
+  const decoded = await hostParse(agentModelsRpc.methods.set.input, request)
   await Effect.runPromise(handlers.set(decoded, rpc))
   const rows = await Effect.runPromise(handlers.list(undefined, rpc))
-  expect(Schema.decodeUnknownSync(agentModelsRpc.methods.list.output)(JSON.parse(JSON.stringify(rows)))).toEqual(rows)
+  expect(await hostParse(agentModelsRpc.methods.list.output, wire(rows))).toEqual(rows)
   expect(rows[0].preference).toMatchObject({ kind: "override", model: chosen })
   for (const request of [
     { role: "reviewer", model: chosen },
@@ -368,7 +388,7 @@ test("settings RPC contracts validate on both sides and expose no authorization 
   expect((await Effect.runPromise(handlers.list(undefined, rpc)))[0].preference).toEqual({ kind: "native" })
 })
 
-function uiFixture() {
+function uiFixture(host = Schema) {
   const f = fixture()
   const dialogs: any[] = [],
     replies: any[] = [],
@@ -385,11 +405,9 @@ function uiFixture() {
   const rpcContext = { error: (type: string, message: string) => ({ type, message }) } as any
   const callRpc = async <Name extends "list" | "set" | "reset">(name: Name, input: any) => {
     const method = agentModelsRpc.methods[name]
-    const decoded = Schema.decodeUnknownSync(method.input)(wire(input))
+    const decoded = await hostParse(method.input, wire(input), host)
     const output = await Effect.runPromise((handlers[name] as any)(decoded, rpcContext))
-    return wire(
-      Schema.encodeUnknownSync(method.output)(output),
-    ) as (typeof agentModelsRpc.methods)[Name]["output"]["Encoded"]
+    return wire(await hostParse(method.output, output, host, true))
   }
   const close = () => {
     const previous = closeDialog
@@ -468,7 +486,7 @@ function uiFixture() {
           list: async (_input: any, options: any) => {
             methods.push(["list", options])
             const rows = await callRpc("list", undefined)
-            listed = displayRows(Schema.decodeUnknownSync(agentModelsRpc.methods.list.output)(rows))
+            listed = displayRows(rows)
             return rows
           },
           set: async (input: any, options: any) => {
@@ -537,25 +555,52 @@ test("slash/palette picker persists a variant, reopens with saved state, and res
   expect(f.removed()).toBe(true)
 })
 
-test("temporary live diagnostic captures the selector result, RPC request, and persisted read without changing selection", async () => {
-  for (const choice of ["high", "default"]) {
-    const f = uiFixture()
+test("host and plugin with independent Effect runtimes preserve high through selection, RPC, storage, reopening and execution", async () => {
+  // Bundle only the installed, pinned Schema module into a temporary test artifact.
+  // This creates the host's distinct parser/sentinels without starting OpenCode.
+  const directory = await mkdtemp(join(tmpdir(), "agent-models-rpc-"))
+  try {
+    const build = await Bun.build({
+      entrypoints: [fileURLToPath(import.meta.resolve("effect/Schema"))],
+      outdir: directory,
+      target: "bun",
+      format: "esm",
+    })
+    expect(build.success).toBe(true)
+    const host: typeof Schema = await import(build.outputs[0].path)
+    expect(host.decodeUnknownSync).not.toBe(Schema.decodeUnknownSync)
+    const f = uiFixture(host)
     try {
-      f.state.models.push({ ...catalogModel("gpt-6.1-sol", ["high"]), providerID: Provider.ID.make("openai") })
-      f.replies.push("planner", "choose", { providerID: "openai", id: "gpt-6.1-sol" }, choice, undefined)
+      f.replies.push(
+        "planner",
+        "choose",
+        (picker: any) => picker.options.find((option: any) => option.value.id === "chosen").value,
+        // Pinned public dialog.select resolves option.value, not the whole option.
+        (picker: any) => picker.options.find((option: any) => option.title === "high").value,
+        undefined,
+      )
       await f.command.run()
-      const model = { providerID: "openai", id: "gpt-6.1-sol", ...(choice === "high" ? { variant: "high" } : {}) }
-      expect(f.store.get(preferenceKey(f.location, "planner"))).toEqual(model)
-      expect(f.toasts).toHaveLength(1)
-      expect(f.toasts[0]).toMatchObject({ title: "Agent models diagnostic", duration: 60000 })
-      const [selector, offered, sent, read] = f.toasts[0].message.split("\n")
-      expect(selector).toBe(`Selector: string ${JSON.stringify(choice)}`)
-      expect(offered).toBe('Offered: ["default","high"]')
-      expect(JSON.parse(sent.slice("RPC set: ".length))).toEqual({ role: "planner", model })
-      expect(JSON.parse(read.slice("RPC read: ".length))).toEqual({ kind: "override", model, available: true })
+      expect(f.methods.find(([method]) => method === "set")[2].model).toEqual(chosen)
+      expect(f.store.get(preferenceKey(f.location, "planner"))).toEqual(chosen)
+      f.replies.push(undefined)
+      await f.command.run()
+      expect(f.dialogs.at(-1).rows[0]).toMatchObject({ model: "test/chosen", variant: "high", status: "Available" })
+      expect(nodeText(f.dialogs.at(-1).nodes.find((node: any) => node.id === "agent-models-row-planner"))).toBe(
+        "Plannertest/chosenhighAvailable",
+      )
+      await f.dispatch(f.call("planner"))
+      expect(f.state.calls[0].input.model).toBe("test/chosen#high")
+      expect(f.state.children[0].model).toEqual(chosen)
+      expect(f.toasts).toEqual([])
+      for (const method of Object.values(agentModelsRpc.methods)) {
+        expect(host.isSchema(method.input)).toBe(false)
+        expect(host.isSchema(method.output)).toBe(false)
+      }
     } finally {
       f.dispose()
     }
+  } finally {
+    await rm(directory, { recursive: true, force: true })
   }
 })
 
@@ -642,18 +687,20 @@ test("native default variant selection omits only the explicit variant and Reset
 })
 
 test("unexpected variant picker results fail visibly instead of being persisted as default", async () => {
-  for (const invalid of ["missing", { variant: "high" }, null]) {
-    const f = uiFixture()
-    try {
-      await Effect.runPromise(f.settings.set("planner", chosen))
-      f.replies.push("planner", "choose", { providerID: "test", id: "chosen" }, invalid)
-      await f.command.run()
-      expect(f.dialogs[3].current).toBe("high")
-      expect(f.methods.some(([method]) => method === "set")).toBe(false)
-      expect(f.store.get(preferenceKey(f.location, "planner"))).toEqual(chosen)
-      expect(f.toasts[0].message).toContain("unknown variant")
-    } finally {
-      f.dispose()
+  for (const saved of [undefined, chosen]) {
+    for (const invalid of ["missing", { variant: "high" }, { title: "high", value: "high" }, 3, null]) {
+      const f = uiFixture()
+      try {
+        if (saved) await Effect.runPromise(f.settings.set("planner", saved))
+        f.replies.push("planner", "choose", { providerID: "test", id: "chosen" }, invalid)
+        await f.command.run()
+        expect(f.dialogs[3].current).toBe(saved ? "high" : "default")
+        expect(f.methods.some(([method]) => method === "set")).toBe(false)
+        expect(f.store.get(preferenceKey(f.location, "planner"))).toEqual(saved)
+        expect(f.toasts[0].message).toContain("unknown variant")
+      } finally {
+        f.dispose()
+      }
     }
   }
 })

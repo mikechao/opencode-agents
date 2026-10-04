@@ -3,6 +3,13 @@ import { formatSelection } from "../../../src/agent-models.ts"
 import { agentModelsRpc } from "../../../src/agent-models-rpc.ts"
 import { selectAgentRole } from "./AgentModelsView.tsx"
 
+function selectedVariant(value: unknown, variants: readonly { readonly id: string }[]): string | undefined {
+  if (value === "default") return undefined
+  if (typeof value !== "string" || !variants.some((variant) => variant.id === value))
+    throw new Error("Variant picker returned an unknown variant")
+  return value
+}
+
 export function registerAgentModels(context: Context) {
   let disposed = false
   let active: { location: NonNullable<Context["location"]>; dialogOpen: boolean } | undefined
@@ -76,25 +83,9 @@ export function registerAgentModels(context: Context) {
         })
         if (!current() || selected === undefined) return
         const model = models.find((model) => model.providerID === selected.providerID && model.id === selected.id)!
-        // Temporary, nonpersistent diagnostic for the reported live selection.
-        const diagnose = role === "planner" && selected.providerID === "openai" && selected.id === "gpt-6.1-sol"
-        let pickerResult: unknown = "picker not opened"
-        const diagnostic = (details: Record<string, unknown>) => {
-          if (!diagnose || !current()) return
-          context.ui.toast.show({
-            title: "Agent models diagnostic",
-            message: [
-              `Selector: ${typeof pickerResult} ${JSON.stringify(pickerResult) ?? "undefined"}`,
-              `Offered: ${JSON.stringify(model.variants.length ? ["default", ...model.variants.filter((variant) => variant.id !== "default").map((variant) => variant.id)] : [])}`,
-              ...Object.entries(details).map(([key, value]) => `${key}: ${JSON.stringify(value)}`),
-            ].join("\n"),
-            duration: 60000,
-          })
-        }
         let variant: string | undefined
         if (model.variants.length) {
-          // Match the native variant picker: return the ID itself, and never
-          // interpret a failed object-property projection as Model default.
+          // The public native selector resolves option.value (the variant ID).
           const choice = await select({
             title: `${row.label} · variant`,
             current:
@@ -110,23 +101,11 @@ export function registerAgentModels(context: Context) {
                 .map((variant) => ({ title: variant.id, value: variant.id })),
             ],
           })
-          pickerResult = choice
-          if (!current() || choice === undefined) {
-            diagnostic({ Outcome: "cancelled before RPC set" })
-            return
-          }
-          if (choice !== "default" && !model.variants.some((variant) => variant.id === choice)) {
-            diagnostic({ Outcome: "unknown variant; no RPC set" })
-            throw new Error("Variant picker returned an unknown variant")
-          }
-          variant = choice === "default" ? undefined : choice
+          if (!current() || choice === undefined) return
+          variant = selectedVariant(choice, model.variants)
         }
         const request = { role, model: { ...selected, ...(variant === undefined ? {} : { variant }) } }
         await rpc.set(request, options)
-        if (diagnose && current()) {
-          const saved = (await rpc.list(undefined, options)).find((row) => row.role === role)
-          diagnostic({ "RPC set": request, "RPC read": saved?.preference })
-        }
       }
     } catch (error) {
       if (current()) {
