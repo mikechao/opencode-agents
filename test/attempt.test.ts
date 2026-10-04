@@ -406,6 +406,8 @@ function fake(root: string, options: FakeOptions = {}) {
     ui: {
       router: { current: () => ({ type: "session", sessionID: "parent" }) },
       slot: (claim: any) => {
+        // Settings command registration is separate from attempt presentation.
+        if (claim.append === "app") return () => {}
         const registration = { claim, removed: false }
         slots.push(registration)
         return () => {
@@ -3887,6 +3889,8 @@ snapshotTest(
 // No real repositories, native child imports, or production injection seams.
 import { Cause, Effect, Exit, Schema } from "effect"
 import { Tool as NativeTool } from "@opencode/schema/tool"
+import { Model as NativeModel } from "@opencode/schema/model"
+import { agentModels, preferenceKey, parseSelection, type Role } from "../src/agent-models.ts"
 import { nativeAdmission, nativeArguments, controlText } from "../src/native.ts"
 import { authorizeRpc } from "../src/authorize-rpc.ts"
 import serverPlugin from "../.opencode/plugins/opencode-agents/server.ts"
@@ -3987,6 +3991,7 @@ function serverFake(root: string, _observer: SnapshotObserver, workspaceID?: str
     progress: any[] = [],
     reads: string[] = []
   const host = sponsorHost(true)
+  const modelPreferences = new Map<string, any>()
   const f = {
     claim,
     candidate,
@@ -4000,6 +4005,10 @@ function serverFake(root: string, _observer: SnapshotObserver, workspaceID?: str
     progress,
     reads,
     host,
+    modelReads: [] as string[],
+    modelReadError: false,
+    modelCatalogError: false,
+    modelCatalog: [{ providerID: "test", id: "chosen", variants: [{ id: "high" }] }],
     onRead: undefined as ((kind: string, id: string) => void | Promise<void>) | undefined,
     run: undefined as ((sessionID: string) => Promise<void>) | undefined,
     onChildWait: undefined as ((sessionID: string) => Promise<void>) | undefined,
@@ -4023,6 +4032,27 @@ function serverFake(root: string, _observer: SnapshotObserver, workspaceID?: str
   }
   const context = {
     location,
+    storage: {
+      get: (key: string) =>
+        Effect.try({
+          try: () => {
+            f.modelReads.push(key)
+            if (f.modelReadError) throw new Error("Preference storage unavailable")
+            return modelPreferences.get(key)
+          },
+          catch: (error) => error,
+        }),
+    },
+    model: {
+      list: () =>
+        Effect.try({
+          try: () => {
+            if (f.modelCatalogError) throw new Error("Model catalog unavailable")
+            return { data: f.modelCatalog }
+          },
+          catch: (error) => error,
+        }),
+    },
     session: {
       get: ({ sessionID }: any) => f.read("get", sessionID, () => sessions[sessionID]),
       context: ({ sessionID }: any) => f.read("context", sessionID, () => histories[sessionID]),
@@ -4100,6 +4130,7 @@ function serverFake(root: string, _observer: SnapshotObserver, workspaceID?: str
         id: childID,
         parentID: invocation.sessionID,
         agent: input.agent,
+        model: input.model ? NativeModel.Ref.parse(input.model) : model,
         location: structuredClone(location),
         permissions: [],
         outcome: "succeeded",
@@ -4127,7 +4158,8 @@ function serverFake(root: string, _observer: SnapshotObserver, workspaceID?: str
       f.nativeResultMutation?.(result)
       return result
     }).pipe(Effect.mapError((error) => new NativeTool.Error({ message: String(error) })))
-  const wrapped = admission.execute(original)
+  const models = agentModels(context)
+  const wrapped = admission.execute(original, models.prepare)
   const decode = Schema.decodeUnknownPromise(nativeInput)
   const dispatch = async (
     raw: any = nativeArguments(candidate),
@@ -4170,7 +4202,11 @@ function serverFake(root: string, _observer: SnapshotObserver, workspaceID?: str
     let failure: NativeTool.Error | undefined
     try {
       await Effect.runPromise(
-        admission.before({ ...invocation, tool, input: opts.beforeInput ?? structuredClone(raw) }),
+        admission
+          .before({ ...invocation, tool, input: opts.beforeInput ?? structuredClone(raw) })
+          .pipe(
+            Effect.andThen(models.before({ ...invocation, tool, input: opts.beforeInput ?? structuredClone(raw) })),
+          ),
       )
       const decoded = await decode(opts.codecInput ?? opts.beforeInput ?? raw)
       const result = await Effect.runPromise(
@@ -4201,8 +4237,227 @@ function serverFake(root: string, _observer: SnapshotObserver, workspaceID?: str
     }
   }
   const authorize = (input: unknown = claim) => Effect.runPromise(admission.authorize(input))
-  return { ...f, state: f, context, admission, cap, original, wrapped, dispatch, authorize }
+  return { ...f, state: f, context, admission, cap, original, wrapped, dispatch, authorize, modelPreferences }
 }
+
+snapshotTest(
+  "trusted Planner model injection follows admission and preserves its proposed call and receipt",
+  async (observer) => {
+    const root = snapshotFixture(observer),
+      f = serverFake(root, observer)
+    const selected = parseSelection({ providerID: "test", id: "chosen", variant: "high" })
+    f.modelPreferences.set(preferenceKey(f.context.location, "planner"), selected)
+    f.histories.ses_parent.push(user("root-user", request))
+    const proposed = { agent: "planner", description: "Plan", prompt: "Model-authored proposal" }
+    const result = await f.dispatch(proposed)
+    expect(f.originals[0].input).toEqual({
+      agent: "planner",
+      description: "Plan",
+      prompt: plannerInput(request),
+      model: "test/chosen#high",
+    })
+    expect(f.histories.ses_parent.at(-1).content[0].state.input).toEqual(proposed)
+    expect(Object.keys(result.metadata![plannerReceiptKey].input)).toEqual(["agent", "description", "prompt"])
+    expect(f.sessions.ses_planner.model).toEqual(selected)
+    const rejected = serverFake(root, observer)
+    rejected.modelPreferences.set(preferenceKey(rejected.context.location, "planner"), selected)
+    rejected.histories.ses_parent.push(user("root-user", request))
+    await expect(rejected.dispatch({ ...proposed, model: "test/other" })).rejects.toThrow()
+    expect(rejected.originals).toEqual([])
+  },
+)
+
+snapshotTest(
+  "authorized Implementer model injection follows exact CAP checks without changing the frozen proposal",
+  async (observer) => {
+    const root = snapshotFixture(observer),
+      f = serverFake(root, observer)
+    const selected = parseSelection({ providerID: "test", id: "chosen", variant: "high" })
+    f.modelPreferences.set(preferenceKey(f.context.location, "authorized_implementer"), selected)
+    f.state.run = async () => {
+      await f.dispatch()
+    }
+    expect(await f.authorize()).toContain("Implementation gate completed successfully")
+    expect(f.originals[0].input).toEqual({ ...nativeArguments(f.candidate), model: "test/chosen#high" })
+    expect(f.originals[0].context.agent).toBe(f.admission.actor)
+    expect(f.histories.ses_parent.at(-1).content[0].state.input).toEqual(nativeArguments(f.candidate))
+    expect(f.sessions.ses_child.model).toEqual(selected)
+    expect(f.cap.claim.candidate).toEqual(f.candidate)
+  },
+)
+
+// Exercise the actual admission/settings composition, including Authorize's
+// terminal settlement and worktree exclusion, with trusted host doubles.
+const badModelPreferences = [
+  { name: "malformed", value: { id: "broken" } },
+  { name: "unavailable model", value: { providerID: "test", id: "removed" } },
+  { name: "unavailable variant", value: { providerID: "test", id: "chosen", variant: "removed" } },
+  { name: "storage failure", value: { providerID: "test", id: "chosen" } },
+  { name: "catalog failure", value: { providerID: "test", id: "chosen" } },
+] as const
+function breakModelPreference(
+  f: ReturnType<typeof serverFake>,
+  role: Role,
+  failure: (typeof badModelPreferences)[number],
+) {
+  f.modelPreferences.set(preferenceKey(f.context.location, role), failure.value)
+  f.state.modelReadError = failure.name === "storage failure"
+  f.state.modelCatalogError = failure.name === "catalog failure"
+}
+function clearModelPreference(f: ReturnType<typeof serverFake>) {
+  f.modelPreferences.clear()
+  f.state.modelReadError = false
+  f.state.modelCatalogError = false
+}
+
+snapshotTest(
+  "Implementer settings failures precede consumption and release exclusion for an independent root",
+  async (observer) => {
+    const root = snapshotFixture(observer)
+    for (const failure of badModelPreferences) {
+      const f = serverFake(root, observer)
+      breakModelPreference(f, "authorized_implementer", failure)
+      const consume = spyOn(f.cap, "consume")
+      try {
+        f.state.run = async () => {
+          await expect(f.dispatch()).rejects.toThrow("Agent model settings:")
+        }
+        const outcome = await f.authorize()
+        expect(consume).not.toHaveBeenCalled()
+        expect(f.cap.childID).toBeUndefined()
+        expect(f.cap.result).toBeUndefined()
+        expect(outcome).toContain("unverified")
+        expect(outcome).not.toContain("settlement identity unknown")
+        expect(f.cap.phase).toBe("closed")
+        expect(f.nativeEntries).toEqual([])
+        expect(f.progress).toEqual([])
+        expect(Object.keys(f.sessions)).toEqual(["ses_parent"])
+        expect(f.modelPreferences.size).toBe(1)
+        clearModelPreference(f)
+        f.sessions.ses_b = { ...structuredClone(f.sessions.ses_parent), id: "ses_b" }
+        f.histories.ses_b = []
+        f.state.run = async (sessionID) => {
+          await f.dispatch(undefined, { sessionID })
+        }
+        expect(await f.authorize({ ...f.claim, rootSessionID: "ses_b", publicationID: "plan-b" })).toContain(
+          "Implementation gate completed successfully",
+        )
+        expect(f.nativeEntries).toHaveLength(1)
+        expect(f.admission.caps.get("ses_b")?.result?.childID).toBe("ses_b-authorized_implementer")
+        expect(consume).not.toHaveBeenCalled()
+      } finally {
+        consume.mockRestore()
+      }
+    }
+  },
+)
+
+snapshotTest(
+  "Planner settings failures do not spend one-shot admission or stamp admission evidence",
+  async (observer) => {
+    const root = snapshotFixture(observer)
+    for (const failure of badModelPreferences) {
+      const f = serverFake(root, observer)
+      breakModelPreference(f, "planner", failure)
+      f.histories.ses_parent.push(user("root-user", request))
+      const args = { agent: "planner", description: "Plan", prompt: "Proposed" }
+      await expect(f.dispatch(args)).rejects.toThrow("Agent model settings:")
+      expect(f.nativeEntries).toEqual([])
+      expect(f.progress).toEqual([])
+      expect(f.histories.ses_parent.at(-1).content[0].state.input).toEqual(args)
+      expect(f.histories.ses_parent.at(-1).content[0].state.metadata?.[plannerReceiptKey]).toBeUndefined()
+      expect(Object.keys(f.sessions)).toEqual(["ses_parent"])
+      f.histories.ses_parent.push(answer("settings-final", "orchestrator", "Settings failed."), idle("settings-idle"))
+      expect(inspectCompletedRootTurn(f.histories.ses_parent, "settings-idle").kind).toBe("non-governed")
+      clearModelPreference(f)
+      f.histories.ses_parent.push(user("corrected-user", request))
+      const result = await f.dispatch(args, { id: "corrected-call", messageID: "corrected-message" })
+      expect(result.metadata?.[plannerReceiptKey]).toBeDefined()
+      expect(f.nativeEntries).toHaveLength(1)
+      await expect(f.dispatch(args, { id: "again-call", messageID: "again-message" })).rejects.toThrow(
+        "One governed Planner",
+      )
+      expect(f.nativeEntries).toHaveLength(1)
+    }
+  },
+)
+
+snapshotTest(
+  "Explorer settings fail before native entry; corrected trusted selection preserves original evidence",
+  async (observer) => {
+    const root = snapshotFixture(observer)
+    for (const failure of badModelPreferences) {
+      const f = serverFake(root, observer)
+      f.sessions.ses_nested = { ...f.sessions.ses_parent, id: "ses_nested", agent: "planner", parentID: "ses_parent" }
+      f.histories.ses_nested = []
+      f.host.appendConfig([], { planner: [{ action: "subagent", resource: "explorer", effect: "allow" }] })
+      breakModelPreference(f, "explorer", failure)
+      const args = { agent: "explorer", description: "Explore", prompt: "Focused request" }
+      const options = { sessionID: "ses_nested", agent: "planner" }
+      await expect(f.dispatch(args, options)).rejects.toThrow("Agent model settings:")
+      expect(f.nativeEntries).toEqual([])
+      expect(f.progress).toEqual([])
+      expect(Object.keys(f.sessions)).toEqual(["ses_parent", "ses_nested"])
+      clearModelPreference(f)
+      f.modelPreferences.set(preferenceKey(f.context.location, "explorer"), {
+        providerID: "test",
+        id: "chosen",
+        variant: "high",
+      })
+      await f.dispatch(args, { ...options, id: "corrected-call", messageID: "corrected-message" })
+      expect(f.originals[0].input).toEqual({ ...args, model: "test/chosen#high" })
+      expect(f.sessions["ses_nested-explorer"].model).toEqual({ providerID: "test", id: "chosen", variant: "high" })
+      expect(f.histories.ses_nested.at(-1).content[0].state.input).toEqual(args)
+    }
+  },
+)
+
+snapshotTest(
+  "composed managed calls reject authored model/extra keys before settings reads or native consumption",
+  async (observer) => {
+    const root = snapshotFixture(observer)
+    for (const role of ["planner", "explorer", "authorized_implementer"] as const) {
+      for (const extra of [{ model: "test/chosen#high" }, { model: "" }, { background: false }, { unexpected: true }]) {
+        const f = serverFake(root, observer)
+        // Poison settings: rejection must occur before the resolver sees this.
+        f.modelPreferences.set(preferenceKey(f.context.location, role), { id: "broken" })
+        const consume = spyOn(f.cap, "consume")
+        try {
+          let args = { agent: role, description: "Role work", prompt: "Focused request" }
+          const options: { sessionID?: string; agent?: string; beforeInput?: unknown } = {}
+          if (role === "planner") f.histories.ses_parent.push(user("root-user", request))
+          if (role === "authorized_implementer") args = { ...nativeArguments(f.candidate) }
+          if (role === "explorer") {
+            f.sessions.ses_nested = {
+              ...f.sessions.ses_parent,
+              id: "ses_nested",
+              agent: "planner",
+              parentID: "ses_parent",
+            }
+            f.histories.ses_nested = []
+            options.sessionID = "ses_nested"
+            options.agent = "planner"
+          }
+          const raw = { ...args, ...extra }
+          if ("model" in extra && extra.model === "") options.beforeInput = args // Host normalization.
+          const reject = async () => {
+            await expect(f.dispatch(raw, options)).rejects.toThrow()
+          }
+          if (role === "authorized_implementer") {
+            f.state.run = reject
+            expect(await f.authorize()).toContain("unverified")
+          } else await reject()
+          expect(f.modelReads).toEqual([])
+          expect(f.nativeEntries).toEqual([])
+          expect(f.progress).toEqual([])
+          expect(consume).not.toHaveBeenCalled()
+        } finally {
+          consume.mockRestore()
+        }
+      }
+    }
+  },
+)
 
 snapshotTest(
   "root-keyed server CAPs consume independently and publish receipts only to their exact roots",
@@ -4578,6 +4833,7 @@ snapshotTest(
     expect(f.wakes).toHaveLength(0)
     expect(f.reads).toEqual([
       "get:ses_parent",
+      "context:ses_parent", // Settings hook verifies published original input.
       "get:ses_parent",
       "context:ses_parent",
       "get:ses_parent",
@@ -5676,7 +5932,9 @@ snapshotTest(
       })
     let contextReads = 0
     f.state.onRead = async (kind) => {
-      if (kind === "context" && ++contextReads === 1) {
+      // The first context read belongs to the published-input settings hook;
+      // pause the executor's read, after cap.enter has claimed this identity.
+      if (kind === "context" && ++contextReads === 2) {
         entered()
         await paused
       }
@@ -6266,7 +6524,7 @@ snapshotTest(
   },
 )
 
-test("Effect server registers only local Authorize RPC, a narrow hidden sponsor and the native tool wrapper", async () => {
+test("Effect server keeps Authorize and model settings RPCs separate with one sponsor and native wrapper", async () => {
   const host = sponsorHost(),
     hooks: any[] = [],
     rpcs: any[] = []
@@ -6303,9 +6561,11 @@ test("Effect server registers only local Authorize RPC, a narrow hidden sponsor 
         yield* serverPlugin.effect(context)
         expect(native.input).toBe(schema)
         expect(native.execute).not.toBe(execute)
-        expect(rpcs).toHaveLength(1)
+        expect(rpcs).toHaveLength(2)
         expect(rpcs[0].definition).toBe(authorizeRpc)
         expect(Object.keys(rpcs[0].handlers)).toEqual(["authorize"])
+        expect(rpcs[1].definition.id).toBe("opencode-agents.models")
+        expect(Object.keys(rpcs[1].handlers)).toEqual(["list", "set", "reset"])
         expect(hooks.map((item) => item.name)).toEqual(["execute.before"])
         const editors = [...host.roles().values()]
         expect(editors).toHaveLength(1)

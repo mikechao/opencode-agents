@@ -12,6 +12,36 @@ const source = (file: string) =>
     (_match, literal) => literal ?? "",
   )
 
+test("pinned native executor accepts runtime-only model injection after parsing and before fresh child creation", () => {
+  const runtime = source("tool/runtime.ts")
+  expect(runtime).toContain("constdecoded=yield*decodeInput(tool,input)")
+  expect(runtime).toContain("tool.execute(decoded,context)")
+  const native = source("tool/plugin/subagent.ts")
+  expect(native).toContain("input.model===undefined?undefined:yield*resolveModel(input.model)")
+  expect(native).toContain("constmodel=override??agent.model??parent.model")
+  expect(native).toContain("try:()=>Model.Ref.parse(input)")
+  expect(native).toContain("model.variants.some((variant)=>variant.id===ref.variant)")
+  const selection = native.indexOf("constmodel=override??agent.model??parent.model")
+  expect(native.indexOf("sessions.create({")).toBeGreaterThan(selection)
+  expect(native.indexOf("sessions.prompt({")).toBeGreaterThan(selection)
+})
+
+test("pinned host publishes original tool input before executor dispatch and retains it on success/failure", () => {
+  const step = source("session/runner/step.ts")
+  expect(step.indexOf("yield*publisher.publish(event)")).toBeLessThan(step.indexOf("restore(executeTool(event))"))
+  const publisher = source("session/runner/publish-llm-event.ts")
+  expect(publisher).toContain("bus.publish(SessionEvent.Tool.Called,{")
+  expect(publisher).toContain("input:asRecord(event.input)")
+  const projection = source("session/message-updater.ts")
+  expect(projection).toContain("input:event.data.input")
+  expect(projection).toContain("input:match.state.input")
+  expect(projection).toContain('input:typeofmatch.state.input==="string"?{}:match.state.input')
+  // Explicit selections are checked against current availability, never replaced
+  // with the default; ongoing execution reads session.model, not agent.model.
+  expect(source("session/runner/model.ts")).toContain("newModelUnavailableError({")
+  expect(source("session/context.ts")).toContain("models.resolve(session,model.available)")
+})
+
 test("pinned OpenCode native sponsorship forwards explicit actor and real parent/source before child creation", () => {
   const native = source("tool/plugin/subagent.ts")
   const assert = native.indexOf("yield*permission.assert({")

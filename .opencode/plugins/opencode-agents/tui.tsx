@@ -5,6 +5,7 @@ import type { Renderable, MouseEvent } from "@opentui/core"
 import { createEffect, createRenderEffect, createRoot, createSignal, onCleanup, untrack, Show } from "solid-js"
 import { displayPath } from "../../../src/proposal.ts"
 import type { Generation } from "../../../src/cap.ts"
+import { registerAgentModels } from "./agent-models-ui.ts"
 import { observeGit, requireFresh } from "../../../src/git.ts"
 import {
   activationEvidence,
@@ -33,6 +34,7 @@ type Presentation = { kind: "pending"; published: PublishedAttempt } | { kind: "
 const plugin: Definition = {
   id: "opencode-agents",
   setup(context) {
+    const removeAgentModels = registerAgentModels(context)
     type Created = Extract<OpenCodeEvent, { type: "session.created" }>
     let revoked = false
     let implementing = false
@@ -745,6 +747,7 @@ const plugin: Definition = {
     })
     return () => {
       revoked = true
+      removeAgentModels()
       preparations.clear()
       tombstones.clear()
       disposeRollback()

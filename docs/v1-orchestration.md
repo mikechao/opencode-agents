@@ -321,6 +321,26 @@ session deletion and history revert may remove native receipts.
 
 ## Validation and status
 
+`/agent-models` (also available in the command palette) stores personal overrides
+for Planner, Explorer and Implementer in OpenCode-owned plugin storage, keyed
+by the exact location directory and workspace identity. Choose a catalog model
+and optional native variant, or Reset to remove the override and expose normal
+agent configuration / parent-model inheritance. Unavailable saved selections
+remain visible and fail during trusted preparation; they are not replaced.
+
+Preferences affect only fresh native child calls. The trusted executor copies
+the validated three-key call and adds the saved model solely to its internal
+native executor argument. Preference reads, decoding and catalog validation
+finish before Planner admission is spent or Implementer CAP is consumed. Settings
+failures therefore leave no native child settlement ownership and do not strand
+worktree exclusion. Failures arising during native execution retain normal
+settlement semantics. Published call inputs and Planner admission receipts
+retain their original contracts. Model-authored extra keys, including empty
+`model` / `sessionID` keys normalized by the host, are rejected before creation.
+Existing children retain their stored selections. Preferences are configuration
+outside CAP, Plan publication, authorization claims and Git scope authority;
+they do not transform agent model definitions or switch session models.
+
 Issue #9 implementation is covered by trusted transport, host, executor,
 Git-observer and JSX doubles. Coverage includes initial binding/publication and
 readability, malformed-first calls, raw/decoded drift, stale evidence, concurrency,

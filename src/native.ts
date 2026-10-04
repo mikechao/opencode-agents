@@ -194,12 +194,18 @@ export function nativeAdmission(context: Context) {
         Effect.onInterrupt(() => Effect.sync(() => cap.close())),
       )
     }).pipe(Effect.mapError((error) => (error instanceof Tool.Error ? error : fail(String(error)))))
-  const executePlanner = (original: Tool.Info["execute"], input: unknown, invocation: Tool.Context) =>
+  type PrepareInput = (input: unknown) => Effect.Effect<unknown, Tool.Error>
+  const executePlanner = (
+    original: Tool.Info["execute"],
+    prepare: PrepareInput,
+    input: unknown,
+    invocation: Tool.Context,
+  ) =>
     Effect.gen(function* () {
       const location = snapshotLocation(context.location)
       const root = yield* context.session.get({ sessionID: invocation.sessionID })
       // A nested Orchestrator is outside the initial root boundary.
-      if (root.id === invocation.sessionID && root.parentID) return yield* original(input, invocation)
+      if (root.id === invocation.sessionID && root.parentID) return yield* original(yield* prepare(input), invocation)
       const call = yield* attempt(() => {
         live()
         if (planners.has(invocation.sessionID)) throw new Error("One governed Planner attempt per root")
@@ -227,6 +233,9 @@ export function nativeAdmission(context: Context) {
         if (!same(plannerArguments(input), bound.proposed)) throw new Error("Decoded Planner proposal changed")
         return frozenCopy(bound.effective)
       })
+      // Settings preparation is fallible but carries no admission authority.
+      // Finish it before the final evidence read and one-shot insertion.
+      const effectiveInput = yield* prepare(receipt.input)
       // A later input/history mutation during the identity reads must not be
       // hidden by the earlier context snapshot. This is evidence, not recovery.
       const latest = yield* context.session.context({ sessionID: invocation.sessionID })
@@ -251,7 +260,7 @@ export function nativeAdmission(context: Context) {
       return yield* Effect.gen(function* () {
         // Persist admitted-but-failed evidence through native progress/failure
         // metadata too, so completion cannot downgrade it to a non-governed turn.
-        const result = yield* original(receipt.input, {
+        const result = yield* original(effectiveInput, {
           ...invocation,
           progress: (update) => invocation.progress({ ...update, [plannerReceiptKey]: receipt }),
         })
@@ -297,81 +306,90 @@ export function nativeAdmission(context: Context) {
         )
       }),
     )
-  const execute = (original: Tool.Info["execute"]) => (input: unknown, invocation: Tool.Context) =>
-    Effect.gen(function* () {
-      yield* attempt(live)
-      const cap = caps.get(invocation.sessionID)
-      const governed =
-        (!!cap && invocation.sessionID === cap.rootSessionID) ||
-        (!!input && typeof input === "object" && "agent" in input && input.agent === target)
-      if (!governed) {
-        if (
-          invocation.agent === "orchestrator" &&
-          input !== null &&
-          typeof input === "object" &&
-          "agent" in input &&
-          input.agent === "planner"
-        )
-          return yield* executePlanner(original, input, invocation)
-        return yield* original(input, invocation)
-      }
-      const call: Reservation = {
-        sessionID: invocation.sessionID,
-        agent: invocation.agent,
-        messageID: invocation.messageID,
-        id: invocation.id,
-      }
-      if (!cap) return yield* Effect.fail(fail("No reserved Implementer call"))
-      // Executor losers also cannot change an in-flight owner's state.
-      yield* attempt(() => cap.enter(call))
-      return yield* Effect.gen(function* () {
-        const history = yield* context.session.context({ sessionID: invocation.sessionID })
-        yield* attempt(() => actualCall(cap, history, call, "running"))
-        const root = yield* context.session.get({ sessionID: invocation.sessionID })
-        // All awaited reads precede the final synchronous freshness/consume barrier.
-        const lease = yield* attempt(() => {
-          rootIdentity(cap, root)
-          local(cap)
-          exactArguments(input, cap.claim.candidate)
-          if (!candidateIntact(cap.claim.candidate)) throw new Error("Frozen claim integrity changed")
-          if (executing?.cap !== cap) throw new Error("Root does not own worktree implementation exclusion")
-          requireFresh(observeGit(cap.claim.location.directory!, baseline(cap)), baseline(cap))
-          cap.consume(call)
-          return executing
-        })
-        const execution: { call: Reservation; child: ChildBinding } = { call, child: { kind: "unknown" } }
-        lease.native = execution
-        const bindChild = (childID: unknown) => {
-          if (execution.child.kind === "ambiguous") return
+  const execute =
+    (original: Tool.Info["execute"], prepare: PrepareInput = Effect.succeed) =>
+    (input: unknown, invocation: Tool.Context) =>
+      Effect.gen(function* () {
+        yield* attempt(live)
+        const cap = caps.get(invocation.sessionID)
+        const governed =
+          (!!cap && invocation.sessionID === cap.rootSessionID) ||
+          (!!input && typeof input === "object" && "agent" in input && input.agent === target)
+        if (!governed) {
           if (
-            typeof childID !== "string" ||
-            !childID ||
-            childID === call.sessionID ||
-            (execution.child.kind === "exact" && execution.child.childID !== childID)
-          ) {
-            execution.child = { kind: "ambiguous" }
-            return
-          }
-          execution.child = { kind: "exact", childID }
+            invocation.agent === "orchestrator" &&
+            input !== null &&
+            typeof input === "object" &&
+            "agent" in input &&
+            input.agent === "planner"
+          )
+            return yield* executePlanner(original, prepare, input, invocation)
+          return yield* original(yield* prepare(input), invocation)
         }
-        // Pinned OpenCode seam: native Permission.assert uses this explicit actor,
-        // the real parent/source IDs, and effective policy before creating a child.
-        const result = yield* original(input, {
-          ...invocation,
-          agent: actor,
-          progress: (update) =>
-            Effect.sync(() => bindChild(update.sessionID)).pipe(Effect.andThen(() => invocation.progress(update))),
-        })
-        yield* attempt(() => {
-          cap.receipt(result)
-          bindChild(cap.childID)
-        })
-        return result // Native output normalization, after hooks and publication remain native.
-      }).pipe(
-        Effect.onError(() => Effect.sync(() => cap.close())),
-        Effect.onInterrupt(() => Effect.sync(() => cap.close())),
-      )
-    }).pipe(Effect.mapError((error) => (error instanceof Tool.Error ? error : fail(String(error)))))
+        const call: Reservation = {
+          sessionID: invocation.sessionID,
+          agent: invocation.agent,
+          messageID: invocation.messageID,
+          id: invocation.id,
+        }
+        if (!cap) return yield* Effect.fail(fail("No reserved Implementer call"))
+        // Executor losers also cannot change an in-flight owner's state.
+        yield* attempt(() => cap.enter(call))
+        return yield* Effect.gen(function* () {
+          const history = yield* context.session.context({ sessionID: invocation.sessionID })
+          yield* attempt(() => {
+            actualCall(cap, history, call, "running")
+            exactArguments(input, cap.claim.candidate)
+          })
+          // Decode/validate settings before consuming CAP or claiming an unknown
+          // child. On failure the existing pre-admission close/settlement releases
+          // exclusion, without changing this root's accepted-claim contract.
+          const effectiveInput = yield* prepare(input)
+          const root = yield* context.session.get({ sessionID: invocation.sessionID })
+          // All awaited reads precede the final synchronous freshness/consume barrier.
+          const lease = yield* attempt(() => {
+            rootIdentity(cap, root)
+            local(cap)
+            exactArguments(input, cap.claim.candidate)
+            if (!candidateIntact(cap.claim.candidate)) throw new Error("Frozen claim integrity changed")
+            if (executing?.cap !== cap) throw new Error("Root does not own worktree implementation exclusion")
+            requireFresh(observeGit(cap.claim.location.directory!, baseline(cap)), baseline(cap))
+            cap.consume(call)
+            return executing
+          })
+          const execution: { call: Reservation; child: ChildBinding } = { call, child: { kind: "unknown" } }
+          lease.native = execution
+          const bindChild = (childID: unknown) => {
+            if (execution.child.kind === "ambiguous") return
+            if (
+              typeof childID !== "string" ||
+              !childID ||
+              childID === call.sessionID ||
+              (execution.child.kind === "exact" && execution.child.childID !== childID)
+            ) {
+              execution.child = { kind: "ambiguous" }
+              return
+            }
+            execution.child = { kind: "exact", childID }
+          }
+          // Pinned OpenCode seam: native Permission.assert uses this explicit actor,
+          // the real parent/source IDs, and effective policy before creating a child.
+          const result = yield* original(effectiveInput, {
+            ...invocation,
+            agent: actor,
+            progress: (update) =>
+              Effect.sync(() => bindChild(update.sessionID)).pipe(Effect.andThen(() => invocation.progress(update))),
+          })
+          yield* attempt(() => {
+            cap.receipt(result)
+            bindChild(cap.childID)
+          })
+          return result // Native output normalization, after hooks and publication remain native.
+        }).pipe(
+          Effect.onError(() => Effect.sync(() => cap.close())),
+          Effect.onInterrupt(() => Effect.sync(() => cap.close())),
+        )
+      }).pipe(Effect.mapError((error) => (error instanceof Tool.Error ? error : fail(String(error)))))
   const verifyResult = (cap: NativeCap) =>
     Effect.gen(function* () {
       yield* attempt(() => local(cap))
