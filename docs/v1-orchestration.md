@@ -113,9 +113,15 @@ reconstructed from session history.
 
 Planner may use zero, one, or multiple fresh native `explorer` children to
 investigate existing mechanisms, viable approaches, constraints, and trade-offs.
-Planner owns orchestration: independent foreground `subagent` calls may be
-issued together in one response and execute through OpenCode's native tool
-concurrency; dependent follow-ups may be issued after earlier findings return.
+Planner decides which investigations are useful and how to divide the questions;
+it must not create extra Explorer work merely to achieve parallelism. When it
+identifies two or more useful independent investigations, Planner should normally
+issue their foreground `subagent` calls together in the same Planner response.
+It must not wait for one independent Explorer result before issuing another
+already-known independent investigation. A question that depends on an earlier
+finding remains a fresh Explorer call in a later Planner response after consuming
+that prerequisite result. OpenCode owns execution scheduling, concurrency, and
+joining through its native foreground fork/join behavior.
 The host returns completed findings into Planner's ordinary tool-result/model
 context and provides native child-session navigation. Project `opencode.json`
 sets `experimental.subagent_depth: 2` for Orchestrator → Planner → Explorer.

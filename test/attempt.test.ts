@@ -1457,6 +1457,22 @@ test("Orchestrator uses trusted outcome history without mandating authorization 
   )
 })
 
+test("Planner prefers same-response independent Explorer calls and later fresh dependent calls", () => {
+  const instructions = readFileSync(path.join(import.meta.dir, "../.opencode/agents/planner.md"), "utf8")
+  expect(instructions).toContain("Use zero, one, or multiple read-only Explorer subagents")
+  expect(instructions).toMatch(
+    /two or more useful investigations that are independent, normally issue .* together in the same Planner response/,
+  )
+  expect(instructions).toContain(
+    "Do not wait for one independent Explorer result before issuing another already-known independent investigation.",
+  )
+  expect(instructions).toMatch(
+    /If a question depends on an earlier Explorer finding, consume that prerequisite result before issuing a fresh Explorer call in a later Planner response/,
+  )
+  expect(instructions).toContain("Do not create extra Explorer work merely to achieve parallelism.")
+  expect(instructions).toContain("OpenCode owns execution scheduling, concurrency, and joining.")
+})
+
 test("native role files allow only Planner to delegate to Explorer through ordered effective rules", () => {
   type Rule = { action: string; resource: string; effect: string }
   const load = (name: string): Rule[] => {
