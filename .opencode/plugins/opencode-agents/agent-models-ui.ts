@@ -1,37 +1,14 @@
 import type { Context } from "@opencode/plugin/tui/context"
-import { formatSelection, type RolePreference } from "../../../src/agent-models.ts"
+import { formatSelection } from "../../../src/agent-models.ts"
 import { agentModelsRpc } from "../../../src/agent-models-rpc.ts"
-
-function summary(row: RolePreference) {
-  const preference = row.preference
-  const override =
-    preference.kind === "override"
-      ? `${preference.model.providerID}/${preference.model.id}`
-      : preference.kind === "invalid"
-        ? "Invalid saved preference"
-        : "None"
-  const status =
-    preference.kind === "override"
-      ? preference.available
-        ? "Available"
-        : "Unavailable"
-      : preference.kind === "invalid"
-        ? preference.message
-        : "Native behavior"
-  const variant = preference.kind === "override" ? `${preference.model.variant ?? "default"} · ` : ""
-  return {
-    description: `Override: ${override}`,
-    // The host reserves footer space while long descriptions can be clipped.
-    footer: `${variant}${status}${row.loaded ? "" : " · Agent not loaded"}`,
-  }
-}
+import { selectAgentRole } from "./AgentModelsView.tsx"
 
 export function registerAgentModels(context: Context) {
   let disposed = false
-  let active: { location: NonNullable<Context["location"]> } | undefined
+  let active: { location: NonNullable<Context["location"]>; dialogOpen: boolean } | undefined
   const show = async () => {
     if (disposed || active) return
-    const invocation = { location: { ...(context.location ?? context.data.location.default()) } }
+    const invocation = { location: { ...(context.location ?? context.data.location.default()) }, dialogOpen: false }
     active = invocation
     const current = () => {
       const location = context.location ?? context.data.location.default()
@@ -42,19 +19,25 @@ export function registerAgentModels(context: Context) {
         location.workspaceID === invocation.location.workspaceID
       )
     }
+    const ownDialog = async <A>(open: () => Promise<A>) => {
+      invocation.dialogOpen = true
+      try {
+        return await open()
+      } finally {
+        invocation.dialogOpen = false
+      }
+    }
+    const select: Context["ui"]["dialog"]["select"] = (options) => ownDialog(() => context.ui.dialog.select(options))
     const options = { location: invocation.location }
     try {
       const rpc = context.client.rpc(agentModelsRpc)
       while (current()) {
         const rows = await rpc.list(undefined, options)
         if (!current()) return
-        const role = await context.ui.dialog.select({
-          title: "Agent models · future fresh subagents",
-          options: rows.map((row) => ({ title: row.label, value: row.role, ...summary(row) })),
-        })
+        const role = await ownDialog(() => selectAgentRole(context, rows))
         if (!current() || role === undefined) return
         const row = rows.find((row) => row.role === role)!
-        const action = await context.ui.dialog.select({
+        const action = await select({
           title: row.label,
           options: [
             { title: "Choose model", value: "choose" as const, disabled: !row.loaded },
@@ -78,7 +61,7 @@ export function registerAgentModels(context: Context) {
         const models = context.data.location.model.list(invocation.location) ?? []
         if (!models.length) throw new Error("No models are available for this location")
         const providers = context.data.location.provider.list(invocation.location) ?? []
-        const selected = await context.ui.dialog.select({
+        const selected = await select({
           title: `${row.label} · model`,
           current:
             row.preference.kind === "override"
@@ -95,25 +78,27 @@ export function registerAgentModels(context: Context) {
         const model = models.find((model) => model.providerID === selected.providerID && model.id === selected.id)!
         let variant: string | undefined
         if (model.variants.length) {
-          const choice = await context.ui.dialog.select<{ variant: string | undefined }>({
+          // Match the native variant picker: return the ID itself, and never
+          // interpret a failed object-property projection as Model default.
+          const choice = await select({
             title: `${row.label} · variant`,
-            current: {
-              variant:
-                row.preference.kind === "override" &&
-                row.preference.model.providerID === selected.providerID &&
-                row.preference.model.id === selected.id
-                  ? row.preference.model.variant
-                  : undefined,
-            },
+            current:
+              row.preference.kind === "override" &&
+              row.preference.model.providerID === selected.providerID &&
+              row.preference.model.id === selected.id
+                ? (row.preference.model.variant ?? "default")
+                : "default",
             options: [
-              { title: "Model default", value: { variant: undefined } },
+              { title: "Model default", value: "default" },
               ...model.variants
                 .filter((variant) => variant.id !== "default")
-                .map((variant) => ({ title: variant.id, value: { variant: variant.id } })),
+                .map((variant) => ({ title: variant.id, value: variant.id })),
             ],
           })
           if (!current() || choice === undefined) return
-          variant = choice.variant
+          if (choice !== "default" && !model.variants.some((variant) => variant.id === choice))
+            throw new Error("Variant picker returned an unknown variant")
+          variant = choice === "default" ? undefined : choice
         }
         await rpc.set({ role, model: { ...selected, ...(variant === undefined ? {} : { variant }) } }, options)
       }
@@ -147,7 +132,7 @@ export function registerAgentModels(context: Context) {
   })
   return () => {
     disposed = true
-    if (active) context.ui.dialog.clear()
+    if (active?.dialogOpen) context.ui.dialog.clear()
     active = undefined
     remove()
   }

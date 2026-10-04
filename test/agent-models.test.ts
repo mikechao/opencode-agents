@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test"
+import { expect, mock, test } from "bun:test"
 import type { Context } from "@opencode/plugin/effect/plugin"
 import type { Context as TuiContext } from "@opencode/plugin/tui/context"
 import { Model } from "@opencode/schema/model"
@@ -6,6 +6,7 @@ import { Provider } from "@opencode/schema/provider"
 import { Agent } from "@opencode/schema/agent"
 import { Tool } from "@opencode/schema/tool"
 import { Effect, Schema } from "effect"
+import { createRoot, createEffect, createMemo, createComponent, createSignal } from "solid-js"
 import {
   agentModels,
   managedRoles,
@@ -14,10 +15,62 @@ import {
   formatSelection,
   preferenceKey,
   selectionAvailable,
+  type RolePreference,
 } from "../src/agent-models.ts"
 import { agentModelsHandlers, agentModelsRpc } from "../src/agent-models-rpc.ts"
 import { authorizeRpc } from "../src/authorize-rpc.ts"
 import { registerAgentModels } from "../.opencode/plugins/opencode-agents/agent-models-ui.ts"
+import { displayRows, columnWidths } from "../.opencode/plugins/opencode-agents/AgentModelsView.tsx"
+
+// Test-scoped JSX capture, matching the existing attempt UI tests. Render the
+// actual view and capture cells/handlers without a terminal or OpenCode process.
+const modelElements: any[] = []
+const [dimensions, resize] = createSignal({ width: 120, height: 40 })
+mock.module("@opentui/solid", () => ({
+  createElement: (type: string) => {
+    const node = {
+      type,
+      children: [] as any[],
+      y: 0,
+      height: 20,
+      getChildren() {
+        return this.children
+      },
+      scrollBy() {},
+    }
+    modelElements.push(node)
+    return node
+  },
+  createTextNode: (value: unknown) => ({ type: "literal", value }),
+  setProp: (node: any, key: string, value: unknown) => {
+    node[key] = value
+  },
+  use: (fn: (node: any) => void, node: any) => fn(node),
+  insertNode: (parent: any, child: any) => {
+    parent.children.push(child)
+  },
+  insert: (parent: any, value: any) => {
+    let previous: any[] = []
+    createEffect(() => {
+      const child = typeof value === "function" ? value() : value
+      const next = [child].flat(Infinity).filter((item) => item !== null && item !== undefined && item !== false)
+      parent.children = parent.children.filter((item: any) => !previous.includes(item))
+      parent.children.push(...next)
+      previous = next
+    })
+  },
+  effect: createEffect,
+  memo: createMemo,
+  createComponent,
+  useTerminalDimensions: () => dimensions,
+}))
+const nodeText = (node: any): string =>
+  typeof node === "string"
+    ? node
+    : node?.type === "literal"
+      ? String(node.value)
+      : (node?.children ?? []).map(nodeText).join("")
+const wire = <A>(value: A): A => (value === undefined ? value : JSON.parse(JSON.stringify(value)))
 
 const chosen = parseSelection({ providerID: "test", id: "chosen", variant: "high" })
 const native = parseSelection({ providerID: "test", id: "native" })
@@ -323,14 +376,36 @@ function uiFixture() {
     methods: any[] = []
   let command: any,
     removed = false,
-    clears = 0
+    clears = 0,
+    listed: ReturnType<typeof displayRows> = []
+  let closeDialog: (() => void) | undefined
+  const presentations: any[] = [],
+    layers: any[] = []
+  const handlers = agentModelsHandlers(f.settings)
+  const rpcContext = { error: (type: string, message: string) => ({ type, message }) } as any
+  const callRpc = async <Name extends "list" | "set" | "reset">(name: Name, input: any) => {
+    const method = agentModelsRpc.methods[name]
+    const decoded = Schema.decodeUnknownSync(method.input)(wire(input))
+    const output = await Effect.runPromise((handlers[name] as any)(decoded, rpcContext))
+    return wire(
+      Schema.encodeUnknownSync(method.output)(output),
+    ) as (typeof agentModelsRpc.methods)[Name]["output"]["Encoded"]
+  }
+  const close = () => {
+    const previous = closeDialog
+    closeDialog = undefined
+    previous?.()
+  }
   const context = {
     location: f.location,
     keymap: {
       layer: (read: any) => {
-        command = read().commands[0]
+        const layer = read()
+        if (layer.mode === "global") command = layer.commands[0]
+        else layers.push(read)
       },
     },
+    theme: { surface: () => ({ text: { base: "white", muted: "gray" }, background: { raised: { high: "blue" } } }) },
     ui: {
       slot: (claim: any) => {
         expect(claim.append).toBe("app")
@@ -340,13 +415,41 @@ function uiFixture() {
         }
       },
       dialog: {
+        show: (render: () => unknown, onClose: () => void) => {
+          close()
+          const start = modelElements.length
+          const record = { rows: listed, nodes: [] as any[], closed: false }
+          dialogs.push(record)
+          let dispose!: () => void
+          createRoot((cleanup) => {
+            dispose = cleanup
+            render()
+          })
+          record.nodes = modelElements.slice(start)
+          closeDialog = () => {
+            record.closed = true
+            onClose()
+            dispose()
+          }
+          const reply = replies.shift()
+          void Promise.resolve(typeof reply === "function" ? reply(record) : reply).then((role) => {
+            if (record.closed) return
+            if (role === undefined) close()
+            else record.nodes.find((node) => node.id === `agent-models-row-${role}`).onMouseUp()
+          })
+        },
+        set: (options: any) => {
+          presentations.push(options)
+        },
         select: async (options: any) => {
+          close()
           dialogs.push(options)
           const reply = replies.shift()
           return typeof reply === "function" ? await reply(options) : reply
         },
         clear: () => {
           clears++
+          close()
         },
       },
       toast: { show: (input: any) => toasts.push(input) },
@@ -364,15 +467,17 @@ function uiFixture() {
         return {
           list: async (_input: any, options: any) => {
             methods.push(["list", options])
-            return Effect.runPromise(f.settings.list())
+            const rows = await callRpc("list", undefined)
+            listed = displayRows(Schema.decodeUnknownSync(agentModelsRpc.methods.list.output)(rows))
+            return rows
           },
           set: async (input: any, options: any) => {
-            methods.push(["set", options])
-            return Effect.runPromise(f.settings.set(input.role, input.model))
+            methods.push(["set", options, wire(input)])
+            return callRpc("set", input)
           },
           reset: async (input: any, options: any) => {
             methods.push(["reset", options])
-            return Effect.runPromise(f.settings.reset(input.role))
+            return callRpc("reset", input)
           },
         }
       },
@@ -385,6 +490,8 @@ function uiFixture() {
     replies,
     toasts,
     methods,
+    presentations,
+    layers,
     context,
     dispose,
     command,
@@ -396,15 +503,32 @@ function uiFixture() {
 test("slash/palette picker persists a variant, reopens with saved state, and resets only that role", async () => {
   const f = uiFixture()
   expect(f.command).toMatchObject({ palette: true, slash: { name: "agent-models" } })
-  f.replies.push("planner", "choose", { providerID: "test", id: "chosen" }, { variant: "high" }, undefined)
+  f.replies.push(
+    "planner",
+    "choose",
+    (picker: any) => picker.options.find((option: any) => option.value.id === "chosen").value,
+    (picker: any) => {
+      let selected = picker.options.findIndex((option: any) => option.value === picker.current)
+      while (picker.options[selected].title !== "high") selected = (selected + 1) % picker.options.length // Arrow down.
+      expect(picker.options[selected].value).toBe("high")
+      return picker.options[selected].value // Enter returns the selected native ID.
+    },
+    undefined,
+  )
   await f.command.run()
-  expect(f.dialogs[4].options[0].description).toBe("Override: test/chosen")
-  expect(f.dialogs[4].options[0].footer).toBe("high · Available")
-  expect(f.dialogs[4].options[1].description).toContain("Override: None")
+  expect(f.dialogs[4].rows[0]).toMatchObject({ model: "test/chosen", variant: "high", status: "Available" })
+  expect(nodeText(f.dialogs[4].nodes.find((node: any) => node.id === "agent-models-row-planner"))).toBe(
+    "Plannertest/chosenhighAvailable",
+  )
+  expect(f.dialogs[4].rows[1]).toMatchObject({ model: "Native behavior", variant: "—", status: "—" })
+  expect(f.store.get(preferenceKey(f.location, "planner"))).toEqual(chosen)
+  expect(f.methods.find(([method]) => method === "set")[2].model).toEqual(chosen)
+  await f.dispatch(f.call("planner"))
+  expect(f.state.calls[0].input.model).toBe("test/chosen#high")
+  expect(f.presentations.every((options) => options.size === "large" && options.centered)).toBe(true)
   f.replies.push("planner", "reset", undefined)
   await f.command.run()
-  expect(f.dialogs[5].options[0].description).toBe("Override: test/chosen")
-  expect(f.dialogs[5].options[0].footer).toBe("high · Available")
+  expect(f.dialogs[5].rows[0]).toMatchObject({ model: "test/chosen", variant: "high", status: "Available" })
   expect(f.store.size).toBe(0)
   expect(f.methods.every(([, options]) => options.location.directory === "/checkout")).toBe(true)
   expect(f.toasts).toEqual([])
@@ -418,10 +542,10 @@ test("role rows show explicit or default override variants and preserve native b
     await Effect.runPromise(f.settings.set("planner", chosen))
     await Effect.runPromise(f.settings.set("explorer", native))
     await f.command.run()
-    expect(f.dialogs[0].options).toMatchObject([
-      { title: "Planner", description: "Override: test/chosen", footer: "high · Available" },
-      { title: "Explorer", description: "Override: test/native", footer: "default · Available" },
-      { title: "Implementer", description: "Override: None", footer: "Native behavior" },
+    expect(f.dialogs[0].rows).toMatchObject([
+      { agent: "Planner", model: "test/chosen", variant: "high", status: "Available" },
+      { agent: "Explorer", model: "test/native", variant: "default", status: "Available" },
+      { agent: "Implementer", model: "Native behavior", variant: "—", status: "—" },
     ])
   } finally {
     f.dispose()
@@ -434,8 +558,8 @@ test("picker displays unavailable/invalid preferences and permits replacement or
   f.store.set(preferenceKey(f.location, "explorer"), { invalid: true })
   f.replies.push(undefined)
   await f.command.run()
-  expect(f.dialogs[0].options[0].footer).toContain("Unavailable")
-  expect(f.dialogs[0].options[1].description).toContain("Invalid saved preference")
+  expect(f.dialogs[0].rows[0]).toMatchObject({ model: "test/removed", variant: "high", status: "Unavailable" })
+  expect(f.dialogs[0].rows[1].model).toBe("Invalid saved preference")
   f.dispose()
 })
 
@@ -465,4 +589,132 @@ test("picker teardown/location departure suppresses stale writes and duplicate i
     if (cleanup === "dispose") expect(f.clears()).toBe(1)
     else f.dispose()
   }
+})
+
+test("native default variant selection omits only the explicit variant and Reset preserves native behavior", async () => {
+  const f = uiFixture()
+  try {
+    f.replies.push(
+      "planner",
+      "choose",
+      (picker: any) => picker.options.find((option: any) => option.value.id === "chosen").value,
+      (picker: any) => {
+        expect(picker.current).toBe("default")
+        return picker.options.find((option: any) => option.title === "Model default").value
+      },
+      undefined,
+    )
+    await f.command.run()
+    expect(f.store.get(preferenceKey(f.location, "planner"))).toEqual({ providerID: "test", id: "chosen" })
+    expect(f.dialogs[4].rows[0]).toMatchObject({ model: "test/chosen", variant: "default", status: "Available" })
+    await f.dispatch(f.call("planner"))
+    expect(f.state.calls[0].input.model).toBe("test/chosen")
+    f.replies.push("planner", "reset", undefined)
+    await f.command.run()
+    expect(f.dialogs.at(-1).rows[0]).toMatchObject({ model: "Native behavior", variant: "—", status: "—" })
+    expect(f.store.size).toBe(0)
+  } finally {
+    f.dispose()
+  }
+})
+
+test("unexpected variant picker results fail visibly instead of being persisted as default", async () => {
+  for (const invalid of ["missing", { variant: "high" }, null]) {
+    const f = uiFixture()
+    try {
+      await Effect.runPromise(f.settings.set("planner", chosen))
+      f.replies.push("planner", "choose", { providerID: "test", id: "chosen" }, invalid)
+      await f.command.run()
+      expect(f.dialogs[3].current).toBe("high")
+      expect(f.methods.some(([method]) => method === "set")).toBe(false)
+      expect(f.store.get(preferenceKey(f.location, "planner"))).toEqual(chosen)
+      expect(f.toasts[0].message).toContain("unknown variant")
+    } finally {
+      f.dispose()
+    }
+  }
+})
+
+test("large dialog uses independent wrapping cells and responds to terminal resizing without hiding saved variant/status", async () => {
+  const f = uiFixture()
+  const id = `gpt-6.1-sol-${"long-model-identifier".repeat(12)}`
+  f.state.models.push(catalogModel(id, ["high"]))
+  const saved = parseSelection({ providerID: "test", id, variant: "high" })
+  await Effect.runPromise(f.settings.set("planner", saved))
+  f.state.models = f.state.models.filter((model) => model.id !== id)
+  let opened!: () => void, finish!: () => void
+  const ready = new Promise<void>((resolve) => {
+    opened = resolve
+  })
+  f.replies.push(() => {
+    opened()
+    return new Promise((resolve) => {
+      finish = () => resolve(undefined)
+    })
+  })
+  const pending = f.command.run()
+  await ready
+  try {
+    const record = f.dialogs[0]
+    const row = record.nodes.find((node: any) => node.id === "agent-models-row-planner")
+    expect(record.rows[0]).toMatchObject({ model: `test/${id}`, variant: "high", status: "Unavailable" })
+    expect(row.children.map(nodeText)).toEqual(["Planner", `test/${id}`, "highUnavailable"])
+    expect(row.children[1]).toMatchObject({ flexGrow: 1, flexBasis: 0, minWidth: 0 })
+    expect(row.children[1].children[0].wrapMode).toBe("char")
+    expect(row.children[1].children[0].maxHeight).toBe(3)
+    expect(row.children[2].flexShrink).toBe(0)
+    expect(row.children[2].flexDirection).toBe("row")
+    expect(f.presentations[0]).toEqual({ size: "large", centered: true })
+    resize({ width: 48, height: 20 })
+    expect(row.children[2].flexDirection).toBe("column")
+    expect(row.children[0].width).toBe(columnWidths(48).agent)
+    expect(row.children[2].width).toBe(columnWidths(48).variant)
+    expect(nodeText(row.children[2])).toBe("highUnavailable")
+    const scroll = record.nodes.find((node: any) => node.type === "scrollbox")
+    expect(scroll.maxHeight).toBe(10)
+    expect(f.store.get(preferenceKey(f.location, "planner"))).toEqual(saved)
+  } finally {
+    resize({ width: 120, height: 40 })
+    finish()
+    await pending
+    f.dispose()
+  }
+})
+
+test("table arrow navigation and Enter open the selected role's editable controls", async () => {
+  const f = uiFixture()
+  try {
+    f.replies.push(
+      () => {
+        const commands = f.layers.at(-1)().commands
+        commands.find((command: any) => command.id === "dialog.select.next").run()
+        commands.find((command: any) => command.id === "dialog.select.submit").run()
+      },
+      "reset",
+      undefined,
+    )
+    await f.command.run()
+    expect(f.dialogs[1].title).toBe("Explorer")
+    expect(f.methods.find(([method]) => method === "reset")).toBeDefined()
+    expect(f.dialogs[0].closed).toBe(true)
+    expect(f.store.size).toBe(0)
+    expect(f.toasts).toEqual([])
+  } finally {
+    f.dispose()
+  }
+})
+
+test("cleanup while settings are loading does not close an unrelated dialog", async () => {
+  const f = uiFixture()
+  let resume!: (rows: readonly RolePreference[]) => void
+  const pendingList = new Promise<readonly RolePreference[]>((resolve) => {
+    resume = resolve
+  })
+  ;(f.context.client as any).rpc = () => ({ list: () => pendingList })
+  const pending = f.command.run()
+  f.dispose()
+  resume(await Effect.runPromise(f.settings.list()))
+  await pending
+  expect(f.clears()).toBe(0)
+  expect(f.dialogs).toEqual([])
 })
