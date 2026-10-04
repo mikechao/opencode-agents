@@ -1457,7 +1457,7 @@ test("Orchestrator uses trusted outcome history without mandating authorization 
   )
 })
 
-test("Planner decomposes before Explorer delegation and synthesizes findings with targeted follow-ups", () => {
+test("Planner decomposes, emits known independent Explorer calls before results, and synthesizes with targeted follow-ups", () => {
   const instructions = readFileSync(path.join(import.meta.dir, "../.opencode/agents/planner.md"), "utf8").replace(
     /\s+/g,
     " ",
@@ -1468,13 +1468,14 @@ test("Planner decomposes before Explorer delegation and synthesizes findings wit
   )
   expect(instructions).toMatch(/distinguish[^.]*independent investigations[^.]*dependent follow-ups/i)
   expect(instructions).toMatch(
-    /two or more useful investigations[^.]*independent[^.]*normally issue[^.]*foreground `subagent` calls[^.]*together[^.]*same Planner response/i,
+    /two or more useful independent Explorer investigations[^.]*known[^.]*emit all[^.]*foreground `subagent` tool calls[^.]*same assistant response/i,
+  )
+  expect(instructions).toMatch(/emit all[^.]*`subagent` tool calls[^.]*before consuming any Explorer result/i)
+  expect(instructions).toMatch(
+    /do not emit[^.]*first independent Explorer call[^.]*wait[^.]*result[^.]*then emit[^.]*already-known independent call/i,
   )
   expect(instructions).toMatch(
-    /do not start[^.]*known independent investigation[^.]*defer[^.]*already-apparent independent investigation[^.]*until after[^.]*result returns/i,
-  )
-  expect(instructions).toMatch(
-    /question depends[^.]*earlier Explorer finding[^.]*consume[^.]*prerequisite result before[^.]*fresh Explorer call[^.]*later Planner response/i,
+    /question[^.]*depends[^.]*earlier Explorer finding[^.]*consume[^.]*prerequisite result before[^.]*fresh Explorer call[^.]*later Planner response/i,
   )
   expect(instructions).toMatch(/do not create extra Explorer work[^.]*parallelism/i)
   expect(instructions).toMatch(/OpenCode owns[^.]*scheduling[^.]*concurrency[^.]*joining/i)

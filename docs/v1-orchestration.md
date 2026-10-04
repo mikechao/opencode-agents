@@ -115,12 +115,14 @@ Planner may use zero, one, or multiple fresh native `explorer` children to
 investigate existing mechanisms, viable approaches, constraints, and trade-offs.
 Before launching the first Explorer, Planner identifies useful investigations
 already apparent from the request and current context and distinguishes independent
-investigations from dependent follow-ups. It decides how to divide the questions
-and must not create extra Explorer work merely to achieve parallelism.
-When two or more useful investigations are independent, Planner should normally
-issue their foreground `subagent` calls together in the same Planner response.
-It must not start one known independent investigation and defer another
-already-apparent independent investigation until after the first result returns.
+investigations from dependent follow-ups. Planner owns this dependency analysis
+and decides how to divide the questions. It must not create extra Explorer work
+merely to achieve parallelism.
+Once two or more useful independent investigations are known, Planner emits all
+corresponding foreground Explorer `subagent` tool calls in the same assistant
+response before consuming any Explorer result. It must not emit only the first
+independent Explorer call, wait for its result, and then emit another already-known
+independent call.
 A question that depends on an earlier finding remains a fresh Explorer call in a
 later Planner response after consuming that prerequisite result. OpenCode owns
 execution scheduling, concurrency, and joining through its native foreground
