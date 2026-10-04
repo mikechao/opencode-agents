@@ -26,7 +26,13 @@ export function implementerPrompt(candidate: IntentCandidate): string {
   ].join("\n")
 }
 
-export const plannerInput = (request: string) => `User request:\n${request}`
+// Fixed advisory planning guidance; this wrapper grants no authority.
+export const plannerInput = (request: string) => `User request:\n${request}
+
+Planning execution reminder:
+Before launching Explorer work, identify useful independent investigations already apparent from the request.
+Once multiple useful independent Explorer investigations are known, emit all corresponding \`subagent\` tool calls in the same assistant response before consuming any Explorer result.
+Do not emit one known-independent Explorer call, wait for its result, and then emit another already-known independent call.`
 export const plannerReceiptKey = "opencodeAgentsPlannerInput"
 export function plannerArguments(value: unknown) {
   if (

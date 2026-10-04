@@ -64,6 +64,14 @@ admitted execution cannot silently become a non-governed completion.
 The trusted effective-input receipt carries these anchors. Publication independently
 rereads paginated raw history, validates earlier successful direct turns, and binds
 the exact completed governed segment, fresh Planner child, and final proposal.
+Trusted code constructs the effective Planner input from the exact root user request
+plus a fixed project-owned planning execution reminder. The reminder asks Planner
+to identify useful independent Explorer investigations and emit all known independent
+calls in the same assistant response before consuming any Explorer result.
+It is advisory orchestration guidance, not authorization. Orchestrator's proposed
+`prompt` cannot alter the effective request or reminder. The receipt and Planner
+bootstrap/history verification bind this exact trusted input; OpenCode still owns
+actual Explorer scheduling, concurrency, and joining.
 Authorization revalidates that same frozen terminal idle and request/call binding.
 Earlier prose/read results are context only; no prefix hash or transcript-derived
 eligibility is used. Reopening history or restarting an activation cannot recover
