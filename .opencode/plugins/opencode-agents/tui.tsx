@@ -11,6 +11,7 @@ import {
   authorizePublishedAttempt,
   exactEvidence,
   initiallyAuthorizable,
+  inspectRootCompletion,
   publishedPresentationMatches,
   publishPlan,
   publishTerminalReceipt,
@@ -495,19 +496,34 @@ const plugin: Definition = {
           </box>
         )
       }
+      // Event identity anchors each inspection to its own native idle marker.
+      // This notification queue owns no conversational or mutation authority.
+      const completed = new Set<string>()
+      let completionInspection = Promise.resolve()
       const complete = (event: Extract<OpenCodeEvent, { type: "session.execution.succeeded" }>) => {
         if (
           generation.revoked ||
           ownership.kind !== "waiting" ||
-          event.data.sessionID !== ownership.creation.data.sessionID
+          event.data.sessionID !== rootSessionID ||
+          completed.has(event.id)
         )
           return
-        const creation = ownership.creation
-        ownership = { kind: "publishing", creation }
-        setLayoutRevision((value) => value + 1)
-        const activation = activationEvidence(generation, location, baseline, observationCompletedAt, creation)
-        void publishPlan(context, activation, guard)
-          .then((published) => {
+        completed.add(event.id)
+        completionInspection = completionInspection
+          .then(async () => {
+            if (generation.revoked || ownership.kind !== "waiting") return
+            const creation = ownership.creation
+            const activation = activationEvidence(generation, location, baseline, observationCompletedAt, creation)
+            if (!event.id.startsWith("evt_")) throw new Error("Completion event identity is missing")
+            const terminalIdleID = event.id.replace(/^evt_/, "msg_")
+            const result = await inspectRootCompletion(context, activation, guard, terminalIdleID)
+            guard.assertCurrent()
+            if (ownership.kind !== "waiting") return
+            if (result.kind === "invalid") throw new Error(result.reason)
+            if (result.kind === "non-governed") return
+            ownership = { kind: "publishing", creation }
+            setLayoutRevision((value) => value + 1)
+            const published = await publishPlan(context, activation, guard, result.terminalIdleID)
             guard.assertCurrent()
             if (!initiallyAuthorizable(activation)) {
               const message = baseline.paths.length
@@ -544,6 +560,11 @@ const plugin: Definition = {
               "session.deleted",
               "session.moved",
               "session.permissions",
+              "session.agent.selected",
+              "session.compaction.started",
+              "session.compaction.ended",
+              "session.compaction.failed",
+              "session.forked",
             ].includes(event.type)
           ) {
             terminate(new Error("The fresh Orchestrator turn did not complete successfully"))

@@ -14,7 +14,8 @@ import {
   snapshotLocation,
   nativeBootstrap,
   plannerArguments,
-  plannerReceipt,
+  plannerTurnInput,
+  directRootTool,
   plannerReceiptKey,
 } from "./attempt.ts"
 import { parseProposal, candidateIntact, displayPath, type IntentCandidate } from "./proposal.ts"
@@ -72,6 +73,12 @@ type ChildBinding = { kind: "unknown" } | { kind: "exact"; childID: string } | {
 // Root-local one-shot slots live only in this closure; no transcript recovery.
 export function nativeAdmission(context: Context) {
   const caps = new Map<string, NativeCap>()
+  // Only successful trusted admission spends eligibility. Failed syntax and
+  // denied pre-admission calls create neither a slot nor CAP authority.
+  const planners = new Map<
+    string,
+    Readonly<{ call: Readonly<Reservation>; receipt: ReturnType<typeof plannerTurnInput>["effective"] }>
+  >()
   let revoked = false
   // The location-scoped host activation owns one worktree. Hold exclusion from
   // before the wake through settlement/verification, independently of the root slots.
@@ -158,8 +165,22 @@ export function nativeAdmission(context: Context) {
       yield* attempt(live)
       const cap = caps.get(event.sessionID)
       if (!cap || event.sessionID !== cap.rootSessionID) {
-        if (event.input && typeof event.input === "object" && "agent" in event.input && event.input.agent === target)
-          yield* Effect.fail(fail("No reserved Implementer call"))
+        if (event.agent !== "orchestrator" || directRootTool(event.tool)) {
+          if (event.input && typeof event.input === "object" && "agent" in event.input && event.input.agent === target)
+            yield* Effect.fail(fail("No reserved Implementer call"))
+          return
+        }
+        // Tool hooks expose no parent identity. Preserve nested passthrough.
+        const root = yield* context.session.get({ sessionID: event.sessionID })
+        if (root.id === event.sessionID && root.parentID) return
+        yield* attempt(() => {
+          live()
+          if (planners.has(event.sessionID)) throw new Error("One governed Planner attempt per root")
+          if (event.tool !== "subagent") throw new Error("Forbidden root tool contender")
+          if (event.input && typeof event.input === "object" && "agent" in event.input && event.input.agent === target)
+            throw new Error("No reserved Implementer call")
+          plannerArguments(event.input)
+        })
         return
       }
       // Select the owner before any awaits. A losing contender cannot close it.
@@ -172,13 +193,23 @@ export function nativeAdmission(context: Context) {
         Effect.onError(() => Effect.sync(() => cap.close())),
         Effect.onInterrupt(() => Effect.sync(() => cap.close())),
       )
-    })
+    }).pipe(Effect.mapError((error) => (error instanceof Tool.Error ? error : fail(String(error)))))
   const executePlanner = (original: Tool.Info["execute"], input: unknown, invocation: Tool.Context) =>
     Effect.gen(function* () {
       const location = snapshotLocation(context.location)
       const root = yield* context.session.get({ sessionID: invocation.sessionID })
       // A nested Orchestrator is outside the initial root boundary.
       if (root.id === invocation.sessionID && root.parentID) return yield* original(input, invocation)
+      const call = yield* attempt(() => {
+        live()
+        if (planners.has(invocation.sessionID)) throw new Error("One governed Planner attempt per root")
+        return frozenCopy({
+          sessionID: invocation.sessionID,
+          agent: invocation.agent,
+          messageID: invocation.messageID,
+          id: invocation.id,
+        })
+      })
       const history = yield* context.session.context({ sessionID: invocation.sessionID })
       const current = yield* context.session.get({ sessionID: invocation.sessionID })
       const receipt = yield* attempt(() => {
@@ -186,63 +217,86 @@ export function nativeAdmission(context: Context) {
         if (caps.get(invocation.sessionID)?.rootSessionID === invocation.sessionID)
           throw new Error("Planner follows an admitted CAP claim")
         if (!location.directory || !same(root.time.created, current.time.created))
-          throw new Error("Initial Planner root creation or location changed")
+          throw new Error("Planner root creation or location changed")
         for (const session of [root, current]) {
           if (!orchestratorRootMatches(session, invocation.sessionID, location))
-            throw new Error("Initial Planner root identity changed")
+            throw new Error("Planner root identity changed")
         }
         if (!same(snapshotLocation(context.location), location)) throw new Error("Server location changed")
-        const users = history.filter((message) => message.type === "user")
-        const user = users[0]
-        if (
-          users.length !== 1 ||
-          !user ||
-          history[0] !== user ||
-          !user.text ||
-          [user.files, user.agents, user.skills].some((items) => items && items.length) ||
-          new Set(history.map((message) => message.id)).size !== history.length ||
-          history.some((message) => !["user", "assistant", "model-switched"].includes(message.type))
-        )
-          throw new Error("Planner is not bound to one initial plain root request")
-        const assistants = history.filter((message) => message.type === "assistant")
-        if (assistants.some((message) => message.agent !== "orchestrator" || message.error))
-          throw new Error("Initial Planner assistant identity changed")
-        const tools = assistants.flatMap((message) =>
-          message.content.flatMap((part) => (part.type === "tool" ? [{ messageID: message.id, part }] : [])),
-        )
-        const call = tools[0]
-        if (
-          tools.length !== 1 ||
-          !call ||
-          call.messageID !== invocation.messageID ||
-          call.part.id !== invocation.id ||
-          call.part.name !== "subagent" ||
-          call.part.state.status !== "running"
-        )
-          throw new Error("Initial Planner native contender identity changed")
-        // Published proposal precedes host normalization/decoding; reject stripped keys too.
-        const proposed = plannerArguments(call.part.state.input)
-        if (!same(plannerArguments(input), proposed)) throw new Error("Decoded Planner proposal changed")
-        return frozenCopy(plannerReceipt(user.id, proposed.description, user.text))
+        const bound = plannerTurnInput(history, call)
+        if (!same(plannerArguments(input), bound.proposed)) throw new Error("Decoded Planner proposal changed")
+        return frozenCopy(bound.effective)
       })
-      // Keep native permissions, parent/source IDs, child creation and progress unchanged.
-      const result = yield* original(receipt.input, invocation)
+      // A later input/history mutation during the identity reads must not be
+      // hidden by the earlier context snapshot. This is evidence, not recovery.
+      const latest = yield* context.session.context({ sessionID: invocation.sessionID })
       yield* attempt(() => {
         live()
+        const observed = plannerTurnInput(latest, call)
         if (
-          !exactKeys(result.output, ["sessionID", "status", "output"]) ||
-          typeof result.output.sessionID !== "string" ||
-          !result.output.sessionID ||
-          result.output.sessionID === invocation.sessionID ||
-          result.output.status !== "completed" ||
-          result.metadata?.sessionID !== result.output.sessionID ||
-          result.metadata?.status !== "completed"
+          caps.get(invocation.sessionID)?.rootSessionID === invocation.sessionID ||
+          !same(snapshotLocation(context.location), location) ||
+          !same(observed.effective, receipt) ||
+          !same(observed.proposed, plannerArguments(input))
         )
-          throw new Error("Planner did not return a completed native child")
+          throw new Error("Planner turn changed before native execution")
+        // The final synchronous barrier owns this exact invocation. No failure
+        // or cancellation after entry restores eligibility; contenders before
+        // this point never acquired it.
+        if (planners.has(invocation.sessionID)) throw new Error("One governed Planner attempt per root")
+        // One synchronous insertion records both admission and its exact input
+        // evidence. Native code cannot run between spending and recording it.
+        planners.set(invocation.sessionID, Object.freeze({ call, receipt }))
       })
-      // Tool.Called retains proposed state.input. Only terminal result metadata records execution.
-      return { ...result, metadata: { ...result.metadata, [plannerReceiptKey]: receipt } }
-    })
+      return yield* Effect.gen(function* () {
+        // Persist admitted-but-failed evidence through native progress/failure
+        // metadata too, so completion cannot downgrade it to a non-governed turn.
+        const result = yield* original(receipt.input, {
+          ...invocation,
+          progress: (update) => invocation.progress({ ...update, [plannerReceiptKey]: receipt }),
+        })
+        yield* attempt(() => {
+          live()
+          if (
+            !exactKeys(result.output, ["sessionID", "status", "output"]) ||
+            typeof result.output.sessionID !== "string" ||
+            !result.output.sessionID ||
+            result.output.sessionID === invocation.sessionID ||
+            result.output.status !== "completed" ||
+            result.metadata?.sessionID !== result.output.sessionID ||
+            result.metadata?.status !== "completed"
+          )
+            throw new Error("Planner did not return a completed native child")
+        })
+        // Tool.Called retains proposed state.input; only trusted metadata records admission.
+        const stamped: Tool.Result = { ...result, metadata: { ...result.metadata, [plannerReceiptKey]: receipt } }
+        return stamped
+      })
+    }).pipe(
+      Effect.catchCause((cause) => {
+        const admitted = planners.get(invocation.sessionID)
+        if (
+          !admitted ||
+          !same(admitted.call, {
+            sessionID: invocation.sessionID,
+            agent: invocation.agent,
+            messageID: invocation.messageID,
+            id: invocation.id,
+          })
+        )
+          return Effect.failCause(cause)
+        // Project the already-recorded admission through the supported native
+        // failure metadata path, including defects before the first progress.
+        const error = Cause.squash(cause)
+        return Effect.fail(
+          new Tool.Error({
+            message: error instanceof Tool.Error ? error.message : String(error),
+            error,
+            metadata: { ...(error instanceof Tool.Error ? error.metadata : {}), [plannerReceiptKey]: admitted.receipt },
+          }),
+        )
+      }),
+    )
   const execute = (original: Tool.Info["execute"]) => (input: unknown, invocation: Tool.Context) =>
     Effect.gen(function* () {
       yield* attempt(live)
@@ -518,6 +572,7 @@ export function nativeAdmission(context: Context) {
   const teardown = () => {
     revoked = true
     for (const cap of caps.values()) cap.teardown()
+    planners.clear()
     executing = undefined
   }
   return { before, execute, authorize, teardown, sponsorPermission, actor, caps }

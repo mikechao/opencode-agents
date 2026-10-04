@@ -75,3 +75,20 @@ test("pinned OpenCode joins local foreground calls and replays persisted tool co
     "messages:toLLMMessages(input.messages,input.model.ref,providerMetadataKey)",
   )
 })
+
+test("pinned terminal execution events project their own exact idle message identities", () => {
+  const projection = source("session/message-updater.ts")
+  const idle = projection.slice(projection.indexOf("constidle="), projection.indexOf("constproject="))
+  expect(idle).toContain("id:SessionMessage.ID.fromEvent(event.id)")
+  expect(projection).toContain('"session.execution.succeeded":()=>idle("succeeded")')
+  expect(source("../../schema/src/session-message.ts")).toContain('eventID.replace(/^evt_/,"msg_")')
+})
+
+test("pinned native tool failures retain trusted progress and error metadata", () => {
+  const publisher = source("session/runner/publish-llm-event.ts")
+  expect(publisher).toContain("return{metadata:{...tool.progress,...metadata}}")
+  expect(publisher).toContain("...failureSnapshot(tool,metadata)")
+  expect(source("session/runner/step.ts")).toContain(
+    "publisher.failTool(event.id,toSessionError(error),error.metadata)",
+  )
+})

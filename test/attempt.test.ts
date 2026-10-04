@@ -15,6 +15,7 @@ import {
   publishedPresentationMatches,
   authorizePublishedAttempt,
   plannerInput,
+  inspectCompletedRootTurn,
   plannerReceipt,
   plannerReceiptKey,
   publishPlan as publish,
@@ -191,7 +192,13 @@ function call(id: string, agent: string, prompt: string, childID: string, result
         sessionID: childID,
         status: "completed",
         ...(agent === "planner"
-          ? { [plannerReceiptKey]: plannerReceipt("parent-user", `${agent} work`, request) }
+          ? {
+              [plannerReceiptKey]: plannerReceipt("parent-user", `${agent} work`, request, {
+                precedingIdleID: null,
+                messageID: "planner-tool-message",
+                toolID: id,
+              }),
+            }
           : {}),
       },
       content: [text(`<subagent sessionID="${childID}" state="completed">\n${result}\n</subagent>`)],
@@ -225,7 +232,7 @@ function fake(root: string, options: FakeOptions = {}) {
         content: [call("planner-call", "planner", plannerInput(request), "planner-child", proposal)],
       },
       answer("parent-final", "orchestrator", "The Planner proposal is complete."),
-      idle("parent-idle"),
+      idle("msg_completed"),
     ],
     "planner-child": [
       user("planner-user", prefix + plannerInput(request)),
@@ -440,6 +447,10 @@ function fake(root: string, options: FakeOptions = {}) {
     data: { sessionID: "parent", agent: "orchestrator", location: { directory: root } },
   })
   const emit = (event: any) => {
+    if (event.type === "session.execution.succeeded" && !event.id) {
+      const terminal = histories[event.data.sessionID]?.at(-1)?.id
+      event = { ...event, id: terminal?.startsWith("msg_") ? terminal.replace(/^msg_/, "evt_") : `evt_${terminal}` }
+    }
     if (event.type === "session.created") creating.delete(event.data.sessionID)
     handlers.get(event.type)?.(event)
     for (const listener of listeners) listener({ details: event })
@@ -533,7 +544,12 @@ function publication(
   _parent: string,
   location: { directory: string },
 ) {
-  return publish(context, evidence(context, generation, baseline, location), fakes.get(context)!.guard)
+  return publish(
+    context,
+    evidence(context, generation, baseline, location),
+    fakes.get(context)!.guard,
+    fakes.get(context)!.histories[_parent].at(-1).id,
+  )
 }
 // Test-only positive/negative decision driver for native executor invariants.
 // The live-path cases below exercise the real closure's synchronous ownership separately.
@@ -611,14 +627,18 @@ function addPlanningRoot(f: ReturnType<typeof fake>, id: string, childID: string
   const input = `Request for ${id}`
   const output = JSON.stringify({ intent: `Intent for ${id}`, plan: `Plan for ${id}`, files: ["old.txt"] })
   const tool = call(`${id}-call`, "planner", plannerInput(input), childID, output)
-  tool.state.metadata[plannerReceiptKey] = plannerReceipt(`${id}-user`, "planner work", input)
+  tool.state.metadata[plannerReceiptKey] = plannerReceipt(`${id}-user`, "planner work", input, {
+    precedingIdleID: null,
+    messageID: `${id}-delegation`,
+    toolID: `${id}-call`,
+  })
   f.sessions[id] = { ...structuredClone(f.sessions.parent), id }
   f.sessions[childID] = { ...structuredClone(f.sessions["planner-child"]), id: childID, parentID: id }
   f.histories[id] = [
     user(`${id}-user`, input),
     { ...answer(`${id}-delegation`, "orchestrator", ""), content: [tool] },
     answer(`${id}-final`, "orchestrator", "Planning complete."),
-    idle(`${id}-idle`),
+    idle(`msg_${id}-idle`),
   ]
   f.histories[childID] = [
     user(`${childID}-user`, prefix + plannerInput(input)),
@@ -1406,6 +1426,14 @@ snapshotTest(
 
 test("Orchestrator uses trusted outcome history without mandating authorization status prose", () => {
   const instructions = readFileSync(path.join(import.meta.dir, "../.opencode/agents/orchestrator.md"), "utf8")
+  expect(instructions).toContain(
+    "Answer ordinary conversation, greetings such as `Hi`, and non-change questions directly.",
+  )
+  expect(instructions).toContain("Delegate before invoking any other tool on that governed turn.")
+  expect(instructions).toContain(
+    "The first successfully admitted Planner execution permanently spends Planner eligibility",
+  )
+  expect(instructions).not.toMatch(/For one new user request, call/)
   expect(instructions).not.toMatch(/emit exactly.*final sentence/i)
   expect(instructions).not.toMatch(/(?:emit|reply|respond|say).*awaiting.*authorization/i)
   expect(instructions).toContain(
@@ -1459,6 +1487,8 @@ test("native role files allow only Planner to delegate to Explorer through order
   const orchestrator = load("orchestrator")
   expect(effect(orchestrator, "subagent", "planner")).toBe("allow")
   expect(effect(orchestrator, "subagent", "authorized_implementer")).toBe("deny")
+  for (const action of ["read", "glob", "grep"]) expect(effect(orchestrator, action)).toBe("allow")
+  for (const action of ["write", "patch", "execute"]) expect(effect(orchestrator, action)).toBe("deny")
   expect(effect(orchestrator, "edit")).toBe("deny")
   expect(effect(orchestrator, "shell", "git status")).toBe("deny")
   for (const name of ["planner", "explorer"]) {
@@ -1578,6 +1608,7 @@ snapshotTest(
         "planner",
         "plannerChild",
         "request",
+        "terminalIdleID",
         "userID",
       ])
       await verifyPublishedAttempt(f.context, published, f.guard)
@@ -2111,7 +2142,9 @@ snapshotTest("a delivered Plan never relaxes the original native history binding
     description: renderPlan(published.candidate),
     metadata: published.publication.payload.metadata,
   })
-  await expect(authorizePublishedAttempt(f.context, published, f.guard)).rejects.toThrow("unexpected parent input")
+  await expect(authorizePublishedAttempt(f.context, published, f.guard)).rejects.toThrow(
+    "new input follows governed completion",
+  )
   expectNoImplementation(f)
 })
 
@@ -3087,7 +3120,7 @@ snapshotTest(
     await f.prepare()
     f.emit(f.created())
     f.emit({ type: "session.execution.succeeded", id: "evt_completed", data: { sessionID: "parent" } })
-    expect(waiting).toBe(true)
+    await settleUntil(() => waiting)
     if (typeof cleanup === "function") cleanup()
     release()
     for (let i = 0; i < 100; i++) await Promise.resolve()
@@ -3109,6 +3142,331 @@ snapshotTest("wrong or unclaimed decision ownership cannot grant or create", asy
   f.claim(published)
   await expect(authorizePublishedAttempt(f.context, { ...published }, f.guard)).rejects.toThrow("decision owner")
   expectNoImplementation(f)
+})
+
+// Local transcript fixtures for #17; no repositories or native processes.
+function directHistory(label: string, tools: string[] = [], instructions = false): any[] {
+  const response = answer(`${label}-final`, "orchestrator", "A direct answer")
+  response.content.push(
+    ...tools.map((name, index): any => ({
+      type: "tool",
+      id: `${label}-read-${index}`,
+      name,
+      state: { status: "completed", input: {}, content: [text("Read-only findings")], metadata: {} },
+    })),
+  )
+  return [
+    user(`${label}-user`, "What does this project do?"),
+    response,
+    ...(instructions
+      ? [
+          {
+            type: "synthetic",
+            id: `${label}-instructions`,
+            text: "Instructions from: /project/sub/AGENTS.md\nRead-only guidance",
+            metadata: { instruction: { paths: ["/project/sub/AGENTS.md"] } },
+          },
+        ]
+      : []),
+    idle(`msg_${label}-idle`),
+  ]
+}
+
+snapshotTest(
+  "direct conversation and read-only turns keep the original root eligible without workflow effects",
+  async (observer) => {
+    const root = snapshotFixture(observer)
+    const f = fake(root)
+    const planning = structuredClone(f.histories.parent)
+    f.histories.parent = []
+    const child = f.sessions["planner-child"]
+    delete f.sessions["planner-child"]
+    const cleanup = await plugin.setup(f.context)
+    await f.prepare()
+    f.sessions.parent.time.created = Date.now() + 10
+    f.emit(f.created())
+    const observations = observer.locations.get(root)!.calls.length
+    for (const [index, tools] of [[], ["read"], ["glob", "grep"]].entries()) {
+      const history = directHistory(`direct-${index}`, tools, index === 1)
+      if (index === 0) history[0].text = "Hi"
+      f.histories.parent.push(...history)
+      f.emit({ type: "session.execution.succeeded", id: `evt_direct-${index}-idle`, data: { sessionID: "parent" } })
+      await new Promise<void>((resolve) => setImmediate(resolve))
+      expect(f.calls.synthetic).toEqual([])
+      expect(f.calls.receipts).toEqual([])
+      expect(f.calls.claims).toEqual([])
+      expect(f.calls.toasts).toEqual([])
+      expect(f.slots).toEqual([])
+      expect(Object.keys(f.sessions)).toEqual(["parent"])
+      expect(observer.locations.get(root)!.calls).toHaveLength(observations)
+    }
+    const boundary = f.histories.parent.at(-1).id
+    planning[1].content[0].state.metadata[plannerReceiptKey].turn.precedingIdleID = boundary
+    f.histories.parent.push(...planning)
+    f.sessions["planner-child"] = child
+    f.emit({ type: "session.execution.succeeded", id: "evt_completed", data: { sessionID: "parent" } })
+    await settleUntil(() => f.slots.length > 0)
+    expect(f.calls.synthetic).toHaveLength(1)
+    expect(f.calls.synthetic[0].text).toBe(proposal)
+    expect(f.calls.claims).toEqual([])
+    const view = mount(f)
+    view.click(0)
+    await settleUntil(() => f.calls.claims.length === 1)
+    expect(f.calls.claims[0].candidate.head).toBe(HEAD)
+    expect(f.calls.claims[0].rootSessionID).toBe("parent")
+    if (typeof cleanup === "function") cleanup()
+    view.dispose()
+  },
+)
+
+snapshotTest("event-anchored direct completions cannot publish a newer governed turn", async (observer) => {
+  for (const order of ["direct-first", "governed-first"] as const) {
+    const root = snapshotFixture(observer),
+      f = fake(root)
+    const prefix = directHistory("hello")
+    f.histories.parent.unshift(...prefix)
+    f.histories.parent[prefix.length + 1].content[0].state.metadata[plannerReceiptKey].turn.precedingIdleID =
+      prefix.at(-1).id
+    const cleanup = await plugin.setup(f.context)
+    await f.prepare()
+    f.sessions.parent.time.created = Date.now() + 10
+    f.emit(f.created())
+    const direct = { type: "session.execution.succeeded", id: "evt_hello-idle", data: { sessionID: "parent" } }
+    const governed = { ...direct, id: "evt_completed" }
+    if (order === "direct-first") {
+      f.emit(direct)
+      f.emit(direct)
+      await new Promise<void>((resolve) => setImmediate(resolve))
+      expect(f.calls.synthetic).toEqual([])
+      f.emit(governed)
+    } else {
+      f.emit(governed)
+      f.emit(direct)
+    }
+    f.emit(governed)
+    await settleUntil(() => f.slots.length > 0)
+    expect(f.calls.synthetic).toHaveLength(1)
+    if (typeof cleanup === "function") cleanup()
+  }
+})
+
+snapshotTest(
+  "direct completions cannot refresh a dirty, changed-HEAD, or changed-path initial baseline",
+  async (observer) => {
+    for (const mutation of ["dirty", "HEAD", "paths"] as const) {
+      const root = snapshotFixture(observer),
+        f = fake(root)
+      const planning = f.histories.parent
+      f.histories.parent = directHistory("hello")
+      if (mutation === "dirty") observer.configure(root, HEAD, ["old.txt"])
+      const cleanup = await plugin.setup(f.context)
+      await f.prepare()
+      f.sessions.parent.time.created = Date.now() + 10
+      f.emit(f.created())
+      f.emit({ type: "session.execution.succeeded", id: "evt_hello-idle", data: { sessionID: "parent" } })
+      await new Promise<void>((resolve) => setImmediate(resolve))
+      expect(f.calls.synthetic).toEqual([])
+      if (mutation === "HEAD") observer.configure(root, "2".repeat(40))
+      else if (mutation === "paths") observer.configure(root, HEAD, ["old.txt"])
+      planning[1].content[0].state.metadata[plannerReceiptKey].turn.precedingIdleID = "msg_hello-idle"
+      f.histories.parent.push(...planning)
+      f.emit({ type: "session.execution.succeeded", id: "evt_completed", data: { sessionID: "parent" } })
+      await settleUntil(() => f.calls.toasts.length > 0)
+      expect(f.calls.claims).toEqual([])
+      expect(f.slots.filter((slot) => !slot.removed)).toEqual([])
+      if (mutation === "dirty") expect(f.calls.synthetic).toHaveLength(1)
+      else expect(f.calls.synthetic).toEqual([])
+      if (typeof cleanup === "function") cleanup()
+    }
+  },
+)
+
+test("completed-turn inspection rejects unsafe tools, malformed instructions and missing boundaries", () => {
+  for (const mutation of [
+    "delegation",
+    "wrong-target",
+    "missing-receipt",
+    "forbidden",
+    "unfinished-read",
+    "provider-read",
+    "instructions",
+    "control",
+    "compaction",
+    "duplicate",
+    "missing-idle",
+    "multiple-inputs",
+  ] as const) {
+    const history = directHistory("hello", ["read"], true)
+    const part = history[1].content[1]
+    if (["delegation", "wrong-target", "missing-receipt"].includes(mutation)) {
+      part.name = "subagent"
+      part.state.input = {
+        agent: mutation === "wrong-target" ? "explorer" : "planner",
+        description: "Plan",
+        prompt: "Proposed",
+      }
+    }
+    if (mutation === "forbidden") part.name = "shell"
+    if (mutation === "unfinished-read") part.state.status = "streaming"
+    if (mutation === "provider-read") part.executed = true
+    if (mutation === "instructions") history[2].metadata.instruction.extra = true
+    if (mutation === "control") history[2].metadata = { source: "planner" }
+    if (mutation === "compaction") history[2].type = "compaction"
+    if (mutation === "duplicate") history[2].id = history[0].id
+    if (mutation === "missing-idle") history.pop()
+    if (mutation === "multiple-inputs") history.splice(1, 0, user("another-user", "Do something else"))
+    expect(inspectCompletedRootTurn(history, "msg_hello-idle").kind).toBe("invalid")
+  }
+})
+
+test("completion distinguishes non-admitted failures from admitted or child-bearing failures", () => {
+  for (const name of ["subagent", "shell", "read", "glob", "grep"]) {
+    const history = directHistory("failed", [name])
+    const part = history[1].content[1]
+    part.state = { status: "error", input: {}, error: { type: "tool.input-json", message: "Not admitted" } }
+    expect(inspectCompletedRootTurn(history, "msg_failed-idle").kind).toBe("non-governed")
+    for (const metadata of [
+      { [plannerReceiptKey]: {} },
+      { sessionID: "native-child" },
+      { [plannerReceiptKey]: undefined },
+    ]) {
+      part.state.metadata = metadata
+      expect(inspectCompletedRootTurn(history, "msg_failed-idle").kind).toBe("invalid")
+    }
+  }
+})
+
+snapshotTest(
+  "non-admitted completion and Undo retain TUI eligibility and its original Git baseline",
+  async (observer) => {
+    for (const undo of [false, true]) {
+      const root = snapshotFixture(observer),
+        f = fake(root)
+      const planning = structuredClone(f.histories.parent)
+      const child = f.sessions["planner-child"]
+      delete f.sessions["planner-child"]
+      const hello = directHistory("hello")
+      f.histories.parent = hello.slice()
+      const cleanup = await plugin.setup(f.context)
+      await f.prepare()
+      f.sessions.parent.time.created = Date.now() + 10
+      f.emit(f.created())
+      const observations = observer.locations.get(root)!.calls.length
+      f.emit({ type: "session.execution.succeeded", id: "evt_hello-idle", data: { sessionID: "parent" } })
+      const failed = directHistory("failed", ["subagent"])
+      failed[1].content[1].state = {
+        status: "error",
+        input: {},
+        error: { type: "tool.input-json", message: "Malformed JSON" },
+      }
+      f.histories.parent.push(...failed)
+      f.emit({ type: "session.execution.succeeded", id: "evt_failed-idle", data: { sessionID: "parent" } })
+      await new Promise<void>((resolve) => setImmediate(resolve))
+      expect(f.calls.synthetic).toEqual([])
+      expect(f.calls.receipts).toEqual([])
+      expect(f.calls.claims).toEqual([])
+      expect(f.calls.toasts).toEqual([])
+      expect(f.slots).toEqual([])
+      expect(observer.locations.get(root)!.calls).toHaveLength(observations)
+      if (undo) {
+        f.sessions.parent.revert = { messageID: "failed-user" }
+        f.emit({ type: "session.revert.staged", data: { sessionID: "parent", revert: f.sessions.parent.revert } })
+        f.histories.parent = hello.slice()
+        delete f.sessions.parent.revert
+        f.emit({ type: "session.revert.committed", data: { sessionID: "parent", to: "failed-user" } })
+        f.emit({ type: "session.revert.cleared", data: { sessionID: "parent" } })
+      }
+      planning[1].content[0].state.metadata[plannerReceiptKey].turn.precedingIdleID = f.histories.parent.at(-1).id
+      f.histories.parent.push(...planning)
+      f.sessions["planner-child"] = child
+      f.emit({ type: "session.execution.succeeded", id: "evt_completed", data: { sessionID: "parent" } })
+      await settleUntil(() => f.slots.length > 0)
+      expect(f.calls.synthetic).toHaveLength(1)
+      const view = mount(f)
+      view.click(0)
+      await settleUntil(() => f.calls.claims.length === 1)
+      expect(f.calls.claims[0].candidate.head).toBe(HEAD)
+      if (typeof cleanup === "function") cleanup()
+      view.dispose()
+    }
+  },
+)
+
+snapshotTest("invalid completion and pre-attempt compaction permanently retire TUI governance", async (observer) => {
+  for (const mutation of ["receipt", "compaction", "missing-boundary"] as const) {
+    const root = snapshotFixture(observer),
+      f = fake(root)
+    const cleanup = await plugin.setup(f.context)
+    await f.prepare()
+    f.sessions.parent.time.created = Date.now() + 10
+    f.emit(f.created())
+    const metadata = f.histories.parent[1].content[0].state.metadata
+    if (mutation === "receipt") delete metadata[plannerReceiptKey]
+    if (mutation === "compaction") f.emit({ type: "session.compaction.started", data: { sessionID: "parent" } })
+    f.emit({
+      type: "session.execution.succeeded",
+      id: mutation === "missing-boundary" ? "evt_absent" : "evt_completed",
+      data: { sessionID: "parent" },
+    })
+    await settleUntil(() => f.calls.toasts.length > 0)
+    metadata[plannerReceiptKey] = plannerReceipt("parent-user", "planner work", request, {
+      precedingIdleID: null,
+      messageID: "planner-tool-message",
+      toolID: "planner-call",
+    })
+    f.emit({ type: "session.execution.succeeded", id: "evt_completed", data: { sessionID: "parent" } })
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    expect(f.calls.synthetic).toEqual([])
+    expect(f.calls.claims).toEqual([])
+    expect(f.slots).toEqual([])
+    if (typeof cleanup === "function") cleanup()
+  }
+})
+
+snapshotTest("governed closure after Cancel or any later failure cannot publish a second Plan", async (observer) => {
+  for (const outcome of [
+    "cancel",
+    "publication-failure",
+    "authorization-failure",
+    "implementation-failure",
+    "success",
+  ] as const) {
+    const root = snapshotFixture(observer)
+    const f = fake(root, {
+      onAuthorize: async () => {
+        if (outcome === "authorization-failure") throw new Error("Authorization transport failed")
+        return outcome === "implementation-failure"
+          ? "Native implementation outcome was unverified"
+          : "Implementation gate completed successfully"
+      },
+    })
+    if (outcome === "publication-failure") f.histories["planner-child"][1].content[0].text = "Not a Plan"
+    const cleanup = await activate(f)
+    const view = mount(f)
+    if (outcome !== "publication-failure") {
+      view.click(outcome === "cancel" ? 1 : 0)
+      await settleUntil(() => f.calls.toasts.length > 0)
+    }
+    const publications = f.calls.synthetic.length
+    const claims = f.calls.claims.length
+    const observations = observer.locations.get(root)!.calls.length
+    f.histories.parent.push(
+      user("retry-user", request),
+      {
+        ...answer("retry-assistant", "orchestrator", ""),
+        content: [call("retry-call", "planner", plannerInput(request), "retry-child", proposal)],
+      },
+      idle("msg_retry-idle"),
+    )
+    f.emit({ type: "session.execution.succeeded", id: "evt_retry-idle", data: { sessionID: "parent" } })
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    expect(f.calls.synthetic).toHaveLength(publications)
+    expect(f.calls.claims).toHaveLength(claims)
+    expect(observer.locations.get(root)!.calls).toHaveLength(observations)
+    expect(f.slots.every((slot) => slot.removed)).toBe(true)
+    cleanup()
+    view.dispose()
+  }
 })
 
 snapshotTest(
@@ -3462,7 +3820,7 @@ snapshotTest(
 
 // Native admission uses host doubles and the same test-scoped Git observer.
 // No real repositories, native child imports, or production injection seams.
-import { Effect, Schema } from "effect"
+import { Cause, Effect, Exit, Schema } from "effect"
 import { Tool as NativeTool } from "@opencode/schema/tool"
 import { nativeAdmission, nativeArguments, controlText } from "../src/native.ts"
 import { authorizeRpc } from "../src/authorize-rpc.ts"
@@ -3738,14 +4096,27 @@ function serverFake(root: string, _observer: SnapshotObserver, workspaceID?: str
       agent,
       messageID,
       id,
-      progress: (update: any) => Effect.sync(() => progress.push(structuredClone(update))),
+      progress: (update: any) =>
+        Effect.sync(() => {
+          progress.push(structuredClone(update))
+          part.state.metadata = structuredClone(update)
+        }),
     }
+    let failure: NativeTool.Error | undefined
     try {
       await Effect.runPromise(
         admission.before({ ...invocation, tool, input: opts.beforeInput ?? structuredClone(raw) }),
       )
       const decoded = await decode(opts.codecInput ?? opts.beforeInput ?? raw)
-      const result = await Effect.runPromise(wrapped(opts.decoded ?? decoded, invocation))
+      const result = await Effect.runPromise(
+        wrapped(opts.decoded ?? decoded, invocation).pipe(
+          Effect.tapError((error) =>
+            Effect.sync(() => {
+              failure = error
+            }),
+          ),
+        ),
+      )
       f.resultMutation?.(result)
       // ToolOutput.truncate runs after native execution/after hooks and adds
       // this field even for short, unchanged output.
@@ -3754,7 +4125,13 @@ function serverFake(root: string, _observer: SnapshotObserver, workspaceID?: str
       part.state = { status: "completed", input: raw, content: [{ type: "text", text: result.content }], metadata }
       return result
     } catch (error) {
-      part.state = { status: "error", input: raw, error: String(error) }
+      const metadata = { ...part.state.metadata, ...failure?.metadata }
+      part.state = {
+        status: "error",
+        input: raw,
+        error: String(error),
+        ...(Object.keys(metadata).length ? { metadata } : {}),
+      }
       throw error
     }
   }
@@ -4099,7 +4476,11 @@ snapshotTest(
     f.state.nativeResultMutation = (result) => {
       result.metadata.nativeDetail = { retained: true }
     }
-    const expected = plannerReceipt("root-user", args.description, pasted)
+    const expected = plannerReceipt("root-user", args.description, pasted, {
+      precedingIdleID: null,
+      messageID: "native-message",
+      toolID: "native-call",
+    })
     const result = await f.dispatch(args)
     expect(result).toMatchObject({ output: { sessionID: "ses_planner", status: "completed", output: proposal } })
     expect(result.metadata).toEqual({
@@ -4117,9 +4498,16 @@ snapshotTest(
       id: "native-call",
     })
     expect(f.wakes).toHaveLength(0)
-    expect(f.reads).toEqual(["get:ses_parent", "context:ses_parent", "get:ses_parent"])
-    expect(f.progress).toEqual([{ sessionID: "ses_planner", status: "running", nativeProgress: "working" }])
-    expect(f.progress[0][plannerReceiptKey]).toBeUndefined()
+    expect(f.reads).toEqual([
+      "get:ses_parent",
+      "get:ses_parent",
+      "context:ses_parent",
+      "get:ses_parent",
+      "context:ses_parent",
+    ])
+    expect(f.progress).toEqual([
+      { sessionID: "ses_planner", status: "running", nativeProgress: "working", [plannerReceiptKey]: expected },
+    ])
     expect(f.histories.ses_parent[1].content[0].state.input).toEqual(args)
     expect(f.histories.ses_planner[0].text).toBe(prefix + plannerInput(pasted))
     expect(f.cap.rootSessionID).toBeUndefined()
@@ -4147,7 +4535,393 @@ snapshotTest(
 )
 
 snapshotTest(
-  "initial Planner rejects stripped optional keys, malformed proposals and competing persisted contenders",
+  "zero, one and several direct turns bind the exact later request, invocation, child and terminal idle",
+  async (observer) => {
+    for (const count of [0, 1, 3]) {
+      const root = snapshotFixture(observer),
+        f = serverFake(root, observer)
+      const earlier = Array.from({ length: count }, (_, index) =>
+        directHistory(`earlier-${index}`, index === 1 ? ["read", "glob", "grep"] : [], index === 1),
+      ).flat()
+      const pasted = "Add a joke about cats and AI to README.md\n  Preserve these spaces  \n"
+      f.histories.ses_parent.push(...earlier, user("mutation-user", pasted))
+      const args = { agent: "planner", description: "Plan the requested change", prompt: "Advisory proposal" }
+      const result = await f.dispatch(args)
+      const expected = plannerReceipt("mutation-user", args.description, pasted, {
+        precedingIdleID: earlier.at(-1)?.id ?? null,
+        messageID: "native-message",
+        toolID: "native-call",
+      })
+      expect(result.metadata?.[plannerReceiptKey]).toEqual(expected)
+      expect(f.originals).toHaveLength(1)
+      expect(f.originals[0].input).toEqual(expected.input)
+      expect(f.cap.rootSessionID).toBeUndefined()
+      expect(f.histories.ses_planner[0].text).toBe(prefix + plannerInput(pasted))
+
+      const bound = fake(root)
+      bound.histories.parent = [
+        ...structuredClone(f.histories.ses_parent),
+        answer("mutation-final", "orchestrator", "Planning complete."),
+        idle("msg_mutation-idle"),
+      ]
+      bound.sessions.ses_planner = { ...bound.sessions["planner-child"], id: "ses_planner" }
+      bound.histories.ses_planner = structuredClone(f.histories.ses_planner)
+      bound.inboxes.ses_planner = []
+      delete bound.sessions["planner-child"]
+      delete bound.histories["planner-child"]
+      delete bound.inboxes["planner-child"]
+      const published = await publication(bound.context, bound.generation, observer.observe(root), "parent", {
+        directory: root,
+      })
+      expect(published.bound.userID).toBe("mutation-user")
+      expect(published.bound.request).toBe(pasted)
+      expect(published.bound.planner.childID).toBe("ses_planner")
+      expect(published.bound.planner.effective).toEqual(expected)
+      expect(published.bound.terminalIdleID).toBe("msg_mutation-idle")
+      bound.claim(published)
+      await authorizePublishedAttempt(bound.context, published, bound.guard)
+      expect(bound.calls.claims).toHaveLength(1)
+      expect(f.originals).toHaveLength(1)
+    }
+  },
+)
+
+snapshotTest(
+  "governed publication and authorization revalidate exact anchors and reject unsafe earlier history",
+  async (observer) => {
+    for (const mutation of [
+      "user",
+      "request",
+      "assistant",
+      "tool",
+      "preceding-idle",
+      "terminal-idle",
+      "prior-delegation",
+      "prior-instruction",
+      "prior-compaction",
+      "later-input",
+    ] as const) {
+      for (const stage of ["publication", "authorization"] as const) {
+        const root = snapshotFixture(observer),
+          f = fake(root)
+        const earlier = directHistory("earlier", ["read"], true)
+        f.histories.parent.unshift(...earlier)
+        const governed = f.histories.parent[earlier.length + 1].content[0]
+        governed.state.metadata[plannerReceiptKey].turn.precedingIdleID = "msg_earlier-idle"
+        const published =
+          stage === "authorization"
+            ? await publication(f.context, f.generation, observer.observe(root), "parent", { directory: root })
+            : undefined
+        if (mutation === "user") f.histories.parent[earlier.length].id = "substituted-user"
+        if (mutation === "request") f.histories.parent[earlier.length].text += "changed"
+        if (mutation === "assistant") f.histories.parent[earlier.length + 1].id = "substituted-assistant"
+        if (mutation === "tool") governed.id = "substituted-tool"
+        if (mutation === "preceding-idle") f.histories.parent[earlier.length - 1].id = "substituted-boundary"
+        if (mutation === "terminal-idle") f.histories.parent.at(-1).id = "substituted-terminal"
+        if (mutation === "prior-delegation") f.histories.parent[1].content[1].name = "subagent"
+        if (mutation === "prior-instruction") f.histories.parent[2].metadata = { instruction: { paths: [] } }
+        if (mutation === "prior-compaction") f.histories.parent[2].type = "compaction"
+        if (mutation === "later-input") f.histories.parent.push(user("later-user", "Another change"))
+        if (published) {
+          f.claim(published)
+          await expect(authorizePublishedAttempt(f.context, published, f.guard)).rejects.toThrow()
+        } else {
+          await expect(
+            publish(
+              f.context,
+              evidence(f.context, f.generation, observer.observe(root), { directory: root }),
+              f.guard,
+              "msg_completed",
+            ),
+          ).rejects.toThrow()
+        }
+        expect(f.calls.claims).toEqual([])
+      }
+    }
+  },
+)
+
+snapshotTest(
+  "pre-admission tool mistakes may be corrected in the same turn, a later turn, or after Undo",
+  async (observer) => {
+    for (const stage of ["same-turn", "later-turn", "undo"] as const) {
+      for (const mutation of [
+        "shell",
+        "alias",
+        "wrong-target",
+        "implementer",
+        "optional",
+        "malformed",
+        "decode",
+      ] as const) {
+        const root = snapshotFixture(observer),
+          f = serverFake(root, observer)
+        const earlier = directHistory("hello")
+        f.histories.ses_parent.push(...earlier, user("change-user", request))
+        const args: any = { agent: "planner", description: "Plan", prompt: "Proposed" }
+        if (mutation === "wrong-target") args.agent = "explorer"
+        if (mutation === "implementer") args.agent = "authorized_implementer"
+        if (mutation === "optional") args.background = false
+        await expect(
+          f.dispatch(mutation === "malformed" ? null : args, {
+            ...(mutation === "shell" ? { tool: "shell" } : {}),
+            ...(mutation === "alias" ? { tool: "native.subagent" } : {}),
+            ...(mutation === "decode" ? { decoded: { ...args, prompt: "Substituted" } } : {}),
+          }),
+        ).rejects.toThrow()
+        expect(f.originals).toEqual([])
+        expect(f.progress).toEqual([])
+        expect(Object.keys(f.sessions)).toEqual(["ses_parent"])
+        const failed = f.histories.ses_parent.at(-1).content[0]
+        expect(failed.state.metadata?.[plannerReceiptKey]).toBeUndefined()
+        let userID = "change-user"
+        let boundary = "msg_hello-idle"
+        if (stage === "later-turn") {
+          f.histories.ses_parent.push(
+            answer("failed-final", "orchestrator", "I will correct the tool call."),
+            idle("msg_failed-idle"),
+            user("retry-user", request),
+          )
+          userID = "retry-user"
+          boundary = "msg_failed-idle"
+        }
+        if (stage === "undo") {
+          // Native Undo/resubmit commits away the non-admitted attempt and clears revert.
+          f.sessions.ses_parent.revert = { messageID: "change-user" }
+          f.histories.ses_parent = [...earlier, user("retry-user", request)]
+          delete f.sessions.ses_parent.revert
+          userID = "retry-user"
+        }
+        const result = await f.dispatch(
+          { agent: "planner", description: "Corrected", prompt: "Corrected proposal" },
+          { id: "corrected-call", messageID: "corrected-message" },
+        )
+        expect(result.metadata?.[plannerReceiptKey]).toEqual(
+          plannerReceipt(userID, "Corrected", request, {
+            precedingIdleID: boundary,
+            messageID: "corrected-message",
+            toolID: "corrected-call",
+          }),
+        )
+        expect(f.originals).toHaveLength(1)
+        expect(f.cap.rootSessionID).toBeUndefined()
+        expect(f.wakes).toEqual([])
+        f.histories.ses_parent.push(answer("governed-final", "orchestrator", "Done"), idle("msg_governed-idle"))
+        const bound = fake(root)
+        bound.histories.parent = structuredClone(f.histories.ses_parent)
+        bound.sessions.ses_planner = { ...bound.sessions["planner-child"], id: "ses_planner" }
+        bound.histories.ses_planner = structuredClone(f.histories.ses_planner)
+        bound.inboxes.ses_planner = []
+        delete bound.sessions["planner-child"]
+        const published = await publication(bound.context, bound.generation, observer.observe(root), "parent", {
+          directory: root,
+        })
+        expect(published.bound.planner.toolID).toBe("corrected-call")
+        bound.claim(published)
+        await authorizePublishedAttempt(bound.context, published, bound.guard)
+        expect(bound.calls.claims).toHaveLength(1)
+        // Removal cannot undo the now-spent admission latch.
+        f.histories.ses_parent = [user("another-user", request)]
+        await expect(
+          f.dispatch(
+            { agent: "planner", description: "Plan", prompt: "Another proposal" },
+            { id: "second-call", messageID: "second-message" },
+          ),
+        ).rejects.toThrow("One governed Planner")
+        expect(f.originals).toHaveLength(1)
+      }
+    }
+  },
+)
+
+snapshotTest(
+  "hook-skipping parser failures permit correction while compaction still prevents admission",
+  async (observer) => {
+    for (const stage of ["same-response", "later-turn", "undo", "compaction"] as const) {
+      const root = snapshotFixture(observer),
+        f = serverFake(root, observer)
+      const earlier = directHistory("hello", ["read", "glob", "grep"])
+      f.histories.ses_parent.push(...earlier, user("change-user", request), {
+        ...answer("malformed-assistant", "orchestrator", ""),
+        content: [
+          {
+            type: "tool",
+            id: "malformed-call",
+            name: "subagent",
+            state: { status: "error", input: {}, error: { type: "tool.input-json", message: "Malformed JSON" } },
+          },
+        ],
+      })
+      // No before hook or native executor was called for the malformed JSON.
+      expect(f.originals).toEqual([])
+      expect(f.progress).toEqual([])
+      if (stage === "later-turn")
+        f.histories.ses_parent.push(
+          answer("failed-final", "orchestrator", "Tool syntax failed."),
+          idle("msg_failed-idle"),
+          user("retry-user", request),
+        )
+      if (stage === "undo") {
+        f.sessions.ses_parent.revert = { messageID: "change-user" }
+        f.histories.ses_parent = [...earlier, user("retry-user", request)]
+        delete f.sessions.ses_parent.revert
+      }
+      if (stage === "compaction")
+        f.histories.ses_parent = [
+          { id: "summary", type: "compaction", status: "completed" },
+          user("retry-user", request),
+        ]
+      const args = { agent: "planner", description: "Plan", prompt: "Corrected" }
+      if (stage === "compaction") {
+        await expect(f.dispatch(args)).rejects.toThrow()
+        expect(f.originals).toEqual([])
+        // This is a binding failure, not an admission. It creates no authority.
+        expect(f.progress).toEqual([])
+      } else {
+        await f.dispatch(args)
+        expect(f.originals).toHaveLength(1)
+        f.histories.ses_parent.push(answer("final", "orchestrator", "Done"), idle("msg_governed-idle"))
+        expect(inspectCompletedRootTurn(f.histories.ses_parent, "msg_governed-idle").kind).toBe("governed")
+        await expect(f.dispatch(args, { id: "second-call", messageID: "second-message" })).rejects.toThrow(
+          "One governed Planner",
+        )
+        expect(f.originals).toHaveLength(1)
+      }
+    }
+  },
+)
+
+snapshotTest(
+  "the final Planner admission barrier admits one executor while concurrent validation and replay lose",
+  async (observer) => {
+    const root = snapshotFixture(observer),
+      f = serverFake(root, observer)
+    f.histories.ses_parent.push(user("change-user", request))
+    let release!: () => void, ready!: () => void
+    const paused = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const started = new Promise<void>((resolve) => {
+      ready = resolve
+    })
+    let contexts = 0
+    f.state.onRead = async (kind) => {
+      if (kind === "context" && ++contexts === 1) {
+        ready()
+        await paused
+      }
+    }
+    const args = { agent: "planner", description: "Plan", prompt: "Proposed" }
+    const pending = f.dispatch(args)
+    await started
+    const invocation: any = {
+      sessionID: "ses_parent",
+      agent: "orchestrator",
+      messageID: "native-message",
+      id: "native-call",
+      progress: () => Effect.void,
+    }
+    // before no longer owns a reservation. The first *admission* wins, including
+    // when another validation of the exact invocation reaches the barrier first.
+    await Effect.runPromise(f.admission.before({ ...invocation, tool: "subagent", input: args }))
+    await Effect.runPromise(f.wrapped(args, invocation))
+    await expect(Effect.runPromise(f.wrapped(args, invocation))).rejects.toThrow("One governed Planner")
+    release()
+    await expect(pending).rejects.toThrow("One governed Planner")
+    expect(f.originals).toHaveLength(1)
+  },
+)
+
+snapshotTest("Planner admission latches are root-local and read-only calls never spend them", async (observer) => {
+  const root = snapshotFixture(observer),
+    f = serverFake(root, observer)
+  f.sessions.ses_other = { ...structuredClone(f.sessions.ses_parent), id: "ses_other" }
+  f.histories.ses_other = [user("other-user", request)]
+  f.histories.ses_parent.push(user("root-user", request))
+  for (const tool of ["read", "glob", "grep"]) {
+    await Effect.runPromise(
+      f.admission.before({
+        sessionID: "ses_parent",
+        agent: "orchestrator",
+        messageID: "readonly-message",
+        id: tool,
+        tool,
+        input: {},
+      } as any),
+    )
+  }
+  await expect(f.dispatch({ agent: "explorer", description: "Wrong target", prompt: "Proposed" })).rejects.toThrow()
+  const args = { agent: "planner", description: "Plan", prompt: "Proposed" }
+  await f.dispatch(args, { sessionID: "ses_other" })
+  await f.dispatch(args, { id: "corrected-call", messageID: "corrected-message" })
+  expect(f.originals.map((entry) => entry.context.sessionID)).toEqual(["ses_other", "ses_parent"])
+  for (const sessionID of ["ses_parent", "ses_other"]) {
+    await expect(f.dispatch(args, { sessionID, id: "second-call", messageID: "second-message" })).rejects.toThrow(
+      "One governed Planner",
+    )
+  }
+  expect(f.originals).toHaveLength(2)
+  expect(f.wakes).toEqual([])
+})
+
+snapshotTest(
+  "later-turn Planner rechecks input, proposal and prior controls after awaited identity reads",
+  async (observer) => {
+    for (const mutation of ["new-input", "request", "proposal", "compaction", "instruction"] as const) {
+      const root = snapshotFixture(observer),
+        f = serverFake(root, observer)
+      f.histories.ses_parent.push(...directHistory("hello"), user("change-user", request))
+      let gets = 0
+      f.state.onRead = (kind) => {
+        if (kind !== "get" || ++gets !== 3) return
+        const history = f.histories.ses_parent
+        if (mutation === "new-input") history.push(user("injected-user", "Another request"))
+        if (mutation === "request") history[3].text += " changed"
+        if (mutation === "proposal") history.at(-1).content[0].state.input.prompt += " changed"
+        if (mutation === "compaction") history[1].type = "compaction"
+        if (mutation === "instruction")
+          history.splice(1, 0, { type: "synthetic", id: "control", text: "Unexpected control" })
+      }
+      await expect(f.dispatch({ agent: "planner", description: "Plan", prompt: "Proposed" })).rejects.toThrow()
+      expect(f.originals).toEqual([])
+    }
+  },
+)
+
+snapshotTest(
+  "a spent Planner latch remains spent through successful or failed implementation authority",
+  async (observer) => {
+    for (const outcome of ["success", "implementation-failure", "authorization-failure"] as const) {
+      const root = snapshotFixture(observer),
+        f = serverFake(root, observer)
+      f.histories.ses_parent.push(user("change-user", request))
+      await f.dispatch({ agent: "planner", description: "Plan", prompt: "Proposed" })
+      f.histories.ses_parent.push(answer("planning-final", "orchestrator", "Done"), idle("msg_planning-idle"))
+      f.state.nativeError = outcome === "implementation-failure"
+      f.state.wakeError = outcome === "authorization-failure"
+      f.state.run = async () => {
+        await f.dispatch(undefined, { id: "implementation-call", messageID: "implementation-message" })
+      }
+      expect(await f.authorize()).toContain(
+        outcome === "success" ? "Implementation gate completed successfully" : "unverified",
+      )
+      const calls = f.originals.length
+      const wakes = f.wakes.length
+      await expect(
+        f.dispatch(
+          { agent: "planner", description: "Plan", prompt: "Replacement" },
+          { id: "retry-call", messageID: "retry-message" },
+        ),
+      ).rejects.toThrow()
+      expect(f.originals).toHaveLength(calls)
+      expect(f.wakes).toHaveLength(wakes)
+      expect(await f.authorize()).toContain("One governed")
+    }
+  },
+)
+
+snapshotTest(
+  "Planner admission rejects stripped optional keys, malformed proposals and competing execution evidence",
   async (observer) => {
     const root = snapshotFixture(observer)
     for (const mutation of [
@@ -4160,7 +4934,6 @@ snapshotTest(
       "decoded",
       "running",
       "streaming",
-      "error",
       "completed",
       "call-id",
       "message-id",
@@ -4246,7 +5019,7 @@ snapshotTest(
       f.state.onRead = (kind) => {
         if (kind === "get") {
           gets++
-          if (gets !== 2) return
+          if (gets !== 3) return
           const session = f.sessions.ses_parent
           if (mutation === "root-id") session.id = "different-root"
           if (mutation === "root-role") session.agent = "planner"
@@ -4281,7 +5054,7 @@ snapshotTest(
 )
 
 snapshotTest(
-  "Planner rewrite leaves nested delegation untouched and does not reinterpret later root planning",
+  "Planner rewrite leaves nested delegation untouched and rejects later planning after eligibility is spent",
   async (observer) => {
     const root = snapshotFixture(observer)
     for (const agent of ["planner", "orchestrator"]) {
@@ -4318,27 +5091,147 @@ snapshotTest(
 )
 
 snapshotTest(
-  "Planner issues no effective-input receipt for failed or incomplete native execution",
+  "Planner defects before first progress retain admission evidence through successful root completion",
   async (observer) => {
-    const root = snapshotFixture(observer)
-    for (const mutation of ["error", "running", "child", "metadata", "permission"]) {
-      const f = serverFake(root, observer)
-      f.histories.ses_parent.push(user("root-user", request))
-      if (mutation === "error") f.state.nativeError = true
-      if (mutation === "permission")
-        f.host.appendConfig([], { orchestrator: [{ action: "subagent", resource: "planner", effect: "deny" }] })
-      f.state.nativeResultMutation = (result) => {
-        if (mutation === "running") result.output.status = result.metadata.status = "running"
-        if (mutation === "child") result.output.sessionID = result.metadata.sessionID = "ses_parent"
-        if (mutation === "metadata") result.metadata.sessionID = "wrong-child"
+    for (const mode of ["effect-defect", "database-read", "factory-throw"] as const) {
+      const root = snapshotFixture(observer),
+        f = serverFake(root, observer)
+      f.histories.ses_parent.push(...directHistory("hello"), user("mutation-user", request))
+      const args = { agent: "planner", description: "Plan", prompt: "Proposed" }
+      const part: any = {
+        type: "tool",
+        id: "native-call",
+        name: "subagent",
+        state: { status: "running", input: args, metadata: {} },
       }
-      await expect(f.dispatch({ agent: "planner", description: "Plan", prompt: "Proposed" })).rejects.toThrow()
-      expect(f.histories.ses_parent.at(-1).content[0].state.metadata).toBeUndefined()
-      expect(f.progress.every((update) => update[plannerReceiptKey] === undefined)).toBe(true)
-      if (mutation === "permission") expect(f.originals).toEqual([])
+      f.histories.ses_parent.push({ ...answer("native-message", "orchestrator", ""), content: [part] })
+      const invocation: any = {
+        sessionID: "ses_parent",
+        agent: "orchestrator",
+        messageID: "native-message",
+        id: "native-call",
+        progress: (update: any) => Effect.sync(() => f.progress.push(update)),
+      }
+      await Effect.runPromise(f.admission.before({ ...invocation, tool: "subagent", input: args }))
+      const defect = new Error("Initial native database read defect")
+      let entered = 0
+      const original: NativeTool.Info["execute"] = () => {
+        entered++
+        if (mode === "factory-throw") throw defect
+        if (mode === "database-read")
+          return Effect.promise(async () => {
+            throw defect
+          })
+        return Effect.die(defect)
+      }
+      const exit = await Effect.runPromise(Effect.exit(f.admission.execute(original)(args, invocation)))
+      expect(entered).toBe(1)
+      expect(f.progress).toEqual([])
+      if (!Exit.isFailure(exit)) throw new Error("Expected the native defect to fail")
+      const failure = Cause.squash(exit.cause)
+      if (!(failure instanceof NativeTool.Error)) throw new Error("Expected supported native tool failure metadata")
+      const expected = plannerReceipt("mutation-user", "Plan", request, {
+        precedingIdleID: "msg_hello-idle",
+        messageID: "native-message",
+        toolID: "native-call",
+      })
+      expect(failure.error).toBe(defect)
+      expect(failure.metadata?.[plannerReceiptKey]).toEqual(expected)
+      // Pinned failTool projects Tool.Error metadata; the model then finishes the
+      // root successfully despite this failed tool. There was no child/result.
+      part.state = {
+        status: "error",
+        input: args,
+        error: { type: "unknown", message: failure.message },
+        metadata: failure.metadata,
+      }
+      f.histories.ses_parent.push(answer("root-final", "orchestrator", "Planner failed."), idle("msg_completed"))
+      expect(inspectCompletedRootTurn(f.histories.ses_parent, "msg_completed").kind).toBe("invalid")
+      expect(Object.keys(f.sessions)).toEqual(["ses_parent"])
+      expect(f.cap.rootSessionID).toBeUndefined()
+      expect(f.wakes).toEqual([])
+
+      const bound = fake(root)
+      bound.histories.parent = structuredClone(f.histories.ses_parent)
+      delete bound.sessions["planner-child"]
+      await expect(
+        publication(bound.context, bound.generation, observer.observe(root), "parent", { directory: root }),
+      ).rejects.toThrow()
+      const cleanup = await plugin.setup(bound.context)
+      await bound.prepare()
+      bound.sessions.parent.time.created = Date.now() + 10
+      bound.emit(bound.created())
+      bound.emit({ type: "session.execution.succeeded", id: "evt_completed", data: { sessionID: "parent" } })
+      await settleUntil(() => bound.calls.toasts.length > 0)
+      expect(bound.calls.synthetic).toEqual([])
+      expect(bound.calls.claims).toEqual([])
+      expect(bound.slots).toEqual([])
+      if (typeof cleanup === "function") cleanup()
+      // Even deletion of the display evidence cannot restore the admitted latch.
+      f.histories.ses_parent = [user("retry-user", request)]
+      await expect(f.dispatch(args, { id: "retry-call", messageID: "retry-message" })).rejects.toThrow(
+        "One governed Planner",
+      )
+      expect(f.originals).toEqual([])
+      expect(entered).toBe(1)
     }
   },
 )
+
+snapshotTest("non-admitted malformed calls record no evidence and remain retryable", async (observer) => {
+  const root = snapshotFixture(observer),
+    f = serverFake(root, observer)
+  f.histories.ses_parent.push(...directHistory("hello"), user("mutation-user", request))
+  await expect(f.dispatch(null)).rejects.toThrow()
+  expect(f.histories.ses_parent.at(-1).content[0].state.metadata?.[plannerReceiptKey]).toBeUndefined()
+  expect(f.progress).toEqual([])
+  expect(f.nativeEntries).toEqual([])
+  f.histories.ses_parent.push(answer("failed-final", "orchestrator", "Tool syntax failed."), idle("msg_non-admitted"))
+  expect(inspectCompletedRootTurn(f.histories.ses_parent, "msg_non-admitted").kind).toBe("non-governed")
+  f.histories.ses_parent.push(user("corrected-user", request))
+  const result = await f.dispatch(
+    { agent: "planner", description: "Plan", prompt: "Corrected" },
+    { id: "corrected-call", messageID: "corrected-message" },
+  )
+  expect(result.metadata?.[plannerReceiptKey]).toEqual(
+    plannerReceipt("corrected-user", "Plan", request, {
+      precedingIdleID: "msg_non-admitted",
+      messageID: "corrected-message",
+      toolID: "corrected-call",
+    }),
+  )
+  expect(f.originals).toHaveLength(1)
+  expect(f.cap.rootSessionID).toBeUndefined()
+})
+
+snapshotTest("admitted Planner failures retain trusted admission evidence and cannot be retried", async (observer) => {
+  const root = snapshotFixture(observer)
+  for (const mutation of ["error", "running", "child", "metadata", "permission"]) {
+    const f = serverFake(root, observer)
+    f.histories.ses_parent.push(user("root-user", request))
+    if (mutation === "error") f.state.nativeError = true
+    if (mutation === "permission")
+      f.host.appendConfig([], { orchestrator: [{ action: "subagent", resource: "planner", effect: "deny" }] })
+    f.state.nativeResultMutation = (result) => {
+      if (mutation === "running") result.output.status = result.metadata.status = "running"
+      if (mutation === "child") result.output.sessionID = result.metadata.sessionID = "ses_parent"
+      if (mutation === "metadata") result.metadata.sessionID = "wrong-child"
+    }
+    await expect(f.dispatch({ agent: "planner", description: "Plan", prompt: "Proposed" })).rejects.toThrow()
+    expect(f.histories.ses_parent.at(-1).content[0].state.metadata[plannerReceiptKey]).toBeDefined()
+    expect(f.progress.every((update) => update[plannerReceiptKey] !== undefined)).toBe(true)
+    f.histories.ses_parent.push(answer("failed-final", "orchestrator", "Planner failed."), idle("msg_failed-idle"))
+    expect(inspectCompletedRootTurn(f.histories.ses_parent, "msg_failed-idle").kind).toBe("invalid")
+    f.histories.ses_parent = [user("retry-user", request)]
+    await expect(
+      f.dispatch(
+        { agent: "planner", description: "Plan", prompt: "Retry" },
+        { id: "retry-call", messageID: "retry-message" },
+      ),
+    ).rejects.toThrow("One governed Planner")
+    if (mutation === "permission") expect(f.originals).toEqual([])
+  }
+})
 
 snapshotTest(
   "native Authorize transfers one frozen claim, wakes once and forwards native identities/progress/result",

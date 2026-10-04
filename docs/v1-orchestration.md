@@ -20,7 +20,9 @@ the root remains selected close the attempt; a positive decision still performs
 all exact Planner/publication and fresh Git/location checks before transfer.
 
 ```text
-clean initial Git observation → fresh Orchestrator → native read-only Planner
+clean initial Git observation → fresh Orchestrator
+→ zero or more successful direct conversational/read-only turns
+→ first successfully admitted Planner execution spends eligibility → native read-only Planner
 → trusted frozen Plan → readable-frame positive decision
 → transfer immutable claim through local Authorize RPC
 → one synthetic control, delivery:steer, resume:true
@@ -33,6 +35,39 @@ clean initial Git observation → fresh Orchestrator → native read-only Planne
 → unchanged HEAD + exact changed-path gate → STOP before Reviewer / Commit
 → closed authority → terminal synthetic root receipt → composer controls retired
 ```
+
+Before governance, Orchestrator may answer directly and use only read/glob/grep.
+Direct completions publish no Plan, authorization surface, or workflow receipt
+and cause no additional Git observation. They retain the original root-creation
+and baseline evidence, including its original clean/dirty eligibility.
+
+Successful-completion events identify their exact native terminal idle messages.
+The TUI serializes/deduplicates inspection of those completed segments as
+non-governed, governed, or invalid. Failed/denied calls without trusted admission
+or child evidence are non-authoritative and may be corrected in the same turn
+or a later turn, including after Undo removes them. They publish no workflow UI.
+Successful mutation-capable activity, invalid admitted Planner evidence, compaction,
+and missing boundaries fail closed.
+The server retains the exact first successfully admitted Planner invocation and
+its trusted input receipt together in an activation-local, root-keyed latch.
+The final synchronous admission barrier records both in one insertion immediately
+before native execution. Errors and defects project that recorded admission through
+native failure metadata, including failures before the first progress update. Pre-admission failures
+create no latch entry. No post-admission outcome restores it, including Planner
+failure or Cancel. This latch supplies no implementation authority.
+
+Planner admission binds one exact plain user input in the current busy segment,
+the preceding successful idle (or root start), and the exact assistant/tool call.
+Earlier failed/non-admitted calls in that turn remain context only. Admission is
+recorded in trusted progress and terminal success/failure metadata so a failed
+admitted execution cannot silently become a non-governed completion.
+The trusted effective-input receipt carries these anchors. Publication independently
+rereads paginated raw history, validates earlier successful direct turns, and binds
+the exact completed governed segment, fresh Planner child, and final proposal.
+Authorization revalidates that same frozen terminal idle and request/call binding.
+Earlier prose/read results are context only; no prefix hash or transcript-derived
+eligibility is used. Reopening history or restarting an activation cannot recover
+authority. Unsupported/compacted boundaries require a fresh root for governance.
 
 The trusted TUI is the intended producer of Authorize claims. Same-user local
 processes and localhost OpenCode RPC access belong to the trusted host boundary;
@@ -99,8 +134,10 @@ the call set exactly, and each Explorer must have no descendants. Verification
 accepts multiple foreground calls in one response without execution-order
 conditions. Malformed calls, incomplete/failed results, forbidden activity, or
 unexpected children observed during this verification prevent publication.
-Unsupported synthetic/system/compaction history still fails closed, including
-native nested instruction injection; this does not expand supported histories.
+Planner/Explorer synthetic/system/compaction history still fails closed, including
+native nested instruction injection. Earlier direct Orchestrator turns alone may
+contain native read instruction records with exact `instruction.paths` metadata;
+these records are informational and never supply mutation authority.
 Native result normalization/truncation need not match full child prose byte for
 byte.
 
