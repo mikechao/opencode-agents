@@ -509,9 +509,10 @@ test("slash/palette picker persists a variant, reopens with saved state, and res
     (picker: any) => picker.options.find((option: any) => option.value.id === "chosen").value,
     (picker: any) => {
       let selected = picker.options.findIndex((option: any) => option.value === picker.current)
-      while (picker.options[selected].title !== "high") selected = (selected + 1) % picker.options.length // Arrow down.
+      // This double supplies the public API value; it does not run the host keymap.
+      while (picker.options[selected].title !== "high") selected = (selected + 1) % picker.options.length
       expect(picker.options[selected].value).toBe("high")
-      return picker.options[selected].value // Enter returns the selected native ID.
+      return picker.options[selected].value
     },
     undefined,
   )
@@ -534,6 +535,28 @@ test("slash/palette picker persists a variant, reopens with saved state, and res
   expect(f.toasts).toEqual([])
   f.dispose()
   expect(f.removed()).toBe(true)
+})
+
+test("temporary live diagnostic captures the selector result, RPC request, and persisted read without changing selection", async () => {
+  for (const choice of ["high", "default"]) {
+    const f = uiFixture()
+    try {
+      f.state.models.push({ ...catalogModel("gpt-6.1-sol", ["high"]), providerID: Provider.ID.make("openai") })
+      f.replies.push("planner", "choose", { providerID: "openai", id: "gpt-6.1-sol" }, choice, undefined)
+      await f.command.run()
+      const model = { providerID: "openai", id: "gpt-6.1-sol", ...(choice === "high" ? { variant: "high" } : {}) }
+      expect(f.store.get(preferenceKey(f.location, "planner"))).toEqual(model)
+      expect(f.toasts).toHaveLength(1)
+      expect(f.toasts[0]).toMatchObject({ title: "Agent models diagnostic", duration: 60000 })
+      const [selector, offered, sent, read] = f.toasts[0].message.split("\n")
+      expect(selector).toBe(`Selector: string ${JSON.stringify(choice)}`)
+      expect(offered).toBe('Offered: ["default","high"]')
+      expect(JSON.parse(sent.slice("RPC set: ".length))).toEqual({ role: "planner", model })
+      expect(JSON.parse(read.slice("RPC read: ".length))).toEqual({ kind: "override", model, available: true })
+    } finally {
+      f.dispose()
+    }
+  }
 })
 
 test("role rows show explicit or default override variants and preserve native behavior", async () => {

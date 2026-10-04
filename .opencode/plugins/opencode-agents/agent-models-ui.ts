@@ -76,6 +76,21 @@ export function registerAgentModels(context: Context) {
         })
         if (!current() || selected === undefined) return
         const model = models.find((model) => model.providerID === selected.providerID && model.id === selected.id)!
+        // Temporary, nonpersistent diagnostic for the reported live selection.
+        const diagnose = role === "planner" && selected.providerID === "openai" && selected.id === "gpt-6.1-sol"
+        let pickerResult: unknown = "picker not opened"
+        const diagnostic = (details: Record<string, unknown>) => {
+          if (!diagnose || !current()) return
+          context.ui.toast.show({
+            title: "Agent models diagnostic",
+            message: [
+              `Selector: ${typeof pickerResult} ${JSON.stringify(pickerResult) ?? "undefined"}`,
+              `Offered: ${JSON.stringify(model.variants.length ? ["default", ...model.variants.filter((variant) => variant.id !== "default").map((variant) => variant.id)] : [])}`,
+              ...Object.entries(details).map(([key, value]) => `${key}: ${JSON.stringify(value)}`),
+            ].join("\n"),
+            duration: 60000,
+          })
+        }
         let variant: string | undefined
         if (model.variants.length) {
           // Match the native variant picker: return the ID itself, and never
@@ -95,12 +110,23 @@ export function registerAgentModels(context: Context) {
                 .map((variant) => ({ title: variant.id, value: variant.id })),
             ],
           })
-          if (!current() || choice === undefined) return
-          if (choice !== "default" && !model.variants.some((variant) => variant.id === choice))
+          pickerResult = choice
+          if (!current() || choice === undefined) {
+            diagnostic({ Outcome: "cancelled before RPC set" })
+            return
+          }
+          if (choice !== "default" && !model.variants.some((variant) => variant.id === choice)) {
+            diagnostic({ Outcome: "unknown variant; no RPC set" })
             throw new Error("Variant picker returned an unknown variant")
+          }
           variant = choice === "default" ? undefined : choice
         }
-        await rpc.set({ role, model: { ...selected, ...(variant === undefined ? {} : { variant }) } }, options)
+        const request = { role, model: { ...selected, ...(variant === undefined ? {} : { variant }) } }
+        await rpc.set(request, options)
+        if (diagnose && current()) {
+          const saved = (await rpc.list(undefined, options)).find((row) => row.role === role)
+          diagnostic({ "RPC set": request, "RPC read": saved?.preference })
+        }
       }
     } catch (error) {
       if (current()) {
