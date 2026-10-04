@@ -113,18 +113,26 @@ reconstructed from session history.
 
 Planner may use zero, one, or multiple fresh native `explorer` children to
 investigate existing mechanisms, viable approaches, constraints, and trade-offs.
-Planner decides which investigations are useful and how to divide the questions;
-it must not create extra Explorer work merely to achieve parallelism. When it
-identifies two or more useful independent investigations, Planner should normally
+Before launching the first Explorer, Planner identifies useful investigations
+already apparent from the request and current context and distinguishes independent
+investigations from dependent follow-ups. It decides how to divide the questions
+and must not create extra Explorer work merely to achieve parallelism.
+When two or more useful investigations are independent, Planner should normally
 issue their foreground `subagent` calls together in the same Planner response.
-It must not wait for one independent Explorer result before issuing another
-already-known independent investigation. A question that depends on an earlier
-finding remains a fresh Explorer call in a later Planner response after consuming
-that prerequisite result. OpenCode owns execution scheduling, concurrency, and
-joining through its native foreground fork/join behavior.
+It must not start one known independent investigation and defer another
+already-apparent independent investigation until after the first result returns.
+A question that depends on an earlier finding remains a fresh Explorer call in a
+later Planner response after consuming that prerequisite result. OpenCode owns
+execution scheduling, concurrency, and joining through its native foreground
+fork/join behavior.
 The host returns completed findings into Planner's ordinary tool-result/model
 context and provides native child-session navigation. Project `opencode.json`
 sets `experimental.subagent_depth: 2` for Orchestrator → Planner → Explorer.
+
+After delegated findings return, Planner synthesizes from them and owns the final
+proposal. Planner-local `read` / `glob` / `grep` should address only targeted gaps,
+verification, or newly discovered questions rather than broadly repeating
+delegated investigation.
 
 Native OpenCode role/tool permissions enforce Planner and Explorer capabilities;
 correctly loaded policies are trusted deployment input. Planner allows only

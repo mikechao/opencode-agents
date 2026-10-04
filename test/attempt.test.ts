@@ -1457,20 +1457,31 @@ test("Orchestrator uses trusted outcome history without mandating authorization 
   )
 })
 
-test("Planner prefers same-response independent Explorer calls and later fresh dependent calls", () => {
-  const instructions = readFileSync(path.join(import.meta.dir, "../.opencode/agents/planner.md"), "utf8")
-  expect(instructions).toContain("Use zero, one, or multiple read-only Explorer subagents")
+test("Planner decomposes before Explorer delegation and synthesizes findings with targeted follow-ups", () => {
+  const instructions = readFileSync(path.join(import.meta.dir, "../.opencode/agents/planner.md"), "utf8").replace(
+    /\s+/g,
+    " ",
+  )
+  expect(instructions).toMatch(/zero, one, or multiple[^.]*Explorer subagents/i)
   expect(instructions).toMatch(
-    /two or more useful investigations that are independent, normally issue .* together in the same Planner response/,
+    /before launching[^.]*first Explorer[^.]*identify[^.]*investigations[^.]*request[^.]*context/i,
   )
-  expect(instructions).toContain(
-    "Do not wait for one independent Explorer result before issuing another already-known independent investigation.",
+  expect(instructions).toMatch(/distinguish[^.]*independent investigations[^.]*dependent follow-ups/i)
+  expect(instructions).toMatch(
+    /two or more useful investigations[^.]*independent[^.]*normally issue[^.]*foreground `subagent` calls[^.]*together[^.]*same Planner response/i,
   )
   expect(instructions).toMatch(
-    /If a question depends on an earlier Explorer finding, consume that prerequisite result before issuing a fresh Explorer call in a later Planner response/,
+    /do not start[^.]*known independent investigation[^.]*defer[^.]*already-apparent independent investigation[^.]*until after[^.]*result returns/i,
   )
-  expect(instructions).toContain("Do not create extra Explorer work merely to achieve parallelism.")
-  expect(instructions).toContain("OpenCode owns execution scheduling, concurrency, and joining.")
+  expect(instructions).toMatch(
+    /question depends[^.]*earlier Explorer finding[^.]*consume[^.]*prerequisite result before[^.]*fresh Explorer call[^.]*later Planner response/i,
+  )
+  expect(instructions).toMatch(/do not create extra Explorer work[^.]*parallelism/i)
+  expect(instructions).toMatch(/OpenCode owns[^.]*scheduling[^.]*concurrency[^.]*joining/i)
+  expect(instructions).toMatch(/after delegated findings return[^.]*synthesize from them/i)
+  expect(instructions).toMatch(
+    /Planner-local[^.]*`read`[^.]*`glob`[^.]*`grep`[^.]*only[^.]*targeted gaps[^.]*verification[^.]*newly discovered questions[^.]*rather than broadly repeating delegated investigation/i,
+  )
 })
 
 test("native role files allow only Planner to delegate to Explorer through ordered effective rules", () => {
