@@ -398,17 +398,34 @@ test("slash/palette picker persists a variant, reopens with saved state, and res
   expect(f.command).toMatchObject({ palette: true, slash: { name: "agent-models" } })
   f.replies.push("planner", "choose", { providerID: "test", id: "chosen" }, { variant: "high" }, undefined)
   await f.command.run()
-  expect(f.dialogs[4].options[0].description).toContain("test/chosen#high")
-  expect(f.dialogs[4].options[0].footer).toContain("Available")
+  expect(f.dialogs[4].options[0].description).toBe("Override: test/chosen")
+  expect(f.dialogs[4].options[0].footer).toBe("high · Available")
   expect(f.dialogs[4].options[1].description).toContain("Override: None")
   f.replies.push("planner", "reset", undefined)
   await f.command.run()
-  expect(f.dialogs[5].options[0].description).toContain("test/chosen#high")
+  expect(f.dialogs[5].options[0].description).toBe("Override: test/chosen")
+  expect(f.dialogs[5].options[0].footer).toBe("high · Available")
   expect(f.store.size).toBe(0)
   expect(f.methods.every(([, options]) => options.location.directory === "/checkout")).toBe(true)
   expect(f.toasts).toEqual([])
   f.dispose()
   expect(f.removed()).toBe(true)
+})
+
+test("role rows show explicit or default override variants and preserve native behavior", async () => {
+  const f = uiFixture()
+  try {
+    await Effect.runPromise(f.settings.set("planner", chosen))
+    await Effect.runPromise(f.settings.set("explorer", native))
+    await f.command.run()
+    expect(f.dialogs[0].options).toMatchObject([
+      { title: "Planner", description: "Override: test/chosen", footer: "high · Available" },
+      { title: "Explorer", description: "Override: test/native", footer: "default · Available" },
+      { title: "Implementer", description: "Override: None", footer: "Native behavior" },
+    ])
+  } finally {
+    f.dispose()
+  }
 })
 
 test("picker displays unavailable/invalid preferences and permits replacement or reset", async () => {

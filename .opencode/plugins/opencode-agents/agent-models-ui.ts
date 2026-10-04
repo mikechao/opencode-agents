@@ -6,7 +6,7 @@ function summary(row: RolePreference) {
   const preference = row.preference
   const override =
     preference.kind === "override"
-      ? formatSelection(preference.model)
+      ? `${preference.model.providerID}/${preference.model.id}`
       : preference.kind === "invalid"
         ? "Invalid saved preference"
         : "None"
@@ -18,9 +18,11 @@ function summary(row: RolePreference) {
       : preference.kind === "invalid"
         ? preference.message
         : "Native behavior"
+  const variant = preference.kind === "override" ? `${preference.model.variant ?? "default"} · ` : ""
   return {
     description: `Override: ${override}`,
-    footer: `${status}${row.loaded ? "" : " · Agent not loaded"}`,
+    // The host reserves footer space while long descriptions can be clipped.
+    footer: `${variant}${status}${row.loaded ? "" : " · Agent not loaded"}`,
   }
 }
 
