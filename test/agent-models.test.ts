@@ -369,6 +369,12 @@ test("settings RPC contracts validate on both sides and expose no authorization 
   expect(agentModelsRpc.id).not.toBe(authorizeRpc.id)
   expect(Object.keys(agentModelsRpc.methods)).toEqual(["list", "set", "reset"])
   expect(Object.keys(authorizeRpc.methods)).toEqual(["authorize"])
+  for (const method of Object.values(agentModelsRpc.methods)) {
+    for (const schema of [method.input, method.output, ...Object.values(method.errors)]) {
+      expect(Reflect.ownKeys(schema)).toEqual(["~standard"])
+      expect(Schema.isSchema(schema)).toBe(false)
+    }
+  }
   const request = { role: "planner", model: chosen }
   const decoded = await hostParse(agentModelsRpc.methods.set.input, request)
   await Effect.runPromise(handlers.set(decoded, rpc))

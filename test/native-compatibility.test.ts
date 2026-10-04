@@ -122,3 +122,79 @@ test("pinned native tool failures retain trusted progress and error metadata", (
     "publisher.failTool(event.id,toSessionError(error),error.metadata)",
   )
 })
+
+// These guard the host semantics modeled by agent-models.test.ts; its existing
+// independent-runtime fixture owns variant preservation and application behavior.
+test("pinned RPC codecs prefer Effect Schema and validate portable input/output through Standard Schema", () => {
+  const rpc = source("rpc.ts")
+  expect(rpc).toContain("constparsed=yield*parse(method.input,input).pipe(")
+  expect(rpc).toContain("returnyield*encode(method.output,result).pipe(")
+  const parse = rpc.slice(rpc.indexOf("functionparse("), rpc.indexOf("functionencode("))
+  expect(parse).toContain(
+    "if(Schema.isSchema(schema))returnSchema.decodeUnknownEffect(schema)(value)if(isStandardSchema(schema))",
+  )
+  expect(parse).toContain('schema["~standard"].validate(value)')
+  expect(parse).toContain("if(result.issues)returnyield*Effect.fail(")
+  expect(parse).toContain("returnresult.value")
+  const encode = rpc.slice(rpc.indexOf("functionencode("), rpc.indexOf("functionencodeError("))
+  expect(encode).toContain(
+    "returnSchema.isSchema(schema)?Schema.encodeUnknownEffect(schema)(value):parse(schema,value)",
+  )
+  expect(rpc).toContain('return"~standard"inschema')
+})
+
+test("pinned RPC dispatch uses the latest whole definition by ID and removes scoped entries on disposal", () => {
+  const rpc = source("rpc.ts")
+  const register = rpc.slice(rpc.indexOf("constregister="), rpc.indexOf("constcall="))
+  expect(register).toContain("constentry={definition,handlers}")
+  expect(register).toContain(
+    "yield*Effect.acquireRelease(Effect.sync(()=>registrations.set(definition.id,[...(registrations.get(definition.id)??[]),entry])),()=>dispose,)",
+  )
+  expect(register).toContain(
+    "constdispose=Effect.sync(()=>{constremaining=(registrations.get(definition.id)??[]).filter((candidate)=>candidate!==entry)",
+  )
+  expect(register).toContain("if(remaining.length===0){registrations.delete(definition.id)return}")
+  expect(register).toContain("registrations.set(definition.id,remaining)")
+  const call = rpc.slice(rpc.indexOf("constcall="), rpc.indexOf("constclient="))
+  expect(call).toContain("constentry=registrations.get(rpcID)?.at(-1)")
+  expect(call).toContain('if(!entry)returnyield*Effect.fail(failure("rpc.unavailable",')
+  expect(call).toContain("if(!Object.hasOwn(entry.definition.methods,name)||!Object.hasOwn(entry.handlers,name))")
+  expect(call).toContain('failure("rpc.method_not_found",')
+  expect(call).toContain("constmethod=entry.definition.methods[name]consthandler=entry.handlers[name]")
+  const plugin = source("plugin.ts")
+  expect(plugin).toContain("Context.make(Scope.Scope,activation.scope)")
+  expect(plugin).toContain("yield*Scope.close(slot.activation.scope,Exit.void)")
+})
+
+test("pinned Promise RPC routes an explicit directory to its location graph without a workspace selector", () => {
+  const client = source("../../client/src/promise/rpc.ts")
+  const call = client.slice(client.indexOf("constresult=awaitraw.rpc.call("), client.indexOf("returnresult.output"))
+  expect(call).toContain("rpcID:definition.id,method:name,")
+  expect(call).toContain("location:options?.location,")
+  const transport = source("../../client/src/promise/generated/client.ts")
+  const request = transport.slice(transport.indexOf("rpc:{"), transport.indexOf("event:{"))
+  expect(request).toContain(
+    `path:\`/api/rpc/\${encodeURIComponent(input.rpcID)}/\${encodeURIComponent(input.method)}\``,
+  )
+  expect(request).toContain('query:{location:input["location"]}')
+  expect(transport).toContain("appendQuery(url.searchParams,key,value)")
+  expect(transport).toContain(`appendQuery(params,\`\${key}[\${child}]\`,item)`)
+  expect(source("../../protocol/src/groups/rpc.ts")).toContain("query:LocationQuery,")
+  expect(source("../../protocol/src/api.ts")).toContain(".add(RpcGroup.middleware(locationMiddleware))")
+  const location = source("../../server/src/location.ts")
+  const ref = location.slice(location.indexOf("exportfunctionrequestRef("), location.indexOf("functiondecode("))
+  expect(ref).toContain('constdirectory=query.get("location[directory]")||')
+  expect(ref).toContain("returnLocation.Ref.make({directory:AbsolutePath.make(directory),})")
+  expect(ref).not.toContain("workspaceID")
+  expect(location).toContain("Effect.provide(locations.get(requestRef(request)))")
+  const query = source("../../protocol/src/groups/location.ts")
+  expect(query).toContain(
+    "exportconstLocationQuery=Schema.Struct({location:Schema.optional(Schema.Struct({directory:Schema.optional(Schema.String),}),),})",
+  )
+  expect(source("location-services.ts")).toContain(
+    "get:(ref:Location.Ref)=>inner.get(LocationServiceMap.canonical(ref))",
+  )
+  expect(source("rpc.ts")).toContain(
+    "exportconstnode=makeLocationNode({service:Service,layer,deps:[Bus.node,Location.node]})",
+  )
+})
