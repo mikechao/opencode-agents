@@ -19,6 +19,9 @@ import {
   snapshotLocation,
   verifyPublishedAttempt,
   type DecisionOwner,
+  type Bound,
+  type ExpectedPublication,
+  type PublicationOwner,
   type PublishedAttempt,
 } from "../../../src/attempt.ts"
 
@@ -119,7 +122,8 @@ const plugin: Definition = {
       const { location, baseline, observationCompletedAt } = observation
       type Ownership =
         | { kind: "waiting"; creation: Created }
-        | { kind: "publishing"; creation: Created }
+        | { kind: "binding"; creation: Created }
+        | { kind: "publishing"; creation: Created; bound: Bound; expected: ExpectedPublication }
         | { kind: "retained" | "pending" | "deciding" | "transferred"; creation: Created; published: PublishedAttempt }
         | { kind: "closed" }
       let ownership: Ownership = { kind: "waiting", creation }
@@ -132,8 +136,6 @@ const plugin: Definition = {
       const closeAuthority = () => {
         if (ownership.kind === "closed") return
         ownership = { kind: "closed" }
-        guard.bound = undefined
-        guard.publishing = undefined
         setPresentation(undefined)
         const remove = removePresentation
         removePresentation = undefined
@@ -187,7 +189,18 @@ const plugin: Definition = {
           same(snapshotLocation(context.location ?? context.data.location.default()), location)
         )
       }
-      const guard: DecisionOwner = {
+      const boundEvidence = () =>
+        ownership.kind === "publishing"
+          ? ownership.bound
+          : "published" in ownership
+            ? ownership.published.bound
+            : undefined
+      const guard: DecisionOwner & PublicationOwner = {
+        expectPublication(bound, expected) {
+          if (generation.revoked || ownership.kind !== "binding")
+            throw new Error("Publication no longer owns the binding attempt")
+          ownership = { kind: "publishing", creation: ownership.creation, bound, expected }
+        },
         transfer() {
           guard.assertCurrent()
           if (ownership.kind !== "deciding" && ownership.kind !== "transferred")
@@ -526,7 +539,7 @@ const plugin: Definition = {
             if (ownership.kind !== "waiting") return
             if (result.kind === "invalid") throw new Error(result.reason)
             if (result.kind === "non-governed") return
-            ownership = { kind: "publishing", creation }
+            ownership = { kind: "binding", creation }
             setLayoutRevision((value) => value + 1)
             const published = await publishPlan(context, activation, guard, result.terminalIdleID)
             guard.assertCurrent()
@@ -576,7 +589,7 @@ const plugin: Definition = {
           }
           return
         }
-        const bound = guard.bound
+        const bound = boundEvidence()
         if (
           bound &&
           event.type === "session.created" &&
@@ -588,15 +601,20 @@ const plugin: Definition = {
         }
         if (typeof sessionID !== "string" || ![creation.data.sessionID, bound?.planner.childID].includes(sessionID))
           return
-        if (event.type === "session.inbox.enqueued" && sessionID === creation.data.sessionID && guard.publishing) {
-          const expected = guard.publishing
+        const expected =
+          ownership.kind === "publishing"
+            ? ownership.expected
+            : "published" in ownership
+              ? ownership.published.publication
+              : undefined
+        if (event.type === "session.inbox.enqueued" && sessionID === creation.data.sessionID && expected) {
           const item = event.data.item
           if (
             event.data.inboxID === expected.id &&
             item.type === "synthetic" &&
             item.delivery === "steer" &&
-            item.payload.text === expected.text &&
-            item.payload.description === expected.description &&
+            item.payload.text === expected.payload.text &&
+            item.payload.description === expected.payload.description &&
             item.payload.metadata?.source === "planner"
           )
             return
@@ -716,7 +734,7 @@ const plugin: Definition = {
       return {
         complete,
         eventReceived,
-        owns: (sessionID: string) => sessionID === rootSessionID || sessionID === guard.bound?.planner.childID,
+        owns: (sessionID: string) => sessionID === rootSessionID || sessionID === boundEvidence()?.planner.childID,
         dispose,
       }
     }

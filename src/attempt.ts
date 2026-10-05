@@ -3,7 +3,7 @@ import type { SessionMessage } from "@opencode/schema/session-message"
 import { Content as ToolContent } from "@opencode/schema/tool"
 import { Schema } from "effect"
 import type { LocationRef, OpenCodeEvent, SessionInboxInfo, SessionInfo, SessionMessageInfo } from "@opencode/client"
-import { createHash, randomUUID } from "node:crypto"
+import { randomUUID } from "node:crypto"
 import { assertLive, exactKeys, frozenCopy, type Generation } from "./cap.ts"
 import { observeGit, requireFresh, type GitSnapshot } from "./git.ts"
 import { candidateIntact, makeCandidate, parseProposal, renderPlan } from "./proposal.ts"
@@ -112,17 +112,15 @@ export type PublishedAttempt = Readonly<{
   candidate: IntentCandidate
   publication: Frozen<Synthetic>
 }>
-// These are operation expectations and local lifetime checks, never authority flags.
-// The TUI setup closure owns this object and its pending/claimed identity.
+// Attempt-side checks carry no publication bookkeeping or authority.
 export interface AttemptGuard {
   assertCurrent(): void
-  bound?: Bound
-  publishing?: Readonly<{
-    id: string
-    text: string
-    description: string
-    metadata: { source: string; planHash: string }
-  }>
+}
+
+export type ExpectedPublication = Readonly<Pick<Synthetic, "id" | "payload">>
+export interface PublicationOwner extends AttemptGuard {
+  // Synchronous: the host can notify inside synthetic(), before its promise settles.
+  expectPublication(bound: Bound, expected: ExpectedPublication): void
 }
 
 export interface DecisionOwner extends AttemptGuard {
@@ -657,7 +655,7 @@ export async function verifyPublishedAttempt(
 export async function publishPlan(
   context: Context,
   activation: ActivationEvidence,
-  guard: AttemptGuard,
+  guard: PublicationOwner,
   terminalIdleID: string,
 ): Promise<PublishedAttempt> {
   const { generation, baseline, location, creation } = activation
@@ -671,25 +669,34 @@ export async function publishPlan(
     observePublication(activation)
     await after(check, context.client.session.wait({ sessionID: parentID }))
     const bound = await bindNativeAttempt(context, check, parentID, location, terminalIdleID)
-    guard.bound = bound
     if (Number.isFinite(creation.created) && bound.parentCreatedAt !== creation.created)
       stop("root creation evidence changed")
     const candidate = makeCandidate(parseProposal(bound.plannerChild.text, baseline.root), baseline.root, baseline.head)
-    const planHash = createHash("sha256").update(bound.plannerChild.text).digest("hex").slice(0, 12)
-    guard.publishing = frozenCopy({
+    const expected = frozenCopy({
       id: `msg_${randomUUID()}`,
-      text: bound.plannerChild.text,
-      description: renderPlan(candidate),
-      metadata: { source: "planner", planHash },
+      payload: {
+        text: bound.plannerChild.text,
+        description: renderPlan(candidate),
+        metadata: { source: "planner" },
+      },
     })
+    // Binding and candidate construction have no intervening await. Record the
+    // established binding and publication expectation together in their owner.
+    guard.expectPublication(bound, expected)
     check()
     observePublication(activation)
     const admitted = await after(
       check,
-      context.client.session.synthetic({ sessionID: parentID, ...guard.publishing, delivery: "steer", resume: false }),
+      context.client.session.synthetic({
+        sessionID: parentID,
+        id: expected.id,
+        ...expected.payload,
+        delivery: "steer",
+        resume: false,
+      }),
     )
     checkedPublication(admitted, bound, candidate)
-    if (admitted.id !== guard.publishing.id) stop("synthetic admission identity changed")
+    if (admitted.id !== expected.id) stop("synthetic admission identity changed")
     const published = Object.freeze({ activation, bound, candidate, publication: frozenCopy(admitted) })
     await verifyPublishedAttempt(context, published, guard)
     // Hydration supplies presentation only. Failure never retries the publication.

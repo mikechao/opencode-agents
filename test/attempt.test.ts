@@ -23,6 +23,7 @@ import {
   snapshotLocation,
   verifyPublishedAttempt,
   type DecisionOwner,
+  type PublicationOwner,
   type PublishedAttempt,
 } from "../src/attempt.ts"
 import { createRoot, createEffect, createMemo, createComponent, createSignal } from "solid-js"
@@ -452,7 +453,8 @@ function fake(root: string, options: FakeOptions = {}) {
     if (claimed) throw new Error("already claimed")
     claimed = published
   }
-  const guard: DecisionOwner = {
+  const guard: DecisionOwner & PublicationOwner = {
+    expectPublication: () => guard.assertCurrent(),
     transfer: () => guard.assertCurrent(),
     assertCurrent: () => {
       if (generation.revoked) throw new Error("revoked")
@@ -744,7 +746,6 @@ snapshotTest(
           expect(a.bound.planner.childID).not.toBe(b.bound.planner.childID)
           expect(a.candidate.digest).not.toBe(b.candidate.digest)
           expect(a.publication.id).not.toBe(b.publication.id)
-          expect(a.publication.payload.metadata?.planHash).not.toBe(b.publication.payload.metadata?.planHash)
           expect(a.activation.baseline).not.toBe(b.activation.baseline)
           expect(a.activation.generation).not.toBe(b.activation.generation)
           for (const published of publications) {
@@ -1267,7 +1268,7 @@ snapshotTest(
         sessionID: "parent",
         text: proposal,
         description: renderPlan(result.candidate),
-        metadata: { source: "planner", planHash: result.publication.payload.metadata!.planHash },
+        metadata: { source: "planner" },
         resume: false,
       },
     ])
@@ -2213,7 +2214,7 @@ snapshotTest("repeated message cursors and duplicate IDs across pages reject nat
 snapshotTest(
   "publication preserves pretty-printed raw Planner P and rejects altered synthetic admission",
   async (observer) => {
-    for (const mutation of ["none", "text", "description"] as const) {
+    for (const mutation of ["none", "id", "text", "description"] as const) {
       const root = snapshotFixture(observer)
       const f = fake(root)
       const raw = " \n" + JSON.stringify(JSON.parse(proposal), null, 2) + "\n "
@@ -2223,7 +2224,8 @@ snapshotTest(
       const synthetic = host.client.session.synthetic
       host.client.session.synthetic = async (input: any) => {
         const admitted = await synthetic(input)
-        if (mutation !== "none") admitted.payload[mutation] += " changed"
+        if (mutation === "id") admitted.id += "changed"
+        else if (mutation !== "none") admitted.payload[mutation] += " changed"
         return admitted
       }
       const result = publication(f.context, f.generation, observeGit(root), "parent", { directory: root })
@@ -2231,10 +2233,239 @@ snapshotTest(
         const published = await result
         expect(f.calls.synthetic[0].description).toBe(renderPlan(published.candidate))
         expect(published.candidate.proposal.plan).toBe("Update its contents\nCheck the result")
-      } else await expect(result).rejects.toThrow("admission changed")
+      } else
+        await expect(result).rejects.toThrow(mutation === "id" ? "admission identity changed" : "admission changed")
       expect(f.calls.synthetic[0].text).toBe(raw)
       expect(f.calls.synthetic[0].resume).toBe(false)
       expect(f.calls.decided).toEqual([])
+    }
+  },
+)
+
+snapshotTest(
+  "publication ownership validates synchronous notifications before the synthetic await settles",
+  async (observer) => {
+    for (const mutation of ["none", "id", "type", "delivery", "text", "description", "source"] as const) {
+      const root = snapshotFixture(observer)
+      const f = fake(root)
+      let release!: () => void
+      const paused = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      let notified = false
+      let syntheticReturned = false
+      const synthetic = f.context.client.session.synthetic
+      ;(f.context.client.session as any).synthetic = async (input: any) => {
+        const admitted = synthetic(input)
+        if (input.metadata?.source !== "planner") return admitted
+        const event = {
+          type: "session.inbox.enqueued",
+          id: "evt_publication",
+          data: {
+            sessionID: input.sessionID,
+            inboxID: input.id,
+            item: {
+              type: "synthetic",
+              delivery: input.delivery,
+              payload: structuredClone({ text: input.text, description: input.description, metadata: input.metadata }),
+            },
+          },
+        }
+        if (mutation === "id") event.data.inboxID += "changed"
+        else if (mutation === "type" || mutation === "delivery") event.data.item[mutation] = "changed"
+        else if (mutation === "text" || mutation === "description") event.data.item.payload[mutation] += "changed"
+        else if (mutation === "source") event.data.item.payload.metadata.source = "other"
+        // Emit inside the API invocation, before even reaching its first await.
+        f.emit(event)
+        notified = true
+        await paused
+        const result = await admitted
+        syntheticReturned = true
+        return result
+      }
+      const cleanup = await plugin.setup(f.context)
+      let view: ReturnType<typeof mount> | undefined
+      try {
+        await f.prepare()
+        f.sessions.parent.time.created = Date.now() + 10
+        f.emit(f.created())
+        const completed = { type: "session.execution.succeeded", id: "evt_completed", data: { sessionID: "parent" } }
+        f.emit(completed)
+        await settleUntil(() => notified)
+        expect(notified).toBe(true)
+        expect(f.calls.synthetic).toHaveLength(1)
+        expect(f.slots).toEqual([])
+        expectNoImplementation(f)
+        if (mutation === "none") expect(f.calls.toasts).toEqual([])
+        else expect(f.calls.toasts).toEqual([expect.stringContaining("Unexpected pending input")])
+        release()
+        await settleUntil(() => syntheticReturned && (mutation !== "none" || f.slots.length > 0))
+        f.emit(completed)
+        view = mount(f)
+        if (mutation === "none") {
+          expect(view.buttons).toHaveLength(2)
+          view.click(0)
+          view.click(0)
+          await settleUntil(() => f.calls.claims.length > 0)
+          expect(f.calls.claims).toHaveLength(1)
+        } else {
+          expect(view.buttons).toEqual([])
+          expectNoImplementation(f)
+        }
+        expect(f.calls.synthetic).toHaveLength(1)
+      } finally {
+        release()
+        if (typeof cleanup === "function") cleanup()
+        view?.dispose()
+      }
+    }
+  },
+)
+
+snapshotTest(
+  "synthetic failure after an expected synchronous notification permanently closes publication ownership",
+  async (observer) => {
+    const root = snapshotFixture(observer)
+    const reads: string[] = []
+    const f = fake(root, { onRead: (kind) => reads.push(kind) })
+    const original = { ...attemptModule }
+    const modulePath = path.resolve(import.meta.dir, "../src/attempt.ts")
+    let owner: PublicationOwner | undefined
+    mock.module(modulePath, () => ({
+      ...original,
+      publishPlan: (...args: Parameters<typeof publish>) => {
+        owner = args[2]
+        return original.publishPlan(...args)
+      },
+    }))
+    let notification: any
+    const synthetic = f.context.client.session.synthetic
+    ;(f.context.client.session as any).synthetic = async (input: any) => {
+      const admitted = synthetic(input)
+      if (input.metadata?.source !== "planner") return admitted
+      notification = {
+        type: "session.inbox.enqueued",
+        id: "evt_publication",
+        data: {
+          sessionID: input.sessionID,
+          inboxID: input.id,
+          item: {
+            type: "synthetic",
+            delivery: input.delivery,
+            payload: structuredClone({ text: input.text, description: input.description, metadata: input.metadata }),
+          },
+        },
+      }
+      // The valid notification is accepted inside synthetic(), before rejection.
+      f.emit(notification)
+      expect(owner).toBeDefined()
+      expect(() => owner!.assertCurrent()).not.toThrow()
+      expect(f.calls.toasts).toEqual([])
+      await admitted
+      throw new Error("synthetic publication failed after notification")
+    }
+    let cleanup: Awaited<ReturnType<typeof plugin.setup>> = undefined
+    let view: ReturnType<typeof mount> | undefined
+    try {
+      cleanup = await activate(f)
+      expect(f.calls.toasts).toEqual([expect.stringContaining("synthetic publication failed after notification")])
+      // assertCurrent exposes lifetime validity without inspecting private Ownership.
+      expect(() => owner!.assertCurrent()).toThrow("ownership was closed")
+      expect(f.slots).toEqual([])
+      expectNoImplementation(f)
+      await settleUntil(() => f.inboxes.parent.some((item) => item.payload?.metadata?.source === "opencode-agents"))
+      const completed = f.handlers.get("session.execution.succeeded")!
+      // Restore fully readable Plan evidence after failure; hydration and delayed
+      // completion must still have no opportunity to regain publication ownership.
+      f.inboxes.parent = f.inboxes.parent.filter((item) => item.payload?.metadata?.source === "planner")
+      expect(f.inboxes.parent).toHaveLength(1)
+      await f.context.data.session.pending.sync("parent")
+      await f.context.data.session.message.sync("parent")
+      const readCount = reads.length
+      f.emit(notification)
+      f.emit({ ...notification, id: "evt_delayed_publication" })
+      completed({ type: "session.execution.succeeded", id: "evt_completed", data: { sessionID: "parent" } })
+      f.histories.parent.at(-1).id = "msg_delayed_completed"
+      completed({ type: "session.execution.succeeded", id: "evt_delayed_completed", data: { sessionID: "parent" } })
+      f.renderer.emit("resize")
+      f.renderer.emit("frame")
+      await Promise.resolve()
+      expect(reads).toHaveLength(readCount)
+      expect(() => owner!.assertCurrent()).toThrow("ownership was closed")
+      view = mount(f)
+      expect(view.buttons).toEqual([])
+      view.click(0)
+      view.click(1)
+      expect(f.slots).toEqual([])
+      expect(f.calls.synthetic).toHaveLength(1)
+      expect(f.calls.receipts).toHaveLength(1)
+      expect(f.calls.toasts).toHaveLength(1)
+      expectNoImplementation(f)
+    } finally {
+      if (typeof cleanup === "function") cleanup()
+      view?.dispose()
+      mock.module(modulePath, () => original)
+    }
+  },
+)
+
+snapshotTest(
+  "published ownership derives delayed notification and Planner identity from the retained attempt",
+  async (observer) => {
+    for (const stage of ["retained", "pending"] as const) {
+      for (const mutation of ["none", "id", "text", "planner", "child"] as const) {
+        const root = snapshotFixture(observer)
+        const f = fake(root)
+        const attempt = await startInspectedPublication(f, (select) => select("planner-child"))
+        let view: ReturnType<typeof mount> | undefined
+        try {
+          const published = await attempt.finish()
+          if (stage === "pending") {
+            attempt.select("parent")
+            await settleUntil(() => f.slots.length > 0)
+            view = mount(f)
+            expect(view.buttons).toHaveLength(2)
+          }
+          const event = {
+            type: "session.inbox.enqueued",
+            id: "evt_delayed_publication",
+            data: {
+              sessionID: published.bound.parentID,
+              inboxID: published.publication.id,
+              item: structuredClone(published.publication),
+            },
+          }
+          if (mutation === "id") event.data.inboxID += "changed"
+          if (mutation === "text") event.data.item.payload.text += "changed"
+          if (mutation === "planner")
+            f.emit({ type: "session.permissions", data: { sessionID: published.bound.planner.childID } })
+          else if (mutation === "child")
+            f.emit({
+              type: "session.created",
+              data: { sessionID: "unexpected-child", parentID: published.bound.parentID },
+            })
+          else f.emit(event)
+          if (mutation === "none") expect(f.calls.toasts).toEqual([])
+          else expect(f.calls.toasts).toEqual([expect.stringContaining("STOP")])
+          attempt.select("parent")
+          if (mutation === "none") await settleUntil(() => f.slots.length > 0)
+          view ??= mount(f)
+          if (mutation === "none") {
+            expect(view.buttons).toHaveLength(2)
+            view.click(1)
+            expect(f.calls.toasts).toEqual(["Cancelled — no implementation admitted"])
+          } else {
+            view.click(0)
+            view.click(1)
+            expect(f.slots.every((slot) => slot.removed)).toBe(true)
+          }
+          expectNoImplementation(f)
+          expect(f.calls.synthetic).toHaveLength(1)
+        } finally {
+          attempt.cleanup()
+          view?.dispose()
+        }
+      }
     }
   },
 )
@@ -2406,7 +2637,7 @@ snapshotTest(
     f.histories.parent[1].content[0].state.metadata.truncated = true
     f.histories.parent[1].content[0].state.metadata.outputPath = "/ignored/display"
     f.inboxes.parent[0].time.created++
-    f.inboxes.parent[0].payload.metadata.planHash = "cosmetic-label"
+    f.inboxes.parent[0].payload.metadata.diagnostic = "cosmetic-label"
     f.inboxes.parent[0].payload.extra = true
     f.inboxes.parent[0].extra = true
     // More server history than the host's visible window. Only the exact Plan
@@ -2497,7 +2728,7 @@ snapshotTest("retained evidence is copied, deeply immutable, and coherent", asyn
       ...published,
       publication: {
         ...published.publication,
-        payload: { ...published.publication.payload, metadata: { source: "other", planHash: "forged" } },
+        payload: { ...published.publication.payload, metadata: { source: "other" } },
       },
     },
   ])
@@ -2558,7 +2789,7 @@ snapshotTest(
           f.histories.parent.push(f.cache.parent.at(-1))
         } else if (mutation === "time") item.time.created++
         else if (["text", "description"].includes(mutation)) item.payload[mutation] += " "
-        else if (mutation === "metadata") item.payload.metadata.planHash = "forged"
+        else if (mutation === "metadata") item.payload.metadata.diagnostic = "cosmetic-label"
         else if (mutation === "source") item.payload.metadata.source = "other"
         else if (mutation === "payload-key") item.payload.extra = true
         else if (mutation === "item-key") item.extra = true
