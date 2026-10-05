@@ -835,6 +835,10 @@ export function nativeAdmission(context: Context) {
               )
       return { outcome, publish: true }
     })
+  const publishReceipt = (rootSessionID: string, receipt: string) =>
+    Effect.suspend(() => context.session.synthetic(receiptInput(Session.ID.make(rootSessionID), receipt))).pipe(
+      Effect.catchCause((cause) => Effect.logWarning("Terminal receipt publication failed", Cause.pretty(cause))),
+    )
   const authorize = (input: unknown) =>
     Effect.gen(function* () {
       const cap = yield* attempt(() => {
@@ -944,28 +948,23 @@ export function nativeAdmission(context: Context) {
             ? unverified(settlementFailure)
             : yield* verifyResult(cap).pipe(Effect.catchCause((cause) => Effect.succeed(unverified(cause))))
         cap.close()
-        let outcome: string
-        if (typeof implementation === "string") outcome = implementation
-        else {
-          const review = yield* runReview(cap, implementation, (proven) => {
-            settlementProven = proven
-          }).pipe(Effect.catchCause((cause) => Effect.succeed({ outcome: reviewUnverified(cause), publish: false })))
-          outcome = [
-            "Implementation gate completed successfully.",
-            `HEAD ${implementation.head} remained unchanged.`,
-            `Resulting paths (${implementation.paths.length}): ${implementation.paths.map(displayPath).join(", ") || "(none)"}.`,
-            review.outcome,
-          ].join("\n")
-          if (!review.publish) return outcome
+        // This accepted RPC alone owns presentation. Publication failure cannot
+        // change or retry the verified outcome or grant execution authority.
+        if (typeof implementation === "string") {
+          yield* publishReceipt(rootSessionID, implementation)
+          return implementation
         }
-        // This accepted RPC alone owns terminal publication. Losing RPCs never
-        // reach it; publication failure cannot change or retry the outcome.
-        yield* Effect.suspend(() =>
-          context.session.synthetic(receiptInput(Session.ID.make(rootSessionID), outcome)),
-        ).pipe(
-          Effect.catchCause((cause) => Effect.logWarning("Terminal receipt publication failed", Cause.pretty(cause))),
-        )
-        return outcome
+        const implementationReceipt = [
+          "Implementation gate completed successfully.",
+          `HEAD ${implementation.head} remained unchanged.`,
+          `Resulting paths (${implementation.paths.length}): ${implementation.paths.map(displayPath).join(", ") || "(none)"}.`,
+        ].join("\n")
+        yield* publishReceipt(rootSessionID, implementationReceipt)
+        const review = yield* runReview(cap, implementation, (proven) => {
+          settlementProven = proven
+        }).pipe(Effect.catchCause((cause) => Effect.succeed({ outcome: reviewUnverified(cause), publish: false })))
+        if (review.publish) yield* publishReceipt(rootSessionID, review.outcome)
+        return [implementationReceipt, review.outcome].join("\n")
       }).pipe(
         Effect.ensuring(
           Effect.sync(() => {

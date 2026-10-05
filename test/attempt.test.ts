@@ -4592,11 +4592,11 @@ snapshotTest(
     expect(b.result?.childID).toBe("ses_b-authorized_implementer")
     expect(f.originals.map((entry) => entry.context.sessionID)).toEqual(["ses_parent", "ses_b"])
     expect(f.wakes.map((wake) => wake.sessionID)).toEqual(["ses_parent", "ses_b"])
-    expect(f.receipts.map((receipt) => receipt.sessionID)).toEqual(["ses_parent", "ses_b"])
+    expect(f.receipts.map((receipt) => receipt.sessionID)).toEqual(["ses_parent", "ses_parent", "ses_b", "ses_b"])
     expect(await f.authorize()).toContain("One governed")
     expect(await f.authorize(claimB)).toContain("One governed")
     expect(f.originals).toHaveLength(2)
-    expect(f.receipts).toHaveLength(2)
+    expect(f.receipts).toHaveLength(4)
     f.admission.teardown()
     for (const cap of f.admission.caps.values()) expect(() => cap.live()).toThrow("revoked")
     expect(await f.authorize({ ...claimB, rootSessionID: "ses_c" })).toContain("revoked")
@@ -4659,7 +4659,7 @@ snapshotTest(
     expect(await f.authorize()).toContain("Implementation gate completed successfully")
     expect(f.originals).toHaveLength(1)
     expect(f.originals[0].context.sessionID).toBe("ses_parent")
-    expect(f.receipts.map((receipt) => receipt.sessionID)).toEqual(["ses_parent"])
+    expect(f.receipts.map((receipt) => receipt.sessionID)).toEqual(["ses_parent", "ses_parent"])
   },
 )
 
@@ -6364,7 +6364,7 @@ snapshotTest(
 )
 
 snapshotTest(
-  "terminal success publishes once after root settlement and CAP closure even when receipt transport fails",
+  "implementation receipt transport failures never retry, restore authority, or prevent verified review",
   async (observer) => {
     for (const failure of ["none", "effect", "synchronous"] as const) {
       const root = snapshotFixture(observer),
@@ -6376,12 +6376,12 @@ snapshotTest(
       f.state.onReceipt = () => {
         expect(f.state.settled).toBe(true)
         expect(f.cap.phase).toBe("closed")
+        if (failure === "effect" && f.receipts.length === 1) throw new Error("receipt transport unavailable")
       }
-      f.state.receiptError = failure === "effect"
       if (failure === "synchronous") {
         const synthetic = f.context.session.synthetic
         f.context.session.synthetic = (input: any) => {
-          if (input.resume !== false) return synthetic(input)
+          if (input.resume !== false || f.receipts.length) return synthetic(input)
           expect(f.state.settled).toBe(true)
           expect(f.cap.phase).toBe("closed")
           f.receipts.push(input)
@@ -6392,22 +6392,30 @@ snapshotTest(
       expect(outcome).toBe(
         `Implementation gate completed successfully.\nHEAD ${HEAD} remained unchanged.\nResulting paths (1): "old.txt".\nReview APPROVED.\nImplementation satisfies the proposal.\nReview target remained unchanged. This attempt ended before Commit. No repair, additional review, or Commit authority was granted.`,
       )
-      expect(f.receipts).toHaveLength(1)
-      expect(f.receipts[0]).toEqual({
-        sessionID: "ses_parent",
-        delivery: "steer",
-        resume: false,
-        text: outcome,
-        description: outcome,
-        metadata: { source: "opencode-agents" },
-      })
+      expect(f.receipts).toHaveLength(2)
+      expect(outcome).toBe(f.receipts.map((receipt) => receipt.text).join("\n"))
+      for (const receipt of f.receipts)
+        expect(receipt).toEqual({
+          sessionID: "ses_parent",
+          delivery: "steer",
+          resume: false,
+          text: receipt.text,
+          description: receipt.text,
+          metadata: { source: "opencode-agents" },
+        })
+      expect(f.receipts[1].text).toStartWith("Review APPROVED.")
       expect(outcome).not.toContain("STOP")
       f.cap.close()
       f.cap.close()
       expect(await f.authorize()).toContain("One governed")
-      expect(f.receipts).toHaveLength(1)
+      expect(f.receipts).toHaveLength(2)
       expect(f.wakes).toHaveLength(1)
       expect(f.originals).toHaveLength(1)
+      expect(f.reviewWakes).toHaveLength(1)
+      expect(f.reviewOriginals).toHaveLength(1)
+      await expect(f.dispatch()).rejects.toThrow()
+      await expect(f.dispatchReview()).rejects.toThrow()
+      expect(f.reviewOriginals).toHaveLength(1)
     }
   },
 )
@@ -6728,22 +6736,67 @@ snapshotTest(
     )
     f.state.run = async () => {
       await f.dispatch()
-      observer.configure(root, HEAD, ["old.txt"])
+      observer.configure(root, HEAD, ["old.txt", "new.txt", "nested/three.txt"])
     }
+    const events: string[] = []
+    let release!: () => void, published!: () => void
+    const pending = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const ready = new Promise<void>((resolve) => {
+      published = resolve
+    })
     f.state.onReviewWake = () => {
+      events.push("review-wake")
       expect(f.cap.phase).toBe("closed")
       expect(f.cap.childID).toBe("ses_child")
       expect(f.reviewWakes).toHaveLength(1)
     }
+    f.state.onReviewNative = () => {
+      events.push("review-execution")
+    }
     let settled = false
     f.state.onChildWait = async (id) => {
-      if (id === "ses_review") settled = true
+      if (id === "ses_review") {
+        settled = true
+        events.push("review-settlement")
+      }
     }
-    f.state.onReceipt = () => {
-      expect(settled).toBe(true)
+    f.state.onRead = (kind, id) => {
+      if (kind === "context" && id === "ses_review") events.push("review-verification")
+    }
+    f.state.onReceipt = async (receipt) => {
       expect(f.cap.phase).toBe("closed")
+      if (f.receipts.length === 1) {
+        events.push("implementation-receipt-start")
+        expect(settled).toBe(false)
+        expect(f.reviewWakes).toEqual([])
+        // Persist the presentation as the host does. Reviewer provenance must
+        // bind to its later control, excluding this earlier synthetic message.
+        f.histories.ses_parent.push({ id: "implementation-receipt", type: "synthetic", ...receipt })
+        published()
+        await pending
+        events.push("implementation-receipt-end")
+      } else {
+        expect(settled).toBe(true)
+        events.push("review-receipt")
+      }
     }
-    const outcome = await f.authorize()
+    const owner = f.authorize()
+    await ready
+    expect(f.reviewWakes).toEqual([])
+    expect(f.reviewOriginals).toEqual([])
+    release()
+    const outcome = await owner
+    expect(events).toEqual([
+      "implementation-receipt-start",
+      "implementation-receipt-end",
+      "review-wake",
+      "review-execution",
+      "review-settlement",
+      "review-verification",
+      "review-receipt",
+    ])
     expect(outcome).toContain("Review APPROVED.")
     expect(outcome).toContain("No repair, additional review, or Commit")
     expect(f.reviewOriginals).toHaveLength(1)
@@ -6753,7 +6806,7 @@ snapshotTest(
     const args = f.reviewArguments()
     expect(Object.keys(args)).toEqual(["agent", "description", "prompt"])
     expect(args.prompt).toContain(JSON.stringify(f.candidate.proposal))
-    expect(args.prompt).toContain(`Exact accepted changed paths: ["old.txt"]`)
+    expect(args.prompt).toContain(`Exact accepted changed paths: ["nested/three.txt","new.txt","old.txt"]`)
     expect(args.prompt).toContain(`Review target SHA-256: ${"a".repeat(64)}`)
     expect(args.prompt).toContain('"childID":"ses_child"')
     expect(args.prompt).toContain(HEAD)
@@ -6780,7 +6833,26 @@ snapshotTest(
     })
     expect(f.histories.ses_review[0].text).toBe(prefix + args.prompt)
     expect(f.histories.ses_parent.find((item) => item.id === "review-message").content[0].state.input).toEqual(args)
-    expect(f.receipts).toHaveLength(1)
+    expect(f.receipts).toHaveLength(2)
+    const [implementation, review] = f.receipts
+    expect(implementation.text).toBe(
+      `Implementation gate completed successfully.\nHEAD ${HEAD} remained unchanged.\nResulting paths (3): "nested/three.txt", "new.txt", "old.txt".`,
+    )
+    expect(implementation.text).not.toContain("Review APPROVED")
+    expect(implementation.text).not.toContain("Implementation satisfies the proposal.")
+    expect(implementation.text).not.toContain("No repair, additional review, or Commit")
+    expect(review.text).toBe(
+      "Review APPROVED.\nImplementation satisfies the proposal.\nReview target remained unchanged. This attempt ended before Commit. No repair, additional review, or Commit authority was granted.",
+    )
+    expect(review.text).not.toContain(HEAD)
+    expect(review.text).not.toContain("Resulting paths")
+    for (const receipt of f.receipts)
+      expect(receipt).toMatchObject({ resume: false, delivery: "steer", metadata: { source: "opencode-agents" } })
+    expect(outcome).toBe(`${implementation.text}\n${review.text}`)
+    const history = f.histories.ses_parent
+    expect(history.findIndex((item) => item.id === "implementation-receipt")).toBeLessThan(
+      history.findIndex((item) => item.id === f.reviewWakes[0].id),
+    )
     await expect(f.dispatchReview()).rejects.toThrow()
     await expect(f.dispatch()).rejects.toThrow()
     expect(await f.authorize()).toContain("One governed")
@@ -6834,6 +6906,36 @@ snapshotTest("unverified implementation never launches Reviewer", async (observe
     if (failure === "git") break
   }
 })
+
+snapshotTest(
+  "failed implementation publication cannot make substituted Reviewer evidence authoritative",
+  async (observer) => {
+    const root = snapshotFixture(observer),
+      f = serverFake(root, observer)
+    f.state.run = async () => {
+      await f.dispatch()
+    }
+    f.state.onReceipt = () => {
+      if (f.receipts.length === 1) throw new Error("implementation receipt unavailable")
+    }
+    f.state.reviewRun = async () => {
+      await f.dispatchReview()
+      f.histories.ses_review[0].text += " substituted task"
+    }
+    const outcome = await f.authorize()
+    expect(f.receipts).toHaveLength(2)
+    expect(f.receipts[0].text).toStartWith("Implementation gate completed successfully.")
+    expect(f.receipts[1].text).toContain("Reviewer input/final history is missing or ambiguous")
+    expect(f.receipts[1].text).not.toContain("Review APPROVED.")
+    expect(outcome).toBe(f.receipts.map((receipt) => receipt.text).join("\n"))
+    expect(f.reviewWakes).toHaveLength(1)
+    expect(f.reviewOriginals).toHaveLength(1)
+    expect(f.cap.phase).toBe("closed")
+    await expect(f.dispatchReview()).rejects.toThrow()
+    expect(await f.authorize()).toContain("One governed")
+    expect(f.receipts).toHaveLength(2)
+  },
+)
 
 snapshotTest("Reviewer admits only the exact first original foreground call, without replacement", async (observer) => {
   for (const mutation of [
@@ -6997,7 +7099,18 @@ snapshotTest(
       expect(outcome).toContain("No repair, additional review, or Commit")
       expect(f.originals).toHaveLength(1)
       expect(f.reviewOriginals).toHaveLength(1)
-      expect(f.receipts).toHaveLength(1)
+      expect(f.receipts).toHaveLength(2)
+      const [implementation, review] = f.receipts
+      expect(implementation.text).toBe(
+        `Implementation gate completed successfully.\nHEAD ${HEAD} remained unchanged.\nResulting paths (0): (none).`,
+      )
+      expect(review.resume).toBe(false)
+      expect(review.text).toStartWith(`Review ${result.status}.\n${result.summary}\n`)
+      expect(review.text).toContain("Review target remained unchanged. This attempt ended before Commit.")
+      expect(review.text).not.toContain(HEAD)
+      expect(review.text).not.toContain("Resulting paths")
+      if (result.status === "CHANGES_REQUESTED") expect(review.text).toContain('"remediation":"Handle empty input"')
+      expect(outcome).toBe(`${implementation.text}\n${review.text}`)
     }
   },
 )
@@ -7273,7 +7386,10 @@ snapshotTest(
       const owner = f.authorize()
       await ready
       expect(f.cap.phase).toBe("closed")
-      expect(f.receipts.filter((receipt) => receipt.sessionID === "ses_parent")).toEqual([])
+      const receipts = f.receipts.filter((receipt) => receipt.sessionID === "ses_parent")
+      expect(receipts).toHaveLength(1)
+      expect(receipts[0].text).toStartWith("Implementation gate completed successfully.")
+      expect(receipts[0].text).not.toContain("Review")
       expect(await f.authorize({ ...f.claim, rootSessionID: "ses_b" })).toContain("worktree implementation exclusion")
       expect(f.reviewWakes).toHaveLength(1)
       f.sessions.ses_review.time.idle = 4
@@ -7290,10 +7406,10 @@ snapshotTest(
   },
 )
 
-snapshotTest("exclusion releases after the accepted owner's terminal review receipt, not before", async (observer) => {
+snapshotTest("exclusion spans both receipts and releases after terminal review publication", async (observer) => {
   const root = snapshotFixture(observer),
     f = serverFake(root, observer)
-  for (const id of ["ses_b", "ses_c"]) {
+  for (const id of ["ses_b", "ses_c", "ses_d"]) {
     f.sessions[id] = { ...structuredClone(f.sessions.ses_parent), id }
     f.histories[id] = []
   }
@@ -7302,11 +7418,16 @@ snapshotTest("exclusion releases after the accepted owner's terminal review rece
   }
   f.state.onReceipt = async (receipt) => {
     if (receipt.sessionID !== "ses_parent") return
-    expect(receipt.text).toContain("Review APPROVED.")
-    expect(await f.authorize({ ...f.claim, rootSessionID: "ses_b" })).toContain("worktree implementation exclusion")
+    const implementation = receipt.text.startsWith("Implementation gate completed successfully.")
+    if (implementation) expect(f.reviewWakes).toEqual([])
+    else expect(receipt.text).toStartWith("Review APPROVED.")
+    expect(await f.authorize({ ...f.claim, rootSessionID: implementation ? "ses_b" : "ses_c" })).toContain(
+      "worktree implementation exclusion",
+    )
   }
   expect(await f.authorize()).toContain("Review APPROVED.")
-  expect(await f.authorize({ ...f.claim, rootSessionID: "ses_c" })).toContain("Review APPROVED.")
+  expect(f.receipts.filter((receipt) => receipt.sessionID === "ses_parent")).toHaveLength(2)
+  expect(await f.authorize({ ...f.claim, rootSessionID: "ses_d" })).toContain("Review APPROVED.")
 })
 
 snapshotTest(
@@ -7336,7 +7457,16 @@ snapshotTest(
       expect(outcome).toContain("Reviewer outcome was unverified")
       expect(f.reviewWakes).toHaveLength(1)
       expect(f.reviewOriginals.length).toBe(failure === "refusal" || failure === "wake" ? 0 : 1)
-      if (failure === "wait") expect(f.receipts).toEqual([])
+      expect(f.receipts).toHaveLength(failure === "wait" ? 1 : 2)
+      expect(f.receipts[0].text).toBe(
+        `Implementation gate completed successfully.\nHEAD ${HEAD} remained unchanged.\nResulting paths (0): (none).`,
+      )
+      if (failure !== "wait") {
+        expect(f.receipts[1].text).toContain("Reviewer outcome was unverified")
+        expect(f.receipts[1].text).not.toContain("Implementation gate")
+        expect(f.receipts[1].text).not.toContain("Resulting paths")
+        expect(f.receipts[1].text).not.toContain(HEAD)
+      }
       await expect(f.dispatchReview()).rejects.toThrow()
       expect(f.reviewWakes).toHaveLength(1)
       expect(f.originals).toHaveLength(1)
