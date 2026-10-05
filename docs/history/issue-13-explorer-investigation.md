@@ -1,5 +1,9 @@
 # Issue #13: Planner delegation to Explorer — investigation
 
+**Historical evidence.** This completed investigation is non-normative. Its
+findings and recommendations describe the recorded revisions, not current
+implementation status. See the [current documentation map](../README.md).
+
 The original pass was investigation only, against the then-current local implementation and OpenCode 2.0.22 source. No Issue #13 implementation or live host dogfood was performed during that investigation.
 
 The recommendations incorporate the subsequent architecture decision reflected in the updated Issue #13: **Planner owns Explorer orchestration**, using native foreground calls for concurrent independent investigations and later dependent follow-ups. The original source findings remain valid.

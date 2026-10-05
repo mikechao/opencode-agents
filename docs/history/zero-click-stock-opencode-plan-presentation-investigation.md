@@ -125,7 +125,7 @@ The fallback can feel closer to the selected hybrid prototype even though mounte
 
 ## 12. Likely implementation surface
 
-Later authorized work would affect project modules only: [the TUI plugin](../../.opencode/plugins/opencode-agents/tui.ts) and a small colocated component for slot/local controls; [`src/m2/attempt.ts`](https://github.com/mikechao/opencode-agents/blob/61550677ec5d6fec62549ef7c43fb028da74e7af/src/m2/attempt.ts) for trusted presentation/decision handoff with existing rechecks; and possibly [`src/m1/proposal.ts`](https://github.com/mikechao/opencode-agents/blob/61550677ec5d6fec62549ef7c43fb028da74e7af/src/m1/proposal.ts) for formatting. JSX peer declarations may need project package changes. No server presentation tool, model adapter, agent-contract edit, host change, or implementation plan is selected here.
+Later authorized work would affect project modules only: [the TUI plugin](https://github.com/mikechao/opencode-agents/blob/61550677ec5d6fec62549ef7c43fb028da74e7af/.opencode/plugins/opencode-agents/tui.ts) and a small colocated component for slot/local controls; [`src/m2/attempt.ts`](https://github.com/mikechao/opencode-agents/blob/61550677ec5d6fec62549ef7c43fb028da74e7af/src/m2/attempt.ts) for trusted presentation/decision handoff with existing rechecks; and possibly [`src/m1/proposal.ts`](https://github.com/mikechao/opencode-agents/blob/61550677ec5d6fec62549ef7c43fb028da74e7af/src/m1/proposal.ts) for formatting. JSX peer declarations may need project package changes. No server presentation tool, model adapter, agent-contract edit, host change, or implementation plan is selected here.
 
 ## 13. Open blockers / accepted compromise
 

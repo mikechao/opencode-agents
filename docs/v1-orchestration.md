@@ -1,450 +1,310 @@
 # V1 Orchestration
 
-This document owns current host sequencing and implementation status.
-[CAP](coding-authority-protocol.md) owns authority requirements;
-[the charter](charter.md) owns purpose and scope.
+This document owns current runtime architecture and sequencing.
+[CAP](coding-authority-protocol.md) owns normative authority requirements;
+[the charter](charter.md) owns purpose and scope. The implementation remains
+authoritative for exact behavior. Dependency versions are selected in
+[package.json](../package.json), with host assumptions checked against the
+selected read-only OpenCode source checkout.
 
-## Native admission
+## Roles and ownership
 
-The pinned host is OpenCode 2.0.22; live validation of this implementation on
-that version remains a separate pass. The TUI keeps initial Git eligibility,
-exact native Planner binding, trusted Plan publication, root return preparation,
-and completed readable-frame Authorize/Cancel controls. Publication can happen
-while Planner is inspected; a dirty or ambiguous initial baseline remains
-planning-only. Publication uses `delivery:"steer", resume:false`.
-Native Planner navigation changes the route and disposes the keyed SessionFrame
-and composer slot. The TUI retains exact pending Plan ownership across this
-normal disposal and requires a new readable root frame on return. Old callbacks
-and frame proofs stay inert. Trusted-state invalidation and surface loss while
-the root remains selected close the attempt; a positive decision still performs
-all exact Planner/publication and fresh Git/location checks before transfer.
+| Role | Responsibility and capability |
+| --- | --- |
+| Orchestrator | Answer ordinary conversation and read-only questions; delegate change planning to Planner. Read/glob/grep and Planner delegation only. Propose exact trusted implementation/review control calls when requested; ordinary role policy still denies those targets. |
+| Planner | Read-only exploration and synthesis of one exact `{ intent, plan, files }` proposal. May delegate focused questions to fresh Explorer children. |
+| Explorer | Read/glob/grep investigation for Planner; returns advisory findings. Cannot delegate, implement, publish a Plan or authorize work. |
+| Implementer | Fresh native `authorized_implementer` child admitted once after explicit human authorization. Editing, testing and development shell capability are bounded by the frozen proposal; delegation, session control and reserved history effects are prohibited. |
+| Reviewer | Fresh read-only native sibling, independent of Implementer. Inspect the verified implementation using read/glob/grep and bounded `reviewer_git`; return review evidence without repair or Commit authority. |
+
+The [TUI entry](../.opencode/plugins/opencode-agents/tui.tsx) owns root creation
+correlation, Plan publication lifecycle, retained Plan presentation and the local
+human decision. [attempt.ts](../src/attempt.ts) verifies planning and publication
+evidence and transfers the immutable claim through the
+[Authorize RPC](../src/authorize-rpc.ts). It has no separate publication lifecycle
+store.
+
+The [Effect server entry](../.opencode/plugins/opencode-agents/server.ts) installs
+native admission, permission hooks, model settings and Reviewer Git inspection.
+[native.ts](../src/native.ts) owns admission, native evidence capture, settlement,
+implementation/review verification and post-transfer receipts.
+[cap.ts](../src/cap.ts) owns the one-shot implementation claim and reservation.
+[proposal.ts](../src/proposal.ts), [git.ts](../src/git.ts),
+[review.ts](../src/review.ts) and [receipt.ts](../src/receipt.ts) own their bounded
+artifacts and observations.
+
+OpenCode owns native child creation, scheduling, progress, tool-result delivery,
+rows and navigation. The integration wraps the original native executor and
+leaves its schemas and decoder intact. Installed host and role/tool policy are
+trusted deployment inputs. The intended Authorize producer is the trusted TUI;
+same-user processes and localhost RPC access are within the local host trust
+boundary. RPC does not independently authenticate caller origin. CAP is not an
+OS/process sandbox.
+
+## Delivered lifecycle
 
 ```text
-clean initial Git observation → fresh Orchestrator
-→ zero or more successful direct conversational/read-only turns
-→ first successfully admitted Planner execution spends eligibility → native read-only Planner
-→ trusted frozen Plan → readable-frame positive decision
-→ transfer immutable claim through local Authorize RPC
-→ one synthetic control, delivery:steer, resume:true
-→ first authorized-root tool contender reserves synchronously
-→ canonical native subagent + exact original/decoded arguments
-→ fresh root role/location/permissions + valid scope paths + Git root/HEAD/clean
-→ consume → original native executor with private sponsorship actor
-→ native child creation/prompt/progress/result/row/navigation
-→ root settlement → trusted native receipt + child/result binding
-→ unchanged HEAD + exact changed-path gate → capture immutable review-target fingerprint
-→ close implementation authority → one trusted Reviewer steer and separate sponsored admission
-→ fresh read-only reviewer sibling → exact Reviewer settlement/result + target revalidation
-→ terminal trusted review receipt → STOP before Commit → composer controls retired
+original Git baseline → fresh Orchestrator root
+→ optional direct conversational/read-only turns
+→ one successfully admitted native Planner execution
+→ bind final proposal → freeze candidate → publish trusted Plan
+→ explicit human Authorize on a completed readable root frame
+→ transfer exact one-shot claim → fresh native Implementer
+→ trusted native provenance + unchanged HEAD + exact changed-path verification
+→ immutable verified implementation evidence and review target
+→ implementation receipt → automatic fresh read-only Reviewer
+→ trusted review provenance/result verification + post-settlement target revalidation
+→ review receipt → STOP before Commit
 ```
 
-Before governance, Orchestrator may answer directly and use only read/glob/grep.
-Direct completions publish no Plan, authorization surface, or workflow receipt
-and cause no additional Git observation. They retain the original root-creation
-and baseline evidence, including its original clean/dirty eligibility.
+Cancel sends no authorization claim and no execution wake. A stable dirty
+baseline permits planning-only publication, without Authorize controls. Failure
+ends the attempt without reopening authority. Committer and Commit authorization
+are not implemented; Reviewer approval cannot authorize a commit.
 
-Successful-completion events identify their exact native terminal idle messages.
-The TUI serializes/deduplicates inspection of those completed segments as
-non-governed, governed, or invalid. Failed/denied calls without trusted admission
-or child evidence are non-authoritative and may be corrected in the same turn
-or a later turn, including after Undo removes them. They publish no workflow UI.
-Successful mutation-capable activity, invalid admitted Planner evidence, compaction,
-and missing boundaries fail closed.
-The server retains the exact first successfully admitted Planner invocation and
-its trusted input receipt together in an activation-local, root-keyed latch.
-The final synchronous admission barrier records both in one insertion immediately
-before native execution. Errors and defects project that recorded admission through
-native failure metadata, including failures before the first progress update. Pre-admission failures
-create no latch entry. No post-admission outcome restores it, including Planner
-failure or Cancel. This latch supplies no implementation authority.
+## Planning and publication
 
-Planner admission binds one exact plain user input in the current busy segment,
-the preceding successful idle (or root start), and the exact assistant/tool call.
-Earlier failed/non-admitted calls in that turn remain context only. Admission is
-recorded in trusted progress and terminal success/failure metadata so a failed
-admitted execution cannot silently become a non-governed completion.
-The trusted effective-input receipt carries these anchors. Publication independently
-rereads paginated raw history, validates earlier successful direct turns, and binds
-the exact completed governed segment, fresh Planner child, and final proposal.
-Trusted code constructs the effective Planner input from the exact root user request
-plus a fixed project-owned planning execution reminder. The reminder asks Planner
-to identify useful independent Explorer investigations and emit all known independent
-calls in the same assistant response before consuming any Explorer result.
-It is advisory orchestration guidance, not authorization. Orchestrator's proposed
-`prompt` cannot alter the effective request or reminder. The receipt and Planner
-bootstrap/history verification bind this exact trusted input; OpenCode still owns
-actual Explorer scheduling, concurrency, and joining.
-Authorization revalidates that same frozen terminal idle and request/call binding.
-Earlier prose/read results are context only; no prefix hash or transcript-derived
-eligibility is used. Reopening history or restarting an activation cannot recover
-authority. Unsupported/compacted boundaries require a fresh root for governance.
+Each eligible root retains its original Git baseline and exact creation evidence.
+The TUI correlates a home-route observation with the host's pending root creation
+ID, then consumes only that matching creation event. Missing correlation,
+rollback or uncertain creation ordering cannot acquire eligibility; returning
+to an existing root never refreshes its baseline. Initial implementation
+eligibility requires a clean ordinary Git baseline observed before root creation.
+Later cleaning cannot repair an originally dirty or ambiguous baseline.
 
-The trusted TUI is the intended producer of Authorize claims. Same-user local
-processes and localhost OpenCode RPC access belong to the trusted host boundary;
-RPC caller origin is not independently authenticated. CAP is not an OS/process
-sandbox. Authorize is a concrete local RPC, not a model tool; there is no
-handshake, credential, enrollment, authentication, status protocol or recovery
-store. The server copies/freezes the verified TUI claim and checks integrity;
-it does not reconstruct the Planner or publication history after transfer.
+Before governance, Orchestrator may answer directly or use read/glob/grep. These
+successful direct turns publish no Plan or workflow receipt, add no Git
+observation and preserve the original eligibility. Completion inspection binds
+exact native idle boundaries and distinguishes direct turns, governed planning
+and invalid evidence. Failed or denied calls before trusted admission may be
+corrected; they supply no authority. Successful mutation-capable activity,
+compaction or missing supported boundaries fail closed.
 
-Issue #16 gives each eligible root independent ephemeral TUI ownership and one
-server CAP slot. Initial setup observes Git for the first root; entering the
-new-session home route observes Git for each later root before submission creates
-it. The pinned host's optimistic session record and Solid `session.creating(id)`
-identify the exact pending creation before its deferred create RPC starts. Each
-home observation is bound to that ID, and only its matching creation event can
-consume it once. Missing correlation fails closed; delayed or out-of-order echoes
-cannot borrow another root's observation. A rejected unacknowledged creation
-removes its optimistic session-info record. A route-independent watcher retires
-that ID's preparation and tombstones the ID for this activation; neither retries
-reusing the ID nor delayed creation echoes can govern it. Ordinary cache eviction
-preserves session info. Teardown clears these ephemeral tombstones. Returning to
-roots or Planner children never recreates ownership or refreshes a bound baseline.
+The first successfully admitted Planner execution spends that root's Planner
+eligibility permanently, including on execution failure or later Cancel.
+Pre-admission syntax, policy or settings failures do not spend it. The server
+records the exact invocation and trusted effective-input receipt synchronously
+before native execution and projects that receipt through progress and terminal
+success/failure metadata. This admission evidence grants no implementation authority.
 
-Issue #9's one-shot semantics apply independently to each root throughout the
-activation. The server occupies that root's slot before any RPC await. Duplicate
-submissions, lost-response retransmission, and submissions after successful or
-failed completion remain rejected for that root. Closed slots are never reset.
-Worktree execution exclusion is separate: another root cannot start an
-Implementer while implementation, verification, automatic review, or terminal
-receipt publication owns the worktree. The runtime lease
-records its native call and child ID from trusted built-in progress (or the
-completed structured receipt), awaits `session.wait(childID)`, and checks that
-exact child's root, role, location and terminal outcome. Root idle and CAP closure
-alone never release exclusion. A verified implementation transfers neither
-mutation authority nor a settled-child assumption to Reviewer. Unknown or
-ambiguous child settlement keeps
-exclusion held until server teardown. Result verification and CAP authority remain
-separate from this execution exclusion. Pending Plans in other
-roots retain ownership, but authorization still requires fresh Git evidence.
-Plugin/server teardown revokes all of its root instances; none are persisted or
-reconstructed from session history.
+Trusted code constructs the effective Planner input from the exact persisted
+user request in the governed turn plus fixed project-owned exploration guidance.
+The model-proposed prompt cannot substitute a request. The receipt binds the user,
+preceding idle/root start and assistant/tool invocation; later verification
+independently checks the Planner bootstrap and final proposal against those facts.
+Publication reads paginated raw history rather than deriving eligibility from
+conversation prose or restoring it from a previous activation.
 
-## Host boundaries
+### Explorer findings are advisory
 
-### Planner exploration
+Planner decides whether zero, one or multiple focused Explorer investigations
+are useful. Its instructions require already-known independent questions to be
+issued together in one assistant response before consuming results; dependent
+follow-ups use fresh calls after the prerequisite findings. OpenCode owns native
+foreground concurrency and joining. There is no custom scheduler, result store
+or Explorer workflow state. Project [opencode.json](../opencode.json) enables
+native subagent depth 2 for Orchestrator → Planner → Explorer.
 
-Planner may use zero, one, or multiple fresh native `explorer` children to
-investigate existing mechanisms, viable approaches, constraints, and trade-offs.
-Before launching the first Explorer, Planner identifies useful investigations
-already apparent from the request and current context and distinguishes independent
-investigations from dependent follow-ups. Planner owns this dependency analysis
-and decides how to divide the questions. It must not create extra Explorer work
-merely to achieve parallelism.
-Once two or more useful independent investigations are known, Planner emits all
-corresponding foreground Explorer `subagent` tool calls in the same assistant
-response before consuming any Explorer result. It must not emit only the first
-independent Explorer call, wait for its result, and then emit another already-known
-independent call.
-A question that depends on an earlier finding remains a fresh Explorer call in a
-later Planner response after consuming that prerequisite result. OpenCode owns
-execution scheduling, concurrency, and joining through its native foreground
-fork/join behavior.
-The host returns completed findings into Planner's ordinary tool-result/model
-context and provides native child-session navigation. Project `opencode.json`
-sets `experimental.subagent_depth: 2` for Orchestrator → Planner → Explorer.
+Each Explorer call has exactly `agent`, `description` and `prompt`, without
+continuation, background or model-override keys. Completed findings enter
+Planner's normal tool-result context. Planner compares the findings, investigates
+targeted gaps and synthesizes the final proposal; Explorer cannot supply the
+authoritative Plan.
 
-After delegated findings return, Planner synthesizes from them and owns the final
-proposal. Planner-local `read` / `glob` / `grep` should address only targeted gaps,
-verification, or newly discovered questions rather than broadly repeating
-delegated investigation.
+Before publication, trusted code verifies exact Explorer delegation identities,
+fresh children, bootstraps, successful supported histories and native completion
+evidence. Complete child listing must match the calls, with no Explorer descendants.
+Planner/Explorer synthetic instruction, system and compaction history remains
+unsupported. Native result truncation need not reproduce full child prose.
+Ordinary advisory tool observations rely on trusted native permission enforcement;
+publication does not replay a historical tool-policy allowlist as authorization.
 
-Native OpenCode role/tool permissions enforce Planner and Explorer capabilities;
-correctly loaded policies are trusted deployment input. Planner allows only
-read/glob/grep and `subagent:explorer`; Explorer allows only read/glob/grep and
-cannot delegate or implement. Explorer calls contain exactly `agent`,
-`description`, and `prompt`, with no continuation, model override, or background
-key. Background/running results and later synthetic notifications are unsupported.
-There is no custom scheduler, join state, result store, or Explorer workflow state.
+Only the final Planner proposal crosses into the candidate and authorization
+claim. Explorer history, findings and topology are transient planning-provenance
+observations. Authorization revalidates the authority-bearing root/Planner/Plan
+facts; it does not reopen Explorer sessions or require continued Explorer liveness.
 
-When accepting the planning execution before publication, trusted code verifies
-completed Explorer calls with unambiguous delegation IDs against their unique
-fresh Explorer children, exact bootstrap, role, parent, location/workspace, empty
-permission overrides, successful idle history, and native result metadata/content.
-Complete native child listing must match the call set exactly, and each Explorer
-must have no descendants. Verification accepts multiple foreground calls in one
-response without execution-order conditions. Malformed delegation calls,
-incomplete/failed Explorer results, or
-unexpected children observed during this verification prevent publication.
-Planner/Explorer synthetic/system/compaction history still fails closed, including
-native nested instruction injection. Earlier direct Orchestrator turns alone may
-contain native read instruction records with exact `instruction.paths` metadata;
-these records are informational and never supply mutation authority.
-Native result normalization/truncation need not match full child prose byte for
-byte.
+### TUI publication and the human decision
 
-Publication verifies planning provenance rather than replaying historical tool
-authorization. Ordinary advisory observations are not checked against a tool-name
-allowlist, tool-state policy, provider-execution prohibition, or observation-ID
-validity/uniqueness requirement. Successful, denied, failed, and provider-hosted
-observations do not independently veto an otherwise valid planning execution.
-Generic post-execution anomaly vetoes for those observations are intentionally
-absent: a historical scan cannot prevent or undo effects of broken native
-enforcement or deployment policy. Delegation call/result identities remain
-structurally verified; an observation cannot share a delegation's ID. Human
-Authorize, Git/currentness checks, and CAP admission remain independent and
-unchanged.
+TUI ownership is the sole Plan publication lifecycle owner. Binding and expected
+publication identity/payload are recorded together before awaiting synthetic
+publication, so notifications arriving inside that call can be checked against
+the same owner. The returned immutable `PublishedAttempt` retains activation,
+Planner binding, candidate and admitted publication evidence.
 
-Explorer is advisory planning provenance. OpenCode captures its completed
-foreground result and persists returned content in Planner's own tool history;
-subsequent Planner model requests consume that content. Later child history or
-policy changes cannot retroactively change that result without a separate
-Planner-history mutation. Planner owns synthesis. Trusted code binds the exact
-final Planner proposal, its input/final identities, and the existing root-request
-and native Planner-call evidence; only that proposal becomes Plan authority.
-No separate Explorer identity, findings, history, or topology evidence enters
-`Bound`, the candidate, CAP state, or the Authorize RPC payload.
+The Plan uses synthetic `delivery: "steer", resume: false`. Its text preserves
+raw Planner JSON; its description is the deterministic readable projection,
+including an unambiguous quoted label for each exact path. Publication and
+hydration supply presentation, never authority. Verification checks the retained
+publication, exact root/Planner/request/proposal and fresh original Git evidence.
 
-Publication severs ongoing Explorer session liveness from authorization authority.
-The provenance reads are admission observations, not an atomic snapshot or a
-promise that every advisory child stays idle and unchanged. Even between a child's
-last verification read and publication, unrelated later child activity cannot
-change the findings already returned to Planner or its accepted final proposal.
-No Explorer watch, event synchronization, or freshness fence is required.
+Pending ownership survives normal Planner navigation and route-driven composer
+unmounting. Navigation discards the old readable-frame proof. Root return
+requires a fresh completed frame before Authorize/Cancel can act. Relevant
+trusted-state loss or surface loss while the root remains selected closes the
+attempt; resize invalidates readiness until a new valid frame.
 
-Authorization revalidates authority-bearing state: the exact root request and
-Issue #11 effective-input receipt; root/Planner identity, location, supported
-history, bootstrap and exact final proposal; candidate integrity; exact pending
-Plan and displayed publication; repository root/HEAD and Git freshness; and the
-existing one-shot decision ownership. Explorer sessions are not reopened.
-Root/Planner task, policy, location, and direct history-mutation events continue
-to close local authority before transfer. These notifications supplement trusted
-reads; they do not create an Explorer lifecycle or a host-ordered freshness fence.
+The positive pointer callback synchronously claims the exact pending object and
+removes callbacks. Decision-time reads revalidate the exact evidence, candidate,
+location, original HEAD and continued cleanliness before one RPC transfer.
+Model prose, Question/Form answers and generic permission approvals cannot
+replace this decision. After transfer the server owns the attempt; TUI navigation,
+resize, disappearance or a lost response cannot resend or reconstruct the claim.
 
-### Implementation admission
+## Native implementation admission and verification
 
-[`server.ts`](../.opencode/plugins/opencode-agents/server.ts) is the Effect entry.
-[`authorize-rpc.ts`](../src/authorize-rpc.ts) defines the local Authorize RPC.
-[`cap.ts`](../src/cap.ts) owns the private claim, control ID/text, phase,
-message/call reservation, and native child/result receipt.
-[`native.ts`](../src/native.ts) hosts the native admission adapter.
+The server occupies each root's private slot before any RPC await and freezes
+the transferred claim. Repeated submissions remain rejected after failure,
+success or lost responses for the entire activation. It does not reconstruct
+planning/publication history after transfer.
 
-Cancel sends neither RPC nor wake. Before transfer, the exact TUI decision and
-initial publication checks remain active. After acceptance the server owns the
-attempt; route changes, resize and TUI disappearance cannot resend it or revoke
-it synchronously from another process. The RPC awaits root settlement and
-returns the trusted gate outcome. Lost responses remain uncertain in the TUI.
+One deterministic synthetic steer with `resume: true` requests the exact
+three-key Implementer call. The first root tool contender reserves synchronously.
+The before hook rejects unexpected tools and malformed owners; the executor
+checks both the original published arguments and host-decoded arguments against
+the frozen contract. Host normalization cannot make extra authority-bearing
+keys acceptable. Missing or ambiguous control/call evidence fails closed.
 
-The before hook reserves the first root contender before reads. Unexpected tools,
-aliases and malformed input burn it; concurrent losers cannot alter its owner.
-Supported server `session.context` reads inspect the actual published tool input
-and exact preceding control. The before hook performs early reservation/tool
-veto; the executor compares both original published and host-decoded arguments
-with the frozen contract in one final admission. Native schemas and validation
-remain untouched, including for ordinary Planner calls. Parser-failed published
-tool parts count as contenders even when they skip before hooks. Provider JSON
-recovery alone is not an authority decision.
+After independent awaited reads, the final synchronous barrier verifies current
+root role/location, empty session overrides, exact reservation, candidate and
+path integrity, canonical Git root, unchanged HEAD and cleanliness. It consumes
+implementation authority immediately before invoking the original native executor
+with a private Implementer-only sponsorship actor. Real parent/message/call
+identities and progress remain intact. Root policy and session permissions are
+not elevated; native effective deny remains deny and sponsor ask is rejected.
+The source-guarded internal seam is actor-based leaf permission evaluation before
+child creation. Freshness is a release observation, not an atomic host-policy lock.
 
-The TUI retains semantic request/call/child/proposal identities rather than full
-serialized histories, selected models or generic metadata. Decision-time server
-reads verify those facts and no added input. Its finite visible window must
-contain the exact Plan, not duplicate full server history. Paths in the trusted
-Plan use quoted ASCII JSON labels and a count; controls and Unicode formatting
-characters cannot turn one filename into multiple scope entries. Dangling final
-symlinks fail closed, including when path topology changes after transfer.
-Initial, publication/presentation, decision, server release and result Git
-observations remain independent; local ownership/revocation checks follow awaits.
+The server waits for root and exact child settlement and verifies original
+structured native completion, the persisted call, actual child role/parent/location,
+bootstrap and successful outcome. Display wrappers, harmless metadata, truncation
+and Implementer prose do not establish success. Ordinary native recovery of the
+same admitted child is supported; it grants no new CAP admission.
 
-Independent awaited admission reads finish before the final root observation
-and synchronous local/path/Git checks and consumption. No session/root
-permission is elevated. The installed root still denies Implementer. A hidden,
-nonselectable sponsorship actor has deny-all plus only
-`subagent:authorized_implementer=allow`. The wrapper substitutes the native
-execution actor while preserving parent/message/call IDs and progress. The
-original executor owns all child scheduling and lifecycle.
+Fresh trusted Git observation requires unchanged authorized HEAD and exact
+membership of every staged, unstaged tracked and ordinary untracked changed path
+in the frozen scope, including observable rename endpoints. Ignored untracked
+content is outside this ordinary Git boundary. Passing the gate does not prove
+semantic correctness or physical containment of shell effects.
 
-This composition is an explicitly pinned OpenCode 2.0.22 internal dependency:
-native target permission is asserted before child creation using the explicit
-actor and real parent/source IDs; permission selects that actor ahead of the
-session agent, merges session overrides and rejects effective configured deny
-before hooks. The sponsor-only deny hook bounds effective allows to the exact
-target and turns ask into deny. Native effective deny/ask creates no child even
-though the one-use claim has already been consumed. Whole sponsor-rule arrays
-and unrelated metadata are not admission fingerprints. Installed role/tool
-policies must remain correctly configured; this is a trusted deployment
-assumption. Parent freshness is a late observation, not a lock through all native
-operations after consumption.
+Successful verification produces explicit immutable `VerifiedImplementation`
+evidence: the frozen candidate/root/location, verified implementation invocation
+and child identity, and content-bound review target. Reviewer consumes those
+verified facts rather than reading closed Implementer CAP getters. Evidence
+grants no authority and cannot replace later admission, freshness or settlement checks.
+Implementation authority closes before the implementation receipt and review transition.
 
-OpenCode owns Implementer child creation, execution, lifecycle, row and
-navigation. `opencode-agents` owns the narrow one-use CAP admission and the
-independent Git/result gate. The pre-after-hook structured completion child
-ID/status, exact reserved persisted call and actual successful child
-parent/role/location/authorized input must agree. Display wrappers,
-content-item count, harmless metadata, truncation
-and nonempty Implementer prose do not decide authority. A separate fresh Git
-observation verifies unchanged HEAD and exact changed-path membership.
-The root must settle successfully before a verified outcome is returned. Harmless
-prose is allowed; refusal/prose without admission closes unused authority.
-There is no provider-request counting or retry/compaction policing. The only
-automatic continuation is the one read-only review after trusted verification. If the required control/call evidence is no longer readable,
-verification fails closed.
+## Automatic independent review
 
-Failure, ambiguous wake/reservation/execution, settlement and teardown never
-reopen authority, issue another wake, create a replacement, or replay a prompt.
-Retained executor closures reject after server teardown. The installed bounded
-Implementer role and ordinary recovery of the same admitted child remain native.
-Restart cannot reconstruct a CAP claim from transcripts; recovery is not a new
-CAP admission. Lost verification never becomes verified success. Ordinary
-Orchestrator Reviewer calls and all Commit authority remain denied.
+The accepted authorization RPC automatically initiates one fresh native Reviewer
+under the same root after trusted implementation verification. Reviewer is a
+sibling of Planner and Implementer, with a separate one-shot admission slot,
+control and Reviewer-only sponsor. Its deterministic task binds the frozen
+proposal, canonical root, unchanged HEAD, exact accepted paths, implementation
+identity, review-target digest and strict result schema. There is no second human
+authorization and no model-owned choice of review target or launch decision.
 
-Native creation inherits the root's full location, including workspace identity.
-A supported attempt still needs proven canonical local Git/worktree
-correspondence. This is not remote topology attestation, an external filesystem
-lock, or exhaustive shell-effect detection.
+The review target fingerprints staged index identities and actual bytes/types
+of tracked and ordinary untracked content, including executable bits, symlink
+text and deletions. Repeated collections and fresh Git observations must agree;
+unmerged entries, Gitlinks and unsupported or unstable observations fail closed.
+This is immutable evidence, not a filesystem snapshot or external lock.
 
-### Automatic read-only review
+Reviewer has read/glob/grep and dedicated [reviewer_git](../src/reviewer-git.ts)
+inspection: current HEAD, status, tracked worktree diff from HEAD, previous HEAD
+content and fixed-string tracked search. Untracked content must be read separately.
+The tool accepts bounded operations and literal paths, without shell command
+strings or arbitrary flags/revisions. Trusted hooks deny mutation, shell/execute,
+session control and delegation even if configured policy appends broader allows.
+Reviewer Git output is advisory evidence; trusted runtime owns scope and target identity.
 
-After successful Implementer settlement, exact native provenance, unchanged HEAD,
-and exact path scope, the same accepted RPC captures a deterministic SHA-256
-review target through `src/git.ts:observeReviewTarget`. The target binds canonical
-root, authorized HEAD, exact accepted paths, index entries, and actual bytes/types
-of all tracked and ordinary untracked files. It includes executable bits, symlink
-link text, and deletion markers. Ignored untracked files remain outside the ordinary
-Git boundary; referenced tracked/untracked content is hashed independently.
-Unmerged entries, Gitlinks/submodules, unsupported file kinds, invalid paths, and
-unstable observations fail closed. Two content collections and intervening/final
-fresh Git observations must agree. This is a transient immutable observation, not
-a filesystem snapshot, external lock, or defense against hostile same-user actors.
+After exact root/Reviewer settlement, trusted verification binds native completion,
+child identity/bootstrap, supported history and one terminal result. It then
+independently re-observes scope and content after the final host reads and rejects
+target drift before accepting the strict JSON result:
 
-The Implementer CAP closes before one separate Reviewer control input is admitted.
-The runtime constructs exact three-key arguments with the frozen proposal, root,
-HEAD, accepted paths, target digest, and implementation root/message/tool/child
-identity. A private local Reviewer slot binds that control and the first exact
-native contender. Its separate hidden sponsor allows only `subagent:reviewer`;
-configured deny is never elevated and ask fails closed. The same root becomes
-Reviewer’s parent, so Reviewer is a fresh sibling of Implementer. Original
-published keys must remain exact; `/agent-models` injects a saved model/variant only
-into the executor copy after trusted call verification. Neither role's admission
-can recreate the other's authority.
+| Status | Accepted evidence |
+| --- | --- |
+| `APPROVED` | No blocking findings; empty findings array |
+| `CHANGES_REQUESTED` | 1–8 actionable blocking findings |
+| `INCONCLUSIVE` | Reliable review unavailable; empty findings array |
 
-Reviewer starts from deny-all with only read/glob/grep. Trusted tool and permission
-hooks deny mutation, execution, session control, and delegation even after appended
-configured allows. It cannot repair, widen scope, stage, commit, push, request
-another implementation, or authorize Commit. Native child progress/receipt identity
-is reconciled monotonically. The RPC waits for both root and exact child and
-checks successful role/location/parent/no-overrides, exact bootstrap, supported
-history, exactly one terminal assistant result, original structured output, and
-persisted parent call. Supported native read instruction loading is observation
-context, not task/result authority. Duplicate calls/results and ambiguous evidence
-fail closed with no replacement.
+Every result requires a nonempty bounded summary. Malformed, extra, duplicate or
+contradictory fields and ambiguous execution are rejected. Findings are evidence
+only: there is no repair loop, automatic second review, new Implementer or Commit authority.
 
-After settlement and the final host reads, the runtime re-observes content and exact
-scope and compares the target. `src/review.ts` accepts one strict bounded JSON
-object with `status`, nonempty `summary`, and `findings`. APPROVED and INCONCLUSIVE
-require no findings. CHANGES_REQUESTED requires 1–8 actionable findings with
-severity, scenario, impact, remediation, and optional repository path, location,
-and test gap. Unknown/extra/duplicate keys, malformed JSON, contradictory findings,
-and excessive/empty text fail closed. The exact result is evidence only.
+## Receipts, exclusion and STOP
 
-The worktree exclusion spans verification, review, target revalidation and receipt
-publication. Root idle or the previously settled Implementer cannot release it for
-a running/unknown Reviewer. Exact failed/interrupted settlement permits release
-without accepting review; unknown/ambiguous settlement holds exclusion until
-activation teardown. Reviewer refusal, launch/admission errors, stale model
-preferences, failed execution, invalid output and target drift never cause retry,
-replacement, or repair. All outcomes end before Commit, with no new authorization.
+The server publishes an implementation receipt after the trusted gate, then a
+review receipt after verified review or a known unverified disposition. Review
+target drift rejects the result. Implementation failure publishes an unverified
+implementation disposition and does not launch Reviewer. The accepted RPC returns
+the combined outcome; the TUI reports lost transport as uncertainty.
 
-### Terminal workflow receipts
+Before transfer, the TUI owns receipts for explicit cancellation, planning-only
+eligibility rejection and definitive local operation failures. Render, mount,
+navigation and teardown callbacks do not publish receipts. Post-transfer receipts
+belong to the accepted server RPC; losing duplicate calls do not publish.
 
-Issue #10 separates terminal evidence from active decision presentation. The
-composer-top slot contains the pending Plan decision and transient admission
-progress; closing local ownership clears and unregisters the slot. Terminal
-results are never retained there. The existing native Plan publication remains
-authorization provenance; a terminal receipt cannot authorize or reopen it.
+Receipts use synthetic `delivery: "steer", resume: false` after safe root settlement,
+with factual historical text and description. They persist visibly while pending.
+A later normal user continuation delivers them as user-role model context; this
+is not a native display-only transcript append. Receipt failures affect
+presentation, preserve the governed result and never retry publication or execution.
+Unreadable settlement withholds publication rather than steering a possibly active loop.
 
-The accepted server RPC owns one terminal receipt after root execution settles
-and CAP closes. Verified implementation alone is not terminal success: its
-automatic Reviewer must settle and its target must be revalidated. Receipts record
-unchanged authorized HEAD, accepted paths, and APPROVED, CHANGES_REQUESTED,
-INCONCLUSIVE, unverified Reviewer execution/result, or review-target change;
-Git/scope rejection and native admission/result failures record only the trusted
-unverified disposition and retained reason. Duplicate losing RPCs and repeated
-CAP closure do not publish. Cancellation and definitive local operation failures
-close their TUI owner before waiting for root settlement and publishing. Render,
-mount, navigation and teardown callbacks never publish receipts. Planning-only
-eligibility rejection also records its established admission reason.
+Worktree execution exclusion is separate from root-local CAP slots. It spans
+implementation, verification, review, revalidation and receipt publication. Root
+idle or closed CAP alone cannot release it: exact native child settlement must be
+proven. Failed/interrupted exact settlement can release exclusion without verified
+success; unknown or ambiguous child settlement holds it until server teardown.
+Other roots may retain pending Plans, but authorization still requires fresh Git evidence.
 
-Receipts use the supported native synthetic API with an explicit root session,
-`delivery:"steer", resume:false`, and identical factual, historical `text` and
-`description`. They remain persisted and visible while pending. A later normal
-user continuation delivers the earlier receipt before the new user prompt;
-its text becomes user-role model context. Receipts contain no imperative STOP
-instruction and do not duplicate Implementer output.
+Failure, refusal, wake ambiguity, invalid result, drift and teardown never reopen
+authority or issue a replacement. Plugin teardown revokes local slots and retained
+executor closures. Restart begins without claims; transcripts and durable records
+cannot restore authority. Every terminal path ends before Commit.
 
-Receipt publication errors are presentation failures: the server logs a warning
-and preserves its governed result; local publication errors use a transient
-toast. Neither path retries publication, authorization or execution. An unreadable
-root settlement withholds publication rather than steering a possibly active
-loop. A lost post-transfer RPC response produces only an uncertainty toast;
-the server remains the terminal receipt owner. Normal explicit inbox cancellation,
-session deletion and history revert may remove native receipts.
+## Configuration and validation
 
-## Validation and status
+`/agent-models`, also in the command palette, stores personal model/variant
+preferences for Planner, Explorer, Implementer and Reviewer in OpenCode-owned
+plugin storage, keyed by directory and workspace identity. Public HTTP RPC
+routing selects a directory; workspace-aware keys do not establish HTTP workspace
+routing support. Reset exposes normal agent configuration/parent inheritance.
+Unavailable saved selections fail trusted preparation without fallback.
 
-`/agent-models` (also available in the command palette) stores personal overrides
-for Planner, Explorer, Implementer and Reviewer in OpenCode-owned plugin storage, keyed
-by the exact location directory and workspace identity. Choose a catalog model
-and optional native variant, or Reset to remove the override and expose normal
-agent configuration / parent-model inheritance. Unavailable saved selections
-remain visible and fail during trusted preparation; they are not replaced.
+Preferences affect fresh native child calls only. Trusted code first checks the
+original three-key contract, then adds the selection to the executor copy.
+Preparation completes before Planner admission is spent, Implementer authority
+is consumed or Reviewer enters native execution. Preferences are configuration,
+not CAP or scope authority; existing children retain their selections.
 
-Preferences affect only fresh native child calls. The trusted executor copies
-the validated three-key call and adds the saved model solely to its internal
-native executor argument. Preference reads, decoding and catalog validation
-finish before Planner admission is spent, Implementer CAP is consumed, or
-Reviewer enters native execution. Settings
-failures therefore leave no native child settlement ownership and do not strand
-worktree exclusion. Failures arising during native execution retain normal
-settlement semantics. Published call inputs and Planner admission receipts
-retain their original contracts. Model-authored extra keys, including empty
-`model` / `sessionID` keys normalized by the host, are rejected before creation.
-Existing children retain their stored selections. Preferences are configuration
-outside CAP, Plan publication, authorization claims and Git scope authority;
-they do not transform agent model definitions or switch session models.
+Automated checks use trusted host/transport/Git-observer/TUI doubles for orchestration
+and authority behavior. Real Git tests cover production Git boundaries with
+immutable seeds and private copies. Read-only source guards in
+[test/native-compatibility.test.ts](../test/native-compatibility.test.ts) check
+retained assumptions against the selected sibling OpenCode checkout. Doubles and
+source guards do not establish deployed model behavior, terminal rendering or
+live validation of the complete lifecycle. Historical implementation-only dogfood
+is not evidence that the delivered Reviewer lifecycle has been live-validated.
 
-Issue #9 implementation is covered by trusted transport, host, executor,
-Git-observer and JSX doubles. Coverage includes initial binding/publication and
-readability, malformed-first calls, raw/decoded drift, stale evidence, concurrency,
-replay, refusal, transport/execution ambiguity, teardown, result binding,
-same-child recovery, and second-claim rejection after success and failure.
-The read-only source guards in `test/native-compatibility.test.ts` require the
-selected sibling `../opencode` checkout and check the pinned actor/permission
-ordering seam. They complement effective-policy doubles and do not replace live
-host validation.
-Real Git tests remain confined to Git semantics in `test/git.test.ts`, using
-immutable seeds and private copies. Production Git observations remain fresh.
+Run `bun run check`, then `git diff --check`, for repository validation.
+[Historical evidence](history/README.md) is separate from this runtime description.
 
-The implementation validation commands are:
+## Current limitations
 
-```sh
-bun run typecheck
-bun test test/cap.test.ts
-bun test test/attempt.test.ts
-bun test
-git diff --check
-```
-
-### Live validation on OpenCode 2.0.21
-
-The final live dogfood began with a clean Git baseline and a native Planner.
-The trusted Plan preserved the exact `README.md` scope and bound HEAD. Navigating
-into and out of Planner preserved pending authorization, while returning to the
-root required a fresh readable frame. An explicit Authorize decision admitted
-a genuine native `authorized_implementer` subagent row and session. The native
-Implementer received the frozen proposal and exact path scope. Implementation
-changed exactly `README.md`; HEAD stayed unchanged, the trusted Git gate passed,
-and execution stopped before Reviewer / Commit. In a separate check after
-Planner completion, Cancel admitted no Implementer and left the worktree clean.
-
-The above is historical implementation-only validation. Automatic Reviewer and
-review-target verification are now implemented for Issue #21 but have not been
-live-validated in this pass. Commit remains future work.
-
-Historical OpenCode 2.0.20 dogfood and Issue #4 resize results describe prior
-paths, not validation of this native path. See the retained
-[Issue #4 dogfood](history/issue-4-live-dogfood.md),
-[Issue #6 investigation](history/issue-6-post-authorization-implementer-creation-investigation.md),
-and [Issue #9 investigation](history/issue-9-native-cap-minimum-investigation.md).
-Issue #9's approved minimal scope supersedes its investigation's proposed
-enrollment, scoped Implementer hosting and provider-request policing.
-Issue #8's custom-row work is superseded by native presentation.
+- One successfully admitted Planner and one implementation authorization per root;
+  no plan revision, repair, retry or automatic repeat review.
+- Dirty or ambiguous initial baselines may plan but cannot authorize implementation.
+  Earlier pre-Planner rejection is [deferred](investigations/issue-25-planner-admission.md).
+- Supported history is deliberately conservative. Planner/Explorer instruction
+  synthetics, system messages and compaction do not pass trusted publication;
+  supported native read-instruction records in direct root turns and Reviewer
+  history are informational only.
+- Ordinary Git observation and transient content fingerprints do not lock external
+  writers or exhaustively detect concealed shell effects.
+- Synthetic Plan/receipt publication is model-facing pending input. A supported
+  native display-only transcript API remains a host gap.
+- Separate Commit authorization, Committer and Reviewer-owned executable validation
+  remain future work. Read-only review does not grant any of them.

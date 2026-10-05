@@ -1,8 +1,12 @@
 # Issue #9 architecture review against OpenCode 2.0.22
 
+**Historical evidence.** This completed investigation is non-normative. Its
+findings and recommendations describe the recorded revisions, not current
+implementation status. See the [current documentation map](../README.md).
+
 Date: 2026-10-02. Review baseline: project HEAD `a616fd1d4c294de038aeab3bf724d5c8ae7e7b8a`; local OpenCode `v2.0.22`, commit `527f0b931d1f9b3ebd34e106c51b31ce5db5b075`.
 
-Inputs: [the compatibility check](issue-9-opencode-2.0.22-compatibility-check.md), [the original #9 investigation](history/issue-9-native-cap-minimum-investigation.md), [CAP](coding-authority-protocol.md), [orchestration](v1-orchestration.md), [the charter](charter.md), implementation and tests. The investigation is historical: its enrollment, scoped writable role and provider policing proposals are not requirements of the approved implementation. The investigation now lives under `docs/history/`, rather than the path in the task description. The compatibility report describes an earlier project revision; this review reads the current files directly.
+Inputs: [the compatibility check](https://github.com/mikechao/opencode-agents/blob/b213749fb3f80932df11bba6f4f9bda56fd78405/docs/issue-9-opencode-2.0.22-compatibility-check.md), [the original #9 investigation](issue-9-native-cap-minimum-investigation.md), [CAP](../coding-authority-protocol.md), [orchestration](../v1-orchestration.md), [the charter](../charter.md), implementation and tests. The investigation is historical: its enrollment, scoped writable role and provider policing proposals are not requirements of the approved implementation. The investigation now lives under `docs/history/`, rather than the path in the task description. The compatibility report describes an earlier project revision; this review reads the current files directly.
 
 This is a static architecture/security review, not another release diff or live validation. No OpenCode or Docker was launched; no implementation, tests, configuration or dependency files were edited. Two small direct evaluations of `proposal.ts` confirmed the filename and dangling-symlink findings below; the latter used a temporary non-Git fixture that was removed. The test suite and typecheck were not run. Only this report was added.
 
@@ -29,7 +33,7 @@ This verdict assumes installed role/tool policy is trusted and correctly configu
 
 ### Exact scope and understandable authorization
 
-Current enforcement: [proposal.ts](../src/proposal.ts), `parseProposal`/`exactFile:20–76`, preserves exact strings and ordered unique paths; [git.ts](../src/git.ts), `observeGit`/`requireInScope:35–72`, compares ordinary staged, unstaged and untracked changed paths by exact membership. The server revalidates paths immediately before consumption, independently of Git cleanliness. There is no scope widening, prefix matching or model-derived success allowance.
+Current enforcement: [proposal.ts](../../src/proposal.ts), `parseProposal`/`exactFile:20–76`, preserves exact strings and ordered unique paths; [git.ts](../../src/git.ts), `observeGit`/`requireInScope:35–72`, compares ordinary staged, unstaged and untracked changed paths by exact membership. The server revalidates paths immediately before consumption, independently of Git cleanliness. There is no scope widening, prefix matching or model-derived success allowance.
 
 **Assessment:** exact path membership is sound for the observed Git delta; two pre-admission scope defects need correction.
 
@@ -41,7 +45,7 @@ Exact files
 • second.txt
 ```
 
-That is also the display of two separate ordinary paths. The presentation is not an injective rendering of the authorized scope. Stored candidate integrity and whole visible-store equality preserve the ambiguous text exactly; neither makes the decision informed. The unused production `candidateMessage:108–120` quotes paths, while its tests give the misleading impression that this is the active confirmation surface. The actual native synthetic notice displays `description`, not raw JSON `text` ([host session route](../../opencode/packages/tui/src/routes/session/index.tsx), `SessionNoticeMessageV2:1947–1984`). Access to an expandable earlier Planner result is not a substitute for unambiguous trusted scope labels.
+That is also the display of two separate ordinary paths. The presentation is not an injective rendering of the authorized scope. Stored candidate integrity and whole visible-store equality preserve the ambiguous text exactly; neither makes the decision informed. The unused production `candidateMessage:108–120` quotes paths, while its tests give the misleading impression that this is the active confirmation surface. The actual native synthetic notice displays `description`, not raw JSON `text` ([host session route](../../../opencode/packages/tui/src/routes/session/index.tsx), `SessionNoticeMessageV2:1947–1984`). Access to an expandable earlier Planner result is not a substitute for unambiguous trusted scope labels.
 
 The smaller guarantee is to display an escaped, unambiguous representation of each exact path without changing its authorized bytes. Cover control and formatting characters, not just normal filenames. A file count helps, but does not replace escaping.
 
@@ -51,7 +55,7 @@ CAP remains an admission and observed-outcome boundary: broad shell/edit capabil
 
 ### Immutable intent and proposal identity
 
-Current enforcement: exact proposal shape/text, frozen copies, canonical encoding/digest, original root/HEAD, deterministic implementation prompt; TUI retained-evidence checks; server `NativeCap.accept` and final exact-argument comparisons ([cap.ts](../src/cap.ts), `57–100`; [native.ts](../src/native.ts), `23–32,106–124`).
+Current enforcement: exact proposal shape/text, frozen copies, canonical encoding/digest, original root/HEAD, deterministic implementation prompt; TUI retained-evidence checks; server `NativeCap.accept` and final exact-argument comparisons ([cap.ts](../../src/cap.ts), `57–100`; [native.ts](../../src/native.ts), `23–32,106–124`).
 
 **Assessment:** sound. A digest is never used as a grant. Caller mutation cannot change the copied server claim. Prompt equality includes the whole frozen proposal, scope, root and HEAD. The original path order and proposal text remain intact.
 
@@ -59,7 +63,7 @@ Exact authorized text must survive. Exact enclosing transcript JSON, native XML-
 
 ### Explicit human authorization and transfer
 
-Current enforcement: [tui.tsx](../.opencode/plugins/opencode-agents/tui.tsx), `decide:140–173`, requires current pending-object identity, root view, completed frame proof and the pointer callback. It claims synchronously before asynchronous checks. Cancel sends no Authorize RPC or wake. `authorizePublishedAttempt:374–390` rechecks the trusted artifact and clean eligibility before transferring its claim.
+Current enforcement: [tui.tsx](../../.opencode/plugins/opencode-agents/tui.tsx), `decide:140–173`, requires current pending-object identity, root view, completed frame proof and the pointer callback. It claims synchronously before asynchronous checks. Cancel sends no Authorize RPC or wake. `authorizePublishedAttempt:374–390` rechecks the trusted artifact and clean eligibility before transferring its claim.
 
 **Assessment:** sound within the expressly declared trust boundary, subject to the filename presentation gap. The readable-frame proof measures the decision strip, worktree/binding/question/buttons; it does not prove that every line of the Plan has been seen. Human comprehension is not mechanically attested. The important achievable guarantee is an accessible exact trusted Plan and a readable, correctly bound explicit control.
 
@@ -73,9 +77,9 @@ Current enforcement: initial read-only canonical Git observation before fresh-ro
 
 **Assessment:** Git/intent freshness is sound as observation, not an atomic repository lock. Keep initial eligibility, click freshness, server final freshness and post-run observations. Removing any of these permits a genuinely different stale baseline or outcome. Repeated observations after every unrelated TUI await are more frequent than these distinct security boundaries require; reducing them needs preservation of lifecycle invalidation and a final fresh check, never a cached production observation.
 
-**Root observation ordering and its limit:** `execute:107–124` reads history, then `session.get(root)`, then yields `agent.get(sponsor)`. Its final `rootIdentity(root)` examines the saved root. The host [SessionStore](../../opencode/packages/core/src/session/store.ts), `get:95–98`, returns a row-derived snapshot, not a live projection. However, the actual current-location [host agent adapter](../../opencode/packages/core/src/plugin/host.ts), `93–94,121–138`, calls [Agent.get](../../opencode/packages/core/src/agent.ts), `109–111`, which reads [State.get](../../opencode/packages/core/src/state.ts), `172–192`, synchronously. The mere presence of `yield*` is not proof of an I/O suspension. A double that pauses the sponsor lookup cannot by itself prove an actual host race. No unconditional bypass is established here.
+**Root observation ordering and its limit:** `execute:107–124` reads history, then `session.get(root)`, then yields `agent.get(sponsor)`. Its final `rootIdentity(root)` examines the saved root. The host [SessionStore](../../../opencode/packages/core/src/session/store.ts), `get:95–98`, returns a row-derived snapshot, not a live projection. However, the actual current-location [host agent adapter](../../../opencode/packages/core/src/plugin/host.ts), `93–94,121–138`, calls [Agent.get](../../../opencode/packages/core/src/agent.ts), `109–111`, which reads [State.get](../../../opencode/packages/core/src/state.ts), `172–192`, synchronously. The mere presence of `yield*` is not proof of an I/O suspension. A double that pauses the sponsor lookup cannot by itself prove an actual host race. No unconditional bypass is established here.
 
-The supported APIs also do not promise transactional root/history immutability: [session operations](../../opencode/packages/core/src/session/session.ts), `setPermissions`/`switchAgent:83–95`, permit changes without an idle-only guard. Native execution performs further parent/config/permission/create operations after CAP consumes. A later trusted host change may be inherited by the child and then fail the result gate. The architecture observes freshness at release; it does not lock root policy through all later native work. Correctly configured host/role enforcement is part of its TCB. The TUI intentionally stops invalidation after transfer.
+The supported APIs also do not promise transactional root/history immutability: [session operations](../../../opencode/packages/core/src/session/session.ts), `setPermissions`/`switchAgent:83–95`, permit changes without an idle-only guard. Native execution performs further parent/config/permission/create operations after CAP consumes. A later trusted host change may be inherited by the child and then fail the result gate. The architecture observes freshness at release; it does not lock root policy through all later native work. Correctly configured host/role enforcement is part of its TCB. The TUI intentionally stops invalidation after transfer.
 
 The justified simplification is to remove the unnecessary sponsor read and keep independent reads ahead of the final root observation, then synchronous path/Git checks and consume. Do not describe snapshots as live state or claim atomicity through native prompting. The existing drift test mutates during root get, before its snapshot returns; retain that check and make any later-interval probe correspond to an actual host scheduling/mutation seam.
 
@@ -93,7 +97,7 @@ Occupancy cannot be derived solely from a successful claim: malformed first subm
 
 Current enforcement: installed root denies all except Planner delegation; Planner allows only read/search; installed Implementer allows edit/development shell and denies delegation/session-control by default. Native root/child session overrides must be empty. The wrapper changes only the execution actor to a private hidden sponsor. Native OpenCode still checks target policy/depth, creates the child, prefixes the prompt, schedules it and owns progress/results.
 
-**Assessment:** the default installed roles and sponsor composition establish the intended separation. The implementation validates session overrides, but does **not** certify the final effective policy of all three installed roles. Host configuration can append broader allows; [ConfigAgentPlugin](../../opencode/packages/core/src/config/plugin/agent.ts), `83–123`, and last-match evaluation make this concrete. The static role-file test is evidence for shipped defaults, not a guarantee for arbitrary config. Trusting correctly configured installed role/tool enforcement is an explicit supported-deployment assumption. Sponsor hardening does not make an otherwise writable Planner or delegating Implementer safe. Validate/document that assumption at the real loaded-policy boundary; do not copy the sponsor array-fingerprint machinery onto every role.
+**Assessment:** the default installed roles and sponsor composition establish the intended separation. The implementation validates session overrides, but does **not** certify the final effective policy of all three installed roles. Host configuration can append broader allows; [ConfigAgentPlugin](../../../opencode/packages/core/src/config/plugin/agent.ts), `83–123`, and last-match evaluation make this concrete. The static role-file test is evidence for shipped defaults, not a guarantee for arbitrary config. Trusting correctly configured installed role/tool enforcement is an explicit supported-deployment assumption. Sponsor hardening does not make an otherwise writable Planner or delegating Implementer safe. Validate/document that assumption at the real loaded-policy boundary; do not copy the sponsor array-fingerprint machinery onto every role.
 
 The exact native input excludes reuse and overrides, so the trusted native executor creates a fresh child. Its actual child ID, successful outcome, parent, role, location and prompt remain important semantic evidence. The fixed boilerplate prefix and output wrapper are not independent authority sources.
 
@@ -101,7 +105,7 @@ The Implementer is **always installed**, rather than scoped to the accepted clai
 
 ### Trusted completion and independent outcome
 
-Current enforcement: capture native progress/result before after hooks; wait for root settlement; read root/child/history; bind successful native completion, original receipt and persisted call; independently observe Git and STOP before Reviewer/Commit ([native.ts](../src/native.ts), `126–198`).
+Current enforcement: capture native progress/result before after hooks; wait for root settlement; read root/child/history; bind successful native completion, original receipt and persisted call; independently observe Git and STOP before Reviewer/Commit ([native.ts](../../src/native.ts), `126–198`).
 
 **Assessment:** the independent outcome gate is sound within ordinary Git observation limits. `session.wait` alone does not assert success; keep outcome checks. Failed verification returns unverified STOP and grants nothing further.
 
@@ -196,7 +200,7 @@ The inventory favors semantic reductions, not blanket tolerance. Exact proposal 
 The actual stages are:
 
 1. Provider emits raw tool JSON. It has no authority.
-2. The trusted provider adapter parses or recovers it. [Tool stream](../../opencode/packages/ai/src/protocols/utils/tool-stream.ts), `toolCall:72–96`, can recover local partial JSON, falling back to an object. This is parsing, not authorization and not yet native tool-schema validation.
+2. The trusted provider adapter parses or recovers it. [Tool stream](../../../opencode/packages/ai/src/protocols/utils/tool-stream.ts), `toolCall:72–96`, can recover local partial JSON, falling back to an object. This is parsing, not authorization and not yet native tool-schema validation.
 3. OpenCode durably publishes the resulting object as `Tool.Called` before execution. Failed parser events can instead publish failed tool parts without execution.
 4. Built-in before hooks repair representations, including deleting empty native optional fields. `tool.execute.before` sees the potentially repaired object, not provider bytes and not necessarily the original published object.
 5. Host runtime validates/decodes native schema, then the CAP executor wrapper sees the decoded invocation. Native execution occurs only after CAP's final comparisons and consumption.
@@ -257,7 +261,7 @@ This covers the compatibility report's inventory and its retained subdependencie
 | After hooks can change display results | **Stable/supported host contract** | Capture original completion before them and verify actual child. An after-hook display cannot replace the admitted task or mint success independently of native/child/Git evidence. |
 | `session.synthetic` steer/resume/admit-only and location-routed APIs | **Stable/supported host contract** | Preserve one publication without wake and one post-claim wake. Verify returned identity/text and no resubmission. |
 | Synthetic promotion order and exact projected control input; `session.wait` follows settlement rather than success | **Accepted pinned internal seam** | Check ordering/delivery semantics, outcome after wait, closure on refusal/failure. Do not assume one physical model request or require pending publication forever after transfer. |
-| Server `session.context` compaction window/ordering | **Accepted pinned internal seam** | [History](../../opencode/packages/core/src/session/history.ts), `78–108`, returns an ascending suffix starting at latest compaction; it does not omit arbitrary tool parts while preserving earlier control. Require complete control-to-call segment; missing control fails closed. Use paginated records if supporting longer evidence later, not a new recovery store. |
+| Server `session.context` compaction window/ordering | **Accepted pinned internal seam** | [History](../../../opencode/packages/core/src/session/history.ts), `78–108`, returns an ascending suffix starting at latest compaction; it does not omit arbitrary tool parts while preserving earlier control. Require complete control-to-call segment; missing control fails closed. Use paginated records if supporting longer evidence later, not a new recovery store. |
 | Promise message pagination, SessionInfo and inbox APIs | **Stable/supported host contract** | Semantic record reads; cursor/duplicate guards where complete history traversal is used. |
 | Public TUI slots, renderer access, router/data access | **Stable/supported host contract** | API availability and root ownership. Public access does not promise concrete component ancestry or complete-history cache shape. |
 | Keyed `SessionFrame`, composer-slot disposal, root↔Planner navigation and remount | **Accepted pinned internal seam** | Native navigation must retain pending object but discard mounted frame proof. Check route departure/remount with real Solid/TUI, not only JSX doubles. |
@@ -267,11 +271,11 @@ This covers the compatibility report's inventory and its retained subdependencie
 | Authorize RPC definition, location routing, scoped register/handler lifetime | **Stable/supported host contract** | Object claim handler burns slot before awaits; teardown and lost response cannot retry. RPC provides no independent human/TUI authentication. Trust assumption belongs in CAP, not a hidden seam. |
 | Host automatic recovery of same admitted writable child | **Accepted pinned internal seam** | Current contract accepts ordinary recovery, distinct from new CAP admission. Check restart does not restore root claim. Do not infer effect revocation from slot teardown. |
 
-Relevant host source anchors beyond the table: [tool runtime](../../opencode/packages/core/src/tool/runtime.ts), `execute/decodeInput:28–84`; [tool snapshot](../../opencode/packages/core/src/tool.ts), `263–281`; [permission](../../opencode/packages/core/src/permission.ts), `158–188,231–247`; [tool output](../../opencode/packages/core/src/tool-output.ts), `65–115`; [host session adapter](../../opencode/packages/core/src/plugin/host.ts), `545–568`. The compatibility report supplies the bounded unchanged-source evidence for TUI, RPC, registration ordering and synthetic promotion; this review did not repeat its diff.
+Relevant host source anchors beyond the table: [tool runtime](../../../opencode/packages/core/src/tool/runtime.ts), `execute/decodeInput:28–84`; [tool snapshot](../../../opencode/packages/core/src/tool.ts), `263–281`; [permission](../../../opencode/packages/core/src/permission.ts), `158–188,231–247`; [tool output](../../../opencode/packages/core/src/tool-output.ts), `65–115`; [host session adapter](../../../opencode/packages/core/src/plugin/host.ts), `545–568`. The compatibility report supplies the bounded unchanged-source evidence for TUI, RPC, registration ordering and synthetic promotion; this review did not repeat its diff.
 
 ## 6. Test Architecture Review
 
-The substrate is appropriate: [attempt tests](../test/attempt.test.ts) use test-scoped Git-observer, host/RPC/executor and JSX doubles; [Git tests](../test/git.test.ts) alone use real Git semantics with immutable seeds/private copies. [CAP tests](../test/cap.test.ts) and [proposal tests](../test/proposal.test.ts) test primitives. Keep that separation. Do not replace production observations with caches, add DI/env switches or inflate real-Git fixtures to test host orchestration.
+The substrate is appropriate: [attempt tests](../../test/attempt.test.ts) use test-scoped Git-observer, host/RPC/executor and JSX doubles; [Git tests](../../test/git.test.ts) alone use real Git semantics with immutable seeds/private copies. [CAP tests](../../test/cap.test.ts) and [proposal tests](../../test/proposal.test.ts) test primitives. Keep that separation. Do not replace production observations with caches, add DI/env switches or inflate real-Git fixtures to test host orchestration.
 
 ### Retain security/fail-closed coverage
 
@@ -300,7 +304,7 @@ Missing focused invariant cases: dangling final symlink and filename display col
 
 ### Pinned compatibility tests and tests to remove
 
-The foreign bundled Effect test (`1535–1587`, [native-host fixture](../test/fixtures/native-host.ts)) caught a real bug introduced by the custom codec. **Retain it while that adapter exists; remove the fixture and the maker/AST/descriptor assertions once the adapter is removed.** Replace with a direct test that ordinary Planner calls retain the original host-owned schema/executor path and governed original/decoded mismatches never reach `original`. No foreign-schema compilation should remain to be regression-tested.
+The foreign bundled Effect test (`1535–1587`, [native-host fixture](https://github.com/mikechao/opencode-agents/blob/a616fd1d4c294de038aeab3bf724d5c8ae7e7b8a/test/fixtures/native-host.ts)) caught a real bug introduced by the custom codec. **Retain it while that adapter exists; remove the fixture and the maker/AST/descriptor assertions once the adapter is removed.** Replace with a direct test that ordinary Planner calls retain the original host-owned schema/executor path and governed original/decoded mismatches never reach `original`. No foreign-schema compilation should remain to be regression-tested.
 
 Keep sponsorship/config/permission-order coverage (`1613–1684`) specifically labeled as a model of pinned host assumptions. The registration test (`1994–2029`) should check scoped lifetime, hook/RPC registration and narrow effective authority; exact registration counts/array layouts are secondary shape checks. The static role-file test (`391–431`) usefully protects shipped defaults, but exact instruction-substring assertions do not certify effective permissions or enforce shell containment. Prefer semantic role policy assertions and one loaded-host compatibility check.
 

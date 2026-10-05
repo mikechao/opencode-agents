@@ -18,7 +18,7 @@ current owners.
   authorizing it. Trusted presentation and authorization are distinct.
 - Trusted code independently observes facts it can verify. An agent's claim
   is not evidence of authorization, repository state, or a successful effect.
-- Planning, implementation, and eventual independent review have distinct
+- Planning, implementation, and independent review have distinct
   contexts and explicit artifact handoffs. Role selection is not authority.
 - Scope and authority remain bounded. Failure ends an attempt; later work
   starts from current repository reality with fresh authority.
@@ -45,15 +45,14 @@ CAP is not an OS/process sandbox.
 ## Current goals
 
 - Keep a small, auditable authority contract and runtime with clear ownership.
-- Integrate trusted human authorization of the exact published Plan while
-  preserving CAP's clean admission and freshness requirements. Issue #9
-  implements minimal native admission with one-shot CAP semantics. Issue #16
-  scopes each governed attempt to its own root and keeps shared-worktree
-  implementation exclusion separate; repeated authorization of a root is rejected.
+- Require explicit human authorization of the exact published Plan, preserving
+  clean initial eligibility, fresh evidence and one-shot implementation admission.
 - Preserve readable bound Plans and native child-session visibility.
-- Later establish an exact reviewed target, independent Reviewer-owned
-  validation, and separate human-authorized Commit with verified Git outcome.
-  These remain goals, not delivered runtime guarantees.
+- Independently verify implementation provenance and Git scope, then automatically
+  run a fresh read-only Reviewer against the exact verified target and revalidate
+  that target before accepting review evidence.
+- Stop each attempt before Commit, without repair or repeat review. Separate
+  human-authorized Commit and Reviewer-owned executable validation remain future work.
 
 ## Non-goals
 

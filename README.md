@@ -1,3 +1,11 @@
+# opencode-agents
+
+OpenCode agents with trusted, one-shot human authorization of repository changes
+and automatic independent read-only review. Each attempt stops before Commit.
+
+Start with the [documentation map](docs/README.md) for current project,
+authority and runtime documentation.
+
 ## Known Limits / Deferred work
 
 ### Trusted transcript publication
@@ -22,4 +30,4 @@ Pre-Planner rejection was investigated in #25 and deferred because the current
 OpenCode plugin lifecycle does not expose a sufficiently small deterministic
 admission seam.
 
-See `docs/investigations/issue-25-planner-admission.md`.
+See the [deferred Planner-admission investigation](docs/investigations/issue-25-planner-admission.md).

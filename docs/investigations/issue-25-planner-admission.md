@@ -1,5 +1,13 @@
 # Issue #25 — bounded Planner admission investigation
 
+**Deferred; closed as not planned.** Current OpenCode does not provide a
+sufficiently clean pre-Planner admission seam. The current runtime permits
+planning from a dirty baseline and denies implementation authorization.
+Retain this non-normative investigation for a future host update that could
+resolve the evidence-delivery and authoritative creation-identity gaps below.
+Its proposed implementation is not an active plan or a runtime requirement.
+See [current orchestration](../v1-orchestration.md#current-limitations).
+
 ## Finding and disposition
 
 **The smallest supported seam is a narrow TUI-to-server initial-evidence RPC,

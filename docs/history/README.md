@@ -1,89 +1,46 @@
 # Historical evidence
 
-Everything in this directory is **non-normative historical evidence**. Current
-documentation is owned by the [documentation map](../README.md),
-[charter](../charter.md), [CAP](../coding-authority-protocol.md), and
-[orchestration](../v1-orchestration.md).
+Everything here is **non-normative evidence at recorded revisions**, including
+completed investigations, rejected alternatives, probes and live validation.
+Start with the [current documentation map](../README.md) for project purpose,
+authority requirements and runtime architecture. Old roles, versions, paths and
+recommendations describe their historical context, not today's implementation.
+Intentionally deferred decisions live under [investigations](../investigations/).
 
-These files preserve investigations, rejected designs, probes, dogfood evidence,
-and completed-transition audits. Old file paths, role names, milestone names,
-API assumptions, and conclusions are intentionally preserved in their
-historical context; they do not describe today's runtime by default.
+Use the following groups to find evidence; this is not an exhaustive file index.
 
-## Issue #4–#9 reports
+- **Native admission and trust checks:** [native CAP investigation](issue-9-native-cap-minimum-investigation.md)
+  and [architecture review](issue-9-architecture-review.md) preserve the admission
+  rationale, concrete path/presentation defects and why semantic verification
+  replaced incidental representation checks. Findings and proposed fixes are
+  historical; current code owns their implemented resolution.
+- **Planning and host transport:** [Explorer investigation](issue-13-explorer-investigation.md)
+  records native foreground result flow and the corrected boundary between advisory
+  child provenance and Plan authority. [Plugin RPC investigation](issue-23-plugin-rpc-investigation.md)
+  preserves the foreign Effect parser/optional-variant failure trace, portable
+  schema decision and directory routing/lifecycle limits.
+- **Local trust boundary:** the `b1-*`, `cap-kernel-hosting-*` and `pre-m1-*`
+  reports preserve same-user limitations, authority/kernel decisions and hosting
+  and revocation probes. Stronger isolation alternatives were not adopted.
+- **Git and native child boundaries:** the `m1-git-*` and `milestone-*` reports
+  preserve observed outcomes, rejected target/commit designs and the distinction
+  between ordinary child capability and CAP admission. Old dogfood reports apply
+  only to their recorded implementation and host versions.
+- **Authorization and presentation:** [published-Plan authorization](published-plan-authorization-investigation.md),
+  the `native-*` UX reports, [hybrid decision](hybrid-authorization-ux-decision.md),
+  [transcript projection](trusted-transcript-projection-investigation.md) and
+  [zero-click presentation](zero-click-stock-opencode-plan-presentation-investigation.md)
+  preserve human-decision and rendering seam evidence. The `issue-4-*` through
+  `issue-6-*` reports cover observed resize, navigation, publication and admission
+  failures; the Issue #8 custom-row proposal is superseded by native presentation.
+- **Completed runtime transition:** [investigation](m1-m2-runtime-simplification-investigation.md)
+  and [reconciliation](m1-m2-runtime-simplification-reconciliation.md) retain
+  preservation requirements and closure evidence for the old milestone runtime.
+- **Test performance:** [historical audit](test-performance-audit.md) and its
+  [measurements](test-performance/) preserve the old 45-test baseline, attribution
+  and fixture methodology. Their counts and budgets are not current requirements.
+  Operational measurement tooling remains under [scripts](../../scripts/).
 
-These issue-specific reports are **non-normative historical evidence**:
-
-- [Issue #4 resize investigation](issue-4-resize-after-claim-investigation.md) — pending-frame and post-claim resize analysis.
-- [Issue #4 live dogfood](issue-4-live-dogfood.md) — live resize and authorization outcomes on the earlier path.
-- [Issue #5 Plan publication investigation](issue-5-plan-publication-while-inspecting-planner-investigation.md) — publication while inspecting Planner.
-- [Issue #6 authorization mismatch investigation](issue-6-live-authorization-policy-mismatch-investigation.md) — live admission failure and limits of the available evidence.
-- [Issue #6 child-creation investigation](issue-6-post-authorization-implementer-creation-investigation.md) — proposed post-authorization child creation.
-- [Issue #8 native Implementer investigation](issue-8-cap-gated-native-implementer-investigation.md) — host API findings and superseded presentation design.
-- [Issue #9 native CAP investigation](issue-9-native-cap-minimum-investigation.md) — source-supported minimal admission proposal and alternatives.
-
-## B1 / trusted kernel / CAP hosting
-
-[Kernel/store isolation](b1-trusted-kernel-store-isolation-investigation.md),
-[authority reassessment](b1-authority-integrity-reassessment.md),
-[CAP hosting](cap-kernel-hosting-investigation.md),
-[TUI/Git probe](pre-m1-tui-git-hosting-probe.md), and
-[generation-revocation probe](pre-m1-plugin-generation-revocation-probe.md)
-establish the local-process authority model, same-user limitations, hosting
-choice, and live generation-revocation evidence. Durable-authority activation
-prompted the earlier readiness review; stronger isolation and runtime-verifier
-designs were not adopted.
-
-## Milestone 0
-
-[Investigation](milestone-0-investigation.md) and
-[dogfood harness](milestone-0-dogfood-harness.md) preserve the final M0
-decision-boundary evidence and harness/procedure, including PASS and its limits.
-
-## M1 / Git boundary
-
-[Commit-effect follow-up](m1-git-commit-effect-boundary-follow-up.md),
-[target-derivation reassessment](m1-git-target-derivation-reassessment.md), and
-[live dogfood](milestone-1-live-dogfood.md) preserve commit-effect limitations,
-rejected stronger target-derivation designs, and live scope evidence.
-
-## Native authority / same-child implementation
-
-[CAP-gated native Implementer](milestone-2-cap-gated-native-implementer-investigation.md),
-[native-child handoff](milestone-2-native-child-authority-handoff-investigation.md),
-[threat-model reassessment](milestone-2-native-child-threat-model-reassessment.md), and
-[live dogfood](milestone-2-live-dogfood.md) preserve the final distinction between
-ordinary OpenCode capability and CAP admission, and the same-child live PASS.
-Earlier contrary handoff analysis remains evidence of the rejected alternatives.
-
-## Authorization UX
-
-[Published-Plan authorization investigation](published-plan-authorization-investigation.md)
-is accepted, non-normative authorization design evidence for the implemented
-pending-publication verifier, clean-before-bootstrap eligibility, local
-pointer decision, and same-slot implementation bridge. It is not a current
-status document or a substitute for CAP.
-
-[Question/Form reassessment](native-question-cap-reassessment.md),
-[non-modal investigation](native-nonmodal-authorization-investigation.md), and
-[hybrid decision](hybrid-authorization-ux-decision.md) record rejection of
-model-mediated Question/Form authorization, feasibility of local callbacks, and
-the selected compact local authorization surface implemented in current
-orchestration.
-
-## Plan presentation / projection
-
-[Transcript projection](trusted-transcript-projection-investigation.md),
-[zero-click presentation](zero-click-stock-opencode-plan-presentation-investigation.md), and
-[native subagent results](native-subagent-result-presentation-investigation.md)
-preserve rejected/fallback presentation paths and host-rendering constraints
-that preceded the current trusted synthetic Plan publication.
-
-## Runtime simplification
-
-[Investigation](m1-m2-runtime-simplification-investigation.md),
-[reconciliation](m1-m2-runtime-simplification-reconciliation.md), and the
-[documentation cleanup plan](documentation-cleanup-plan.md) preserve the
-transition specification, closure evidence, and documentation disposition.
-The reconciliation closed the milestone-named runtime simplification as
-**COMPLETE — NO RUNTIME GAPS**.
+Completed implementation checklists and redundant version-delta reports are
+pruned rather than archived indefinitely. Git history retains deleted originals;
+retained reports may link to a pinned original where it supplies historical context.

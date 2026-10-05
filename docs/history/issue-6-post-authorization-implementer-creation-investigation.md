@@ -219,7 +219,7 @@ Cancel/planning-only/pre-creation stale rejection explicitly creates no child. D
 ## 9. Expected implementation target files
 
 - Change [.opencode/agents/orchestrator.md](../../.opencode/agents/orchestrator.md): Planner-only delegation permission and one-call contract; root still completes normally without copying the proposal.
-- Delete [.opencode/agents/implementer_slot.md](../../.opencode/agents/implementer_slot.md).
+- Delete [.opencode/agents/implementer_slot.md](https://github.com/mikechao/opencode-agents/blob/244f31af1e3fb05ac57f995dbbd597959b38fb6f/.opencode/agents/implementer_slot.md).
 - Keep [.opencode/agents/authorized_implementer.md](../../.opencode/agents/authorized_implementer.md) as the direct role. Its hidden/read/edit/shell/denial contract already fits; change only wording if needed, not permissions for a bootstrap.
 - Change [src/attempt.ts](../../src/attempt.ts): Planner-only publication, root-model evidence, narrow empty import, direct-child verification, preserved final admission/result/Git barriers.
 - Change [.opencode/plugins/opencode-agents/tui.tsx](../../.opencode/plugins/opencode-agents/tui.tsx): post-claim child expectation/event guards, remove switching state, precise child-creation STOP status; keep publication, root-return and resize behavior.

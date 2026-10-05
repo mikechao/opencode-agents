@@ -14,9 +14,9 @@ unchanged-HEAD/exact-path verification must pass before automatic read-only
 Reviewer admission. Trusted review result and exact-target revalidation precede
 STOP before Commit. Commit remains a future separately authorized obligation.
 
-Issue #9's one-shot CAP semantics remain intact. Issue #16 gives each eligible
-root its own governed attempt within the plugin activation, with shared-worktree
-execution exclusion spanning implementation, review and terminal publication. Repeated authorization of the same root is rejected.
+Each eligible root has its own one-shot governed attempt within the plugin
+activation, with shared-worktree execution exclusion spanning implementation,
+review and receipt publication. Repeated authorization of the same root is rejected.
 
 ## Authority and trust
 
@@ -218,7 +218,7 @@ whole sponsor arrays, visibility and mode are not admission fingerprints.
 Correctly configured installed root/Planner/Implementer role and tool policies
 are trusted deployment assumptions; CAP does not certify arbitrary configuration.
 
-Sponsorship is an explicitly pinned OpenCode 2.0.22 internal seam. Native
+Sponsorship depends on a source-guarded internal OpenCode seam. Native
 `subagent` MUST assert effective permission using the explicit execution actor,
 real parent session and source message/call IDs before creating a child. Permission
 MUST select the explicit actor ahead of the session agent, merge actual session
@@ -244,7 +244,7 @@ MUST never permit reopening, another wake, replacement or direct prompt replay.
 
 The installed bounded Implementer role remains distinct from the read-only
 Planner and root. It MUST deny delegation, `execute`, session control and
-equivalent exposed tools. The root retains deny-all except Planner delegation;
+equivalent exposed tools. The root retains only read-only tools and Planner delegation;
 the trusted sponsor admits only the exact one implementation invocation.
 General Orchestrator Reviewer authority and all Commit authority remain denied.
 No planning conversation is copied
@@ -296,9 +296,11 @@ arguments, actual source IDs, fresh native execution, child identity, effective
 host policy and absence of session-level overrides. No second human authorization
 is needed for this bounded read-only continuation.
 
-Reviewer MUST start from deny-all with only read/glob/grep. Trusted hooks MUST
-prevent mutation, shell/execute, session control, delegation, repair, staging,
-Commit, push or new authority even when configured policy appends allows.
+Reviewer MUST start from deny-all with only read/glob/grep and the bounded
+read-only `reviewer_git` inspection tool. Its Git observations are advisory
+review evidence and MUST NOT replace trusted scope or target revalidation.
+Trusted hooks MUST prevent mutation, shell/execute, session control, delegation,
+repair, staging, Commit, push or new authority even when configured policy appends allows.
 Reviewer MUST NOT inherit, reopen or enlarge Implementer authority.
 
 Trusted code MUST capture an immutable deterministic content fingerprint immediately
