@@ -15,7 +15,9 @@ import {
 } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { Effect } from "effect"
+import { fileURLToPath } from "node:url"
+import type { StandardSchemaV1 } from "@standard-schema/spec"
+import { Effect, Schema } from "effect"
 import { reviewerGitArguments, reviewerGitInput, reviewerGitTool } from "../src/reviewer-git.ts"
 
 // Only the buffer-returning execFileSync overload is used by this tool.
@@ -25,6 +27,88 @@ const bufferResult = (bytes: Buffer) =>
 const invocation = { agent: "reviewer" } as any
 const run = (directory: string | undefined, input: unknown, agent = "reviewer") =>
   Effect.runPromise(reviewerGitTool(directory).execute(input as any, { ...invocation, agent }))
+
+test("OpenCode 2.0.22 selects Standard Schema across independent Effect runtimes before executing reviewer_git", async () => {
+  // Bundle the pinned installed Schema module, as in the RPC compatibility test,
+  // to give the host its own parser/sentinels without starting OpenCode.
+  const directory = mkdtempSync(path.join(tmpdir(), "reviewer-git-schema-"))
+  const tool = reviewerGitTool("/unused")
+  const execute = spyOn(tool, "execute").mockImplementation((input) =>
+    Effect.succeed({ content: JSON.stringify(input) }),
+  )
+  try {
+    const build = await Bun.build({
+      entrypoints: [fileURLToPath(import.meta.resolve("effect/Schema"))],
+      outdir: directory,
+      target: "bun",
+      format: "esm",
+    })
+    expect(build.success).toBe(true)
+    const host: typeof Schema = await import(build.outputs[0].path)
+    expect(host.decodeUnknownEffect).not.toBe(Schema.decodeUnknownEffect)
+
+    // Match core/tool/runtime.ts's selection rule and Effect fallback. Returning
+    // an Effect schema function here reproduces the live startsWith TypeError.
+    const validate = async (schema: unknown, input: unknown): Promise<StandardSchemaV1.Result<unknown>> => {
+      if (typeof schema === "object" && schema !== null && "~standard" in schema)
+        return (schema as StandardSchemaV1<unknown>)["~standard"].validate(input)
+      if (!host.isSchema(schema)) throw new Error("Expected a supported tool input schema")
+      return Effect.runPromise(
+        host
+          .decodeUnknownEffect(schema as Schema.Codec<unknown>)(input, { errors: "all" })
+          .pipe(
+            Effect.match({
+              onFailure: (error) => ({ issues: [{ message: error.message }] }),
+              onSuccess: (value) => ({ value }),
+            }),
+          ),
+      )
+    }
+    const invoke = async (input: unknown) => {
+      const decoded = await validate(tool.input, input)
+      if (!decoded.issues) await Effect.runPromise(tool.execute(decoded.value as any, invocation))
+      return decoded
+    }
+    // Exercise the failed live calls first, so the old representation fails at
+    // the same path filter rather than only failing a typeof assertion.
+    for (const input of [
+      { operation: "diff", paths: ["README.md"] },
+      { operation: "show", path: "README.md" },
+      { operation: "rev-parse" },
+      { operation: "status" },
+    ]) {
+      const decoded = await invoke(input)
+      expect(decoded.issues).toBeUndefined()
+      if (decoded.issues) throw new Error("Expected valid Reviewer Git input")
+      expect(decoded.value).toEqual(input)
+      expect(execute.mock.calls.at(-1)?.[0] === decoded.value).toBe(true)
+    }
+    expect(execute).toHaveBeenCalledTimes(4)
+    expect(typeof reviewerGitInput).toBe("object")
+    expect(reviewerGitInput).not.toBeNull()
+    expect(Reflect.ownKeys(reviewerGitInput)).toEqual(["~standard"])
+    expect(tool.input).toBe(reviewerGitInput)
+    expect(host.isSchema(tool.input)).toBe(false)
+    for (const input of [
+      { operation: "show", path: 42 },
+      { operation: "show", path: { value: "README.md" } },
+      { operation: "diff", paths: [42] },
+      { operation: "diff", paths: [{ value: "README.md" }] },
+      { operation: "show", path: "README.md", revision: "other" },
+      { operation: "diff", paths: ["README.md"], revision: "other" },
+    ]) {
+      const decoded = await invoke(input)
+      expect(decoded.issues?.length).toBeGreaterThan(0)
+      expect("value" in decoded).toBe(false)
+      expect(decoded.issues?.every((issue) => !issue.message.includes("startsWith"))).toBe(true)
+    }
+    expect(execute).toHaveBeenCalledTimes(4)
+    expect(reviewerGitInput["~standard"].jsonSchema.input({ target: "draft-2020-12" })).toHaveProperty("anyOf")
+  } finally {
+    execute.mockRestore()
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
 
 test("strict host input schema and direct execution reject extra fields and malformed shapes", async () => {
   const spawn = spyOn(childProcess, "execFileSync").mockImplementation(bufferResult(Buffer.from("unexpected")))

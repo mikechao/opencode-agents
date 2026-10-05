@@ -33,11 +33,13 @@ const Input = Schema.Union([
     paths,
   }),
 ])
-// OpenCode's default Effect decoder strips excess properties. Standard Schema
-// validation preserves our strict policy at that host boundary as well.
-export const reviewerGitInput = Schema.toStandardJSONSchemaV1(
+const standard = Schema.toStandardJSONSchemaV1(
   Schema.toStandardSchemaV1(Input, { parseOptions: { onExcessProperty: "error" } }),
 )
+// OpenCode 2.0.22 recognizes Standard Schema only on objects. Detach the
+// interface from the Effect schema function so validation uses our strict
+// plugin-owned decoder instead of decoding a foreign AST in the host runtime.
+export const reviewerGitInput = { "~standard": standard["~standard"] }
 const decode = Schema.decodeUnknownSync(Input, { onExcessProperty: "error" })
 
 export function reviewerGitArguments(value: unknown): readonly string[] {
