@@ -6860,6 +6860,44 @@ snapshotTest(
   },
 )
 
+snapshotTest("Reviewer uses verified implementation evidence without reading closed CAP evidence", async (observer) => {
+  const root = snapshotFixture(observer),
+    f = serverFake(root, observer)
+  f.state.run = async () => {
+    await f.dispatch()
+    observer.configure(root, HEAD, ["old.txt"])
+  }
+  f.state.onReceipt = () => {
+    if (f.receipts.length !== 1) return
+    expect(f.cap.phase).toBe("closed")
+    // The CAP still proves revocation/closure and owns exclusion. Its prior
+    // implementation facts must already be captured before this presentation await.
+    for (const key of ["claim", "rootSessionID", "reservation", "childID", "result"])
+      Object.defineProperty(f.cap, key, {
+        get() {
+          throw new Error(`Closed Implementer ${key} was read`)
+        },
+      })
+  }
+  const outcome = await f.authorize()
+  const args = f.reviewArguments()
+  expect(args.prompt).toContain(JSON.stringify(f.candidate.proposal))
+  expect(args.prompt).toContain(
+    `Trusted implementation identity: ${JSON.stringify({
+      rootSessionID: "ses_parent",
+      messageID: "native-message",
+      toolID: "native-call",
+      childID: "ses_child",
+    })}`,
+  )
+  expect(args.prompt).toContain('Exact accepted changed paths: ["old.txt"]')
+  expect(args.prompt).toContain(`Review target SHA-256: ${"a".repeat(64)}`)
+  expect(f.reviewOriginals).toHaveLength(1)
+  expect(f.receipts).toHaveLength(2)
+  expect(f.receipts[1].text).toContain("Review APPROVED.")
+  expect(outcome).toBe(f.receipts.map((receipt) => receipt.text).join("\n"))
+})
+
 snapshotTest("unverified implementation never launches Reviewer", async (observer) => {
   for (const failure of [
     "failed",
