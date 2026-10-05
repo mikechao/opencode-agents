@@ -25,7 +25,6 @@ import {
   type DecisionOwner,
   type PublicationOwner,
   type PublishedAttempt,
-  revisionInput,
   revisionArguments,
   revisionControl,
   type Revision,
