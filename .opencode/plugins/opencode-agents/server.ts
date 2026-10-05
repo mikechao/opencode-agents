@@ -35,7 +35,12 @@ export default Plugin.define({
           tool.execute = admission.execute(tool.execute, models.prepare)
         })
       })
-      yield* context.rpc.register(authorizeRpc, { authorize: (claim) => admission.authorize(claim) }).pipe(Effect.orDie)
+      yield* context.rpc
+        .register(authorizeRpc, {
+          authorize: (claim) => admission.authorize(claim),
+          revise: (input) => admission.revise(input).pipe(Effect.orDie),
+        })
+        .pipe(Effect.orDie)
       yield* context.rpc.register(agentModelsRpc, agentModelsHandlers(models)).pipe(Effect.orDie)
     }),
 })

@@ -46,8 +46,9 @@ OS/process sandbox.
 ```text
 original Git baseline → fresh Orchestrator root
 → optional direct conversational/read-only turns
-→ one successfully admitted native Planner execution
+→ initial successfully admitted native Planner execution
 → bind final proposal → freeze candidate → publish trusted Plan
+→ optional human Revise → permanently supersede → fresh trusted Planner → new Plan (repeatable)
 → explicit human Authorize on a completed readable root frame
 → transfer exact one-shot claim → fresh native Implementer
 → trusted native provenance + unchanged HEAD + exact changed-path verification
@@ -80,12 +81,14 @@ and invalid evidence. Failed or denied calls before trusted admission may be
 corrected; they supply no authority. Successful mutation-capable activity,
 compaction or missing supported boundaries fail closed.
 
-The first successfully admitted Planner execution spends that root's Planner
-eligibility permanently, including on execution failure or later Cancel.
-Pre-admission syntax, policy or settings failures do not spend it. The server
-records the exact invocation and trusted effective-input receipt synchronously
-before native execution and projects that receipt through progress and terminal
-success/failure metadata. This admission evidence grants no implementation authority.
+Each trusted planning grant admits at most one native Planner execution. The
+initial grant comes from the verified root user turn; subsequent grants require
+the trusted TUI revision RPC and an exact synthetic revision control. Arbitrary
+model Planner calls remain denied after admission. Pre-admission syntax, policy
+or settings failures do not spend the initial grant. The server records the exact
+invocation and trusted effective-input receipt synchronously before native
+execution and projects that receipt through progress and terminal success/failure
+metadata. This admission evidence grants no implementation authority.
 
 Trusted code constructs the effective Planner input from the exact persisted
 user request in the governed turn plus fixed project-owned exploration guidance.
@@ -140,7 +143,7 @@ publication, exact root/Planner/request/proposal and fresh original Git evidence
 
 Pending ownership survives normal Planner navigation and route-driven composer
 unmounting. Navigation discards the old readable-frame proof. Root return
-requires a fresh completed frame before Authorize/Cancel can act. Relevant
+requires a fresh completed frame before Authorize/Cancel/Revise can act. Relevant
 trusted-state loss or surface loss while the root remains selected closes the
 attempt; resize invalidates readiness until a new valid frame.
 
@@ -150,6 +153,34 @@ location, original HEAD and continued cleanliness before one RPC transfer.
 Model prose, Question/Form answers and generic permission approvals cannot
 replace this decision. After transfer the server owns the attempt; TUI navigation,
 resize, disappearance or a lost response cannot resend or reconstruct the claim.
+
+### Revising a pending Plan
+
+Revision is available only before authorization is claimed. Revise opens the
+native `dialog.prompt()` to collect literal human text. Opening or cancelling
+that dialog leaves the current Plan unchanged; empty input is rejected. On
+submission, trusted code rechecks the exact captured pending `PublishedAttempt`
+and its readable frame, then synchronously and permanently removes its decision
+authority before any replanning await.
+
+Trusted revision input contains the original authoritative request/user binding,
+the exact frozen proposal selected by ownership, and the accepted instruction
+without trimming or paraphrasing. After supersession, the TUI registers one
+trusted planning grant, retires the old pending Plan by its inbox identity, and
+admits the expected synthetic control. The native foreground subagent path
+creates a fresh Planner child; the old Planner session is never continued.
+
+Multiple revisions are supported: A → Revise → B → Revise → C. Only the latest
+published candidate can be authorized or cancelled. The root owner retains the
+original creation/Git baseline and captures an in-memory planning identity in
+asynchronous operations. Retired callbacks, results, failure handlers and known
+historical notifications cannot replace or close a newer generation. Unknown
+state and changed current projections still fail closed. Grant, inbox retirement,
+wake, Planner, verification or publication failure closes the attempt; no failure
+restores a superseded candidate or automatically retries planning.
+
+Authorization of the latest verified Plan uses the existing Implementer and
+Reviewer handoff, verification and receipt behavior unchanged, ending before Commit.
 
 ## Native implementation admission and verification
 
@@ -294,8 +325,8 @@ Run `bun run check`, then `git diff --check`, for repository validation.
 
 ## Current limitations
 
-- One successfully admitted Planner and one implementation authorization per root;
-  no plan revision, repair, retry or automatic repeat review.
+- One implementation authorization per root; no repair, automatic planning retry
+  or automatic repeat review. Plan revision requires an explicit pre-authorization Revise.
 - Dirty or ambiguous initial baselines may plan but cannot authorize implementation.
   Earlier pre-Planner rejection is [deferred](investigations/issue-25-planner-admission.md).
 - Supported history is deliberately conservative. Planner/Explorer instruction

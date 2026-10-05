@@ -25,6 +25,10 @@ import {
   type DecisionOwner,
   type PublicationOwner,
   type PublishedAttempt,
+  revisionInput,
+  revisionArguments,
+  revisionControl,
+  type Revision,
 } from "../src/attempt.ts"
 import { createRoot, createEffect, createMemo, createComponent, createSignal } from "solid-js"
 import { createStore, reconcile } from "solid-js/store"
@@ -723,7 +727,7 @@ snapshotTest(
         const cleanup = await activate(f)
         let view = mountRootSlots(f, "parent")
         try {
-          expect(view.buttons).toHaveLength(2)
+          expect(view.buttons).toHaveLength(3)
           const planA = structuredClone(f.inboxes.parent[0])
           navigate()
           view.dispose()
@@ -755,7 +759,7 @@ snapshotTest(
           for (const id of ["parent", "planner-child", "root-b", "planner-b", "parent"]) {
             navigate(id)
             view = mountRootSlots(f, id)
-            expect(view.buttons).toHaveLength(id === "parent" || id === "root-b" ? 2 : 0)
+            expect(view.buttons).toHaveLength(id === "parent" || id === "root-b" ? 3 : 0)
             if (id === "parent" || id === "root-b") {
               const published = id === "parent" ? a : b
               const other = id === "parent" ? b : a
@@ -780,7 +784,7 @@ snapshotTest(
           navigate(otherID)
           view.dispose()
           view = mountRootSlots(f, otherID)
-          expect(view.buttons).toHaveLength(2)
+          expect(view.buttons).toHaveLength(3)
           view.click(0)
           await settleUntil(() => f.calls.toasts.length === 2)
           expect(f.calls.claims.map((claim) => claim.rootSessionID)).toEqual(
@@ -832,7 +836,7 @@ snapshotTest(
     setRoute({ type: "session", sessionID: "root-b" })
     a.dispose()
     const b = mountRootSlots(f, "root-b")
-    expect(b.buttons).toHaveLength(2)
+    expect(b.buttons).toHaveLength(3)
     b.click(0)
     await Promise.resolve()
     expect(f.calls.claims).toHaveLength(1)
@@ -957,7 +961,7 @@ snapshotTest(
         expect(f.calls.receipts[0].sessionID).toBe("parent")
         expect(f.calls.receipts[0].text).toContain("publication worktree paths changed")
         const viewB = mountRootSlots(f, "root-b")
-        expect(viewB.buttons).toHaveLength(2)
+        expect(viewB.buttons).toHaveLength(3)
         viewB.dispose()
         setRoute({ type: "session", sessionID: "parent" })
         const viewA = mountRootSlots(f, "parent")
@@ -1028,7 +1032,7 @@ snapshotTest(
       for (const [index, id] of ["root-y", "root-z"].entries()) {
         setRoute({ type: "session", sessionID: id })
         const view = mountRootSlots(f, id)
-        expect(view.buttons).toHaveLength(2)
+        expect(view.buttons).toHaveLength(3)
         view.click(0)
         await settleUntil(() => f.calls.toasts.length === index + 1)
         view.dispose()
@@ -1111,7 +1115,7 @@ snapshotTest(
       await settleUntil(() => f.slots.length === 1)
       expect(f.calls.synthetic.map((input) => input.sessionID)).toEqual(["parent"])
       const view = mountRootSlots(f, "parent")
-      expect(view.buttons).toHaveLength(2)
+      expect(view.buttons).toHaveLength(3)
       view.click(0)
       await settleUntil(() => f.calls.toasts.length === 1)
       expect(f.calls.claims.map((claim) => claim.rootSessionID)).toEqual(["parent"])
@@ -1160,7 +1164,7 @@ snapshotTest(
       f.emit({ type: "session.execution.succeeded", data: { sessionID: "root-b" } })
       await settleUntil(() => f.slots.length === 2)
       const b = mountRootSlots(f, "root-b")
-      expect(b.buttons).toHaveLength(2)
+      expect(b.buttons).toHaveLength(3)
       if (terminal === "failure") {
         f.emit({ type: "session.permissions", data: { sessionID: "parent" } })
         expect(f.slots[0].removed).toBe(true)
@@ -1464,9 +1468,7 @@ test("Orchestrator uses trusted outcome history without mandating authorization 
     "Answer ordinary conversation, greetings such as `Hi`, and non-change questions directly.",
   )
   expect(instructions).toContain("Delegate before invoking any other tool on that governed turn.")
-  expect(instructions).toContain(
-    "The first successfully admitted Planner execution permanently spends Planner eligibility",
-  )
+  expect(instructions).toContain("Each trusted planning grant admits at most one fresh Planner execution")
   expect(instructions).not.toMatch(/For one new user request, call/)
   expect(instructions).not.toMatch(/emit exactly.*final sentence/i)
   expect(instructions).not.toMatch(/(?:emit|reply|respond|say).*awaiting.*authorization/i)
@@ -2303,7 +2305,7 @@ snapshotTest(
         f.emit(completed)
         view = mount(f)
         if (mutation === "none") {
-          expect(view.buttons).toHaveLength(2)
+          expect(view.buttons).toHaveLength(3)
           view.click(0)
           view.click(0)
           await settleUntil(() => f.calls.claims.length > 0)
@@ -2424,7 +2426,7 @@ snapshotTest(
             attempt.select("parent")
             await settleUntil(() => f.slots.length > 0)
             view = mount(f)
-            expect(view.buttons).toHaveLength(2)
+            expect(view.buttons).toHaveLength(3)
           }
           const event = {
             type: "session.inbox.enqueued",
@@ -2451,7 +2453,7 @@ snapshotTest(
           if (mutation === "none") await settleUntil(() => f.slots.length > 0)
           view ??= mount(f)
           if (mutation === "none") {
-            expect(view.buttons).toHaveLength(2)
+            expect(view.buttons).toHaveLength(3)
             view.click(1)
             expect(f.calls.toasts).toEqual(["Cancelled — no implementation admitted"])
           } else {
@@ -2571,7 +2573,7 @@ snapshotTest("TUI startup accepts non-cloneable synchronized location info and d
     f.emit({ type: "session.execution.succeeded", id: "evt_completed", data: { sessionID: "parent" } })
     await settleUntil(() => f.slots.length > 0 || f.calls.toasts.length > 0)
     const view = mount(f)
-    expect(view.buttons).toHaveLength(2)
+    expect(view.buttons).toHaveLength(3)
     view.click(0)
     await settleUntil(() => f.calls.toasts.length > 0)
     expect(f.calls.toasts.at(-1)).toContain("Implementation gate complete")
@@ -2952,7 +2954,7 @@ snapshotTest(
           child.dispose()
           f.emit({ type: "session.viewed", id: "view-root", data: { sessionID: "parent" } })
           returned = mount(f, "parent", false)
-          expect(returned.buttons).toHaveLength(2)
+          expect(returned.buttons).toHaveLength(3)
           returned.click(0)
           returned.click(1)
           expectNoImplementation(f) // The old readable frame cannot authorize.
@@ -2999,7 +3001,7 @@ snapshotTest(
       expect(f.calls.toasts).toEqual([])
       select("parent")
       returned = mount(f)
-      expect(returned.buttons).toHaveLength(2)
+      expect(returned.buttons).toHaveLength(3)
       expect(f.calls.toasts).toEqual([])
 
       const get = f.context.client.session.get
@@ -4003,7 +4005,7 @@ snapshotTest(
         else if (loss === "navigation") {
           expect(f.calls.toasts).toEqual([])
           const view = mount(f)
-          expect(view.buttons).toHaveLength(2)
+          expect(view.buttons).toHaveLength(3)
           view.click(1)
           expect(f.calls.toasts).toEqual(["Cancelled — no implementation admitted"])
           view.dispose()
@@ -4274,6 +4276,7 @@ function serverFake(root: string, _observer: SnapshotObserver, workspaceID?: str
       findings: [],
     }),
     reviewError: false,
+    plannerOutput: undefined as string | undefined,
     reviewWakeError: false,
     reviewWaitError: false,
     originals,
@@ -4420,8 +4423,11 @@ function serverFake(root: string, _observer: SnapshotObserver, workspaceID?: str
       if (effect !== "allow")
         return yield* Effect.fail(new NativeTool.Error({ message: `Native permission ${effect}` }))
       ;(reviewing ? f.reviewOriginals : originals).push({ input: structuredClone(input), context: invocation })
-      const output = reviewing ? f.reviewOutput : input.agent === "planner" ? proposal : "Done"
-      const childID =
+      const output = reviewing ? f.reviewOutput : input.agent === "planner" ? (f.plannerOutput ?? proposal) : "Done"
+      const plannerNumber = originals.filter(
+        (entry) => entry.input.agent === "planner" && entry.context.sessionID === invocation.sessionID,
+      ).length
+      const baseChildID =
         invocation.sessionID === "ses_parent"
           ? input.agent === "planner"
             ? "ses_planner"
@@ -4429,6 +4435,7 @@ function serverFake(root: string, _observer: SnapshotObserver, workspaceID?: str
               ? "ses_review"
               : "ses_child"
           : `${invocation.sessionID}-${input.agent}`
+      const childID = input.agent === "planner" && plannerNumber > 1 ? `${baseChildID}-${plannerNumber}` : baseChildID
       sessions[childID] = {
         id: childID,
         parentID: invocation.sessionID,
@@ -6912,7 +6919,7 @@ test("Effect server keeps Authorize and model settings RPCs separate with two na
         expect(added[0].input).toBe(reviewerGitInput)
         expect(rpcs).toHaveLength(2)
         expect(rpcs[0].definition).toBe(authorizeRpc)
-        expect(Object.keys(rpcs[0].handlers)).toEqual(["authorize"])
+        expect(Object.keys(rpcs[0].handlers)).toEqual(["authorize", "revise"])
         expect(rpcs[1].definition.id).toBe("opencode-agents.models")
         expect(Object.keys(rpcs[1].handlers)).toEqual(["list", "set", "reset"])
         expect(hooks.map((item) => item.name)).toEqual(["execute.before"])
@@ -7816,5 +7823,618 @@ snapshotTest(
     expect(await f.authorize()).toContain("Review APPROVED.")
     expect(f.reviewOriginals).toHaveLength(1)
     expect(f.reviewWakes).toHaveLength(1)
+  },
+)
+
+// Actual trusted admission and publication code, joined by local host doubles.
+// Each Planner is fresh; no Git process or live OpenCode execution is involved.
+async function revisionFixture(
+  observer: SnapshotObserver,
+  run: (f: Awaited<ReturnType<typeof prepareRevisionFixture>>) => Promise<void>,
+) {
+  const root = snapshotFixture(observer)
+  const originalAttempt = { ...attemptModule }
+  let f: Awaited<ReturnType<typeof prepareRevisionFixture>> | undefined
+  try {
+    f = await prepareRevisionFixture(root, observer)
+    await run(f)
+  } finally {
+    f?.cleanup()
+    for (const view of f?.views ?? []) view.dispose()
+    mock.module(path.resolve(import.meta.dir, "../src/attempt.ts"), () => originalAttempt)
+  }
+}
+async function prepareRevisionFixture(root: string, observer: SnapshotObserver) {
+  const f = fake(root, { events: true }),
+    server = serverFake(root, observer)
+  server.admission.caps.clear()
+  server.sessions.ses_parent = f.sessions.parent
+  server.sessions.ses_parent.id = "ses_parent"
+  delete f.sessions.parent
+  delete f.histories.parent
+  server.histories.ses_parent = [user("parent-user", request)]
+  await server.dispatch(
+    { agent: "planner", description: "planner work", prompt: plannerInput(request) },
+    { sessionID: "ses_parent", messageID: "planner-tool-message", id: "planner-call" },
+  )
+  server.histories.ses_parent.push(answer("parent-final", "orchestrator", "Done"), idle("msg_completed"))
+  delete f.sessions["planner-child"]
+  delete f.histories["planner-child"]
+  const copyServer = () => {
+    for (const [id, session] of Object.entries(server.sessions)) {
+      session.time.created ??= 1
+      f.sessions[id] = session
+      f.histories[id] = server.histories[id]
+      f.inboxes[id] ??= []
+    }
+  }
+  copyServer()
+  const originalAttempt = { ...attemptModule }
+  const publications: Array<{ owner: PublicationOwner; published?: PublishedAttempt }> = []
+  mock.module(path.resolve(import.meta.dir, "../src/attempt.ts"), () => ({
+    ...originalAttempt,
+    publishPlan: async (...args: Parameters<typeof publish>) => {
+      const record: (typeof publications)[number] = { owner: args[2] }
+      publications.push(record)
+      record.published = await originalAttempt.publishPlan(...args)
+      return record.published
+    },
+  }))
+  const state = {
+    text: undefined as string | undefined,
+    prompt: undefined as (() => Promise<string | undefined>) | undefined,
+    grantError: false,
+    retirementError: false,
+    wakeError: false,
+    plannerError: false,
+    publicationError: false,
+    grants: [] as Revision[],
+    order: [] as string[],
+    onGrant: undefined as (() => void) | undefined,
+    onControl: undefined as ((revision: Revision) => void) | undefined,
+    onPublication: undefined as (() => void) | undefined,
+    afterControl: undefined as ((revision: Revision) => Promise<void>) | undefined,
+    controlTextSuffix: "",
+  }
+  ;(f.context.ui.dialog as any).prompt = () => (state.prompt ? state.prompt() : Promise.resolve(state.text))
+  const rpc = f.context.client.rpc
+  ;(f.context.client as any).rpc = () => ({
+    ...rpc(authorizeRpc),
+    revise: async (revision: Revision) => {
+      state.order.push("grant")
+      state.grants.push(revision)
+      state.onGrant?.()
+      if (state.grantError) throw new Error("grant unavailable")
+      return await Effect.runPromise(server.admission.revise(revision))
+    },
+  })
+  ;(f.context.client.session.inbox as any).cancel = async ({ sessionID, inboxID }: any) => {
+    state.order.push("retire")
+    if (state.retirementError) throw new Error("retirement unavailable")
+    f.inboxes[sessionID] = f.inboxes[sessionID].filter((item) => item.id !== inboxID)
+    f.cache[sessionID] = f.cache[sessionID].filter((item) => item.id !== inboxID)
+    f.emit({ type: "session.inbox.cancelled", data: { sessionID, inboxID } })
+  }
+  const synthetic = f.context.client.session.synthetic
+  ;(f.context.client.session as any).synthetic = async (input: any) => {
+    if (input.metadata?.source !== "opencode-agents-revision") {
+      if (input.metadata?.source === "planner") {
+        state.onPublication?.()
+        if (state.publicationError) throw new Error("publication unavailable")
+      }
+      return await synthetic(input)
+    }
+    state.order.push("control")
+    if (state.wakeError) throw new Error("wake unavailable")
+    input = { ...input, text: input.text + state.controlTextSuffix }
+    const admitted = await synthetic(input)
+    const revision = state.grants.at(-1)!
+    state.onControl?.(revision)
+    f.inboxes.ses_parent = f.inboxes.ses_parent.filter((item) => item.id !== input.id)
+    server.histories.ses_parent.push({ type: "synthetic", id: input.id, text: input.text, metadata: input.metadata })
+    f.emit({ type: "session.inbox.delivered", data: { sessionID: "ses_parent", inboxID: input.id } })
+    server.state.nativeError = state.plannerError
+    try {
+      await server.dispatch(revisionArguments(revision), {
+        sessionID: "ses_parent",
+        messageID: `revision-message-${state.grants.length}`,
+        id: `revision-call-${state.grants.length}`,
+      })
+      copyServer()
+      server.histories.ses_parent.push(
+        answer(`revision-final-${state.grants.length}`, "orchestrator", "Done"),
+        idle(`msg_revision-${state.grants.length}`),
+      )
+      f.emit({
+        type: "session.execution.succeeded",
+        id: `evt_revision-${state.grants.length}`,
+        data: { sessionID: "ses_parent" },
+      })
+    } catch (error) {
+      f.emit({ type: "session.execution.failed", data: { sessionID: "ses_parent" } })
+      throw error
+    }
+    await state.afterControl?.(revision)
+    return admitted
+  }
+  ;(f.context.ui.router as any).current = () => ({ type: "session", sessionID: "ses_parent" })
+  const teardown = await plugin.setup(f.context)
+  await f.prepare("ses_parent")
+  f.sessions.ses_parent.time.created = Date.now() + 10
+  f.emit({
+    type: "session.created",
+    id: "evt_created",
+    created: f.sessions.ses_parent.time.created,
+    data: { sessionID: "ses_parent", agent: "orchestrator", location: { directory: root } },
+  })
+  f.emit({ type: "session.execution.succeeded", id: "evt_completed", data: { sessionID: "ses_parent" } })
+  await settleUntil(() => f.slots.length > 0 || f.calls.toasts.length > 0)
+  const cleanup = () => {
+    if (typeof teardown === "function") teardown()
+  }
+  expect(f.calls.toasts).toEqual([])
+  await settleUntil(() => !!publications[0]?.published)
+  const views: Array<ReturnType<typeof mount>> = []
+  const view = (complete = true) => {
+    const mounted = mount(f, "ses_parent", complete)
+    views.push(mounted)
+    return mounted
+  }
+  const revise = async (old: ReturnType<typeof mount>, text: string) => {
+    state.text = text
+    const count = state.grants.length
+    server.state.plannerOutput = JSON.stringify({ ...JSON.parse(proposal), intent: `Revised Plan ${count + 1}` })
+    old.click(2)
+    await settleUntil(() => state.grants.length > count)
+    old.dispose()
+    await settleUntil(() => !!publications[count + 1]?.published || f.calls.toasts.length > 0)
+    // armRetained's independent verification precedes readable-frame controls.
+    for (let i = 0; i < 100; i++) await Promise.resolve()
+    return view()
+  }
+  return { ...f, server, state, publications, originalAttempt, cleanup, views, view, revise }
+}
+
+for (const revisions of [1, 2])
+  snapshotTest(
+    `trusted sequential revision (${revisions}) synchronously retires old decisions and authorizes only the latest Plan`,
+    async (observer) => {
+      await revisionFixture(observer, async (f) => {
+        let current = f.view()
+        for (let index = 0; index < revisions; index++) {
+          const previous = f.publications[index].published!,
+            old = current
+          f.state.onGrant = () => {
+            expect(() => f.publications[index].owner.assertCurrent()).toThrow("Planning generation")
+            old.click(0)
+            old.click(1)
+            old.click(2)
+            expect(f.calls.claims).toEqual([])
+          }
+          const instruction = ` \nRevise exactly ${index}: "quotes", $text and Unicode ☃\n `
+          current = await f.revise(old, instruction)
+          expect(f.calls.toasts).toEqual([])
+          const revised = f.publications[index + 1].published!
+          expect(revised.bound.request).toBe(previous.bound.request)
+          expect(revised.bound.userID).toBe(previous.bound.userID)
+          expect(revised.bound.revision?.text).toBe(instruction)
+          expect(revised.bound.revision?.proposal).toEqual(previous.candidate.proposal)
+          expect(revised.bound.planner.childID).not.toBe(previous.bound.planner.childID)
+          expect(revised.candidate.proposal.intent).toBe(`Revised Plan ${index + 1}`)
+          expect(revised.publication.id).not.toBe(previous.publication.id)
+          expect(current.buttons).toHaveLength(3)
+          expect(f.state.order.slice(index * 3, index * 3 + 3)).toEqual(["grant", "retire", "control"])
+          await expect(Effect.runPromise(f.server.admission.revise(f.state.grants[index]))).rejects.toThrow()
+        }
+        current.click(0)
+        await settleUntil(() => f.calls.claims.length === 1)
+        expect(f.calls.claims[0].publicationID).toBe(f.publications.at(-1)!.published!.publication.id)
+        expect(f.calls.claims[0].candidate).toEqual(f.publications.at(-1)!.published!.candidate)
+        expect(f.server.originals).toHaveLength(revisions + 1)
+        current.click(2)
+        expect(f.state.grants).toHaveLength(revisions)
+      })
+    },
+  )
+
+snapshotTest(
+  "cancelled and empty revision dialogs preserve the exact pending Plan; stale dialog returns cannot revise B",
+  async (observer) => {
+    await revisionFixture(observer, async (f) => {
+      const a = f.view(),
+        owner = f.publications[0].owner
+      for (const text of [undefined, "", " \n\t "]) {
+        f.state.text = text
+        a.click(2)
+        for (let i = 0; i < 20; i++) await Promise.resolve()
+        expect(() => owner.assertCurrent()).not.toThrow()
+        expect(f.state.grants).toEqual([])
+      }
+      f.calls.toasts.length = 0
+      let release!: (text: string) => void
+      f.state.prompt = () =>
+        new Promise((resolve) => {
+          release = resolve
+        })
+      a.click(2)
+      expect(() => owner.assertCurrent()).not.toThrow()
+      f.state.prompt = undefined
+      const b = await f.revise(a, "Make B")
+      release("Delayed A instruction")
+      for (let i = 0; i < 30; i++) await Promise.resolve()
+      expect(f.state.grants).toHaveLength(1)
+      expect(() => f.publications[1].owner.assertCurrent()).not.toThrow()
+      b.click(1)
+      expect(f.calls.claims).toEqual([])
+      expect(() => f.publications[1].owner.assertCurrent()).toThrow()
+    })
+  },
+)
+
+for (const failure of ["grantError", "retirementError", "wakeError", "plannerError", "publicationError"] as const)
+  snapshotTest(`revision ${failure} permanently closes superseded A without implementation`, async (observer) => {
+    await revisionFixture(observer, async (f) => {
+      const a = f.view()
+      f.state[failure] = true
+      await f.revise(a, "Change the Plan")
+      await settleUntil(() => f.calls.toasts.some((message) => message.includes("STOP")))
+      expect(() => f.publications[0].owner.assertCurrent()).toThrow()
+      expect(f.calls.claims).toEqual([])
+      a.click(0)
+      a.click(1)
+      a.click(2)
+      f.emit({ type: "session.execution.succeeded", id: "evt_completed", data: { sessionID: "ses_parent" } })
+      f.renderer.emit("resize")
+      f.renderer.emit("frame")
+      expect(f.view().buttons).toEqual([])
+      expect(f.publications).toHaveLength(failure === "publicationError" ? 2 : 1)
+    })
+  })
+
+snapshotTest(
+  "retired Planner completion, creation and publication notifications are inert through C",
+  async (observer) => {
+    await revisionFixture(observer, async (f) => {
+      const a = f.view(),
+        b = await f.revise(a, "B"),
+        c = await f.revise(b, "C")
+      for (const { published, owner } of f.publications.slice(0, 2)) {
+        expect(() => owner.assertCurrent()).toThrow("Planning generation")
+        f.emit({
+          type: "session.execution.succeeded",
+          id: published!.bound.terminalIdleID.replace("msg_", "evt_"),
+          data: { sessionID: "ses_parent" },
+        })
+        f.emit({
+          type: "session.execution.succeeded",
+          id: "evt_child-late",
+          data: { sessionID: published!.bound.planner.childID },
+        })
+        f.emit({
+          type: "session.tool.success",
+          data: {
+            sessionID: "ses_parent",
+            assistantMessageID: published!.bound.planner.messageID,
+            id: published!.bound.planner.toolID,
+            content: [text("Late result")],
+            executed: false,
+          },
+        })
+        f.emit({
+          type: "session.created",
+          data: { sessionID: published!.bound.planner.childID, parentID: "ses_parent" },
+        })
+        f.emit({
+          type: "session.inbox.enqueued",
+          data: { sessionID: "ses_parent", inboxID: published!.publication.id, item: published!.publication },
+        })
+        f.emit({
+          type: "session.inbox.cancelled",
+          data: { sessionID: "ses_parent", inboxID: published!.publication.id },
+        })
+        a.click(0)
+        a.click(1)
+        a.click(2)
+        b.click(0)
+        b.click(1)
+        b.click(2)
+      }
+      for (let i = 0; i < 30; i++) await Promise.resolve()
+      expect(f.calls.toasts).toEqual([])
+      expect(() => f.publications[2].owner.assertCurrent()).not.toThrow()
+      c.click(0)
+      await settleUntil(() => f.calls.claims.length === 1)
+      expect(f.calls.claims[0].publicationID).toBe(f.publications[2].published!.publication.id)
+    })
+  },
+)
+
+snapshotTest("revision B survives navigation and resize with only fresh readable-frame decisions", async (observer) => {
+  await revisionFixture(observer, async (f) => {
+    const a = f.view(),
+      b = await f.revise(a, "B")
+    const [route, setRoute] = createStore<any>({ type: "session", sessionID: "ses_parent" })
+    ;(f.context.ui.router as any).current = () => route
+    f.renderer.emit("resize")
+    setRoute("sessionID", f.publications[1].published!.bound.planner.childID)
+    f.renderer.emit("frame")
+    b.dispose()
+    setRoute("sessionID", "ses_parent")
+    const returned = f.view(false)
+    returned.click(0)
+    expect(f.calls.claims).toEqual([])
+    f.renderer.emit("frame")
+    f.renderer.emit("resize")
+    returned.click(0)
+    expect(f.calls.claims).toEqual([])
+    f.renderer.emit("frame")
+    returned.click(1)
+    expect(f.calls.claims).toEqual([])
+    expect(f.calls.toasts.at(-1)).toContain("Cancelled")
+    expect(() => f.publications[1].owner.assertCurrent()).toThrow()
+  })
+})
+
+for (const alteration of [
+  "text",
+  "proposal",
+  "control",
+  "root-history",
+  "planner-history",
+  "unknown-child",
+  "unknown-inbox",
+] as const)
+  snapshotTest(`revision rejects ${alteration} and never restores A`, async (observer) => {
+    await revisionFixture(observer, async (f) => {
+      if (alteration === "text" || alteration === "proposal") {
+        f.state.onControl = (revision) => {
+          const changed = {
+            ...revision,
+            ...(alteration === "text"
+              ? { text: "Altered" }
+              : { proposal: { ...revision.proposal, intent: "Altered" } }),
+          }
+          f.server.histories.ses_parent.push({
+            type: "synthetic",
+            id: revision.controlID,
+            text: revisionControl(changed),
+            metadata: { source: "opencode-agents-revision" },
+          })
+        }
+      } else if (alteration === "control") {
+        f.state.controlTextSuffix = " altered"
+      } else if (alteration === "root-history") {
+        f.state.onGrant = () => f.histories.ses_parent.splice(1, 0, { type: "system", id: "injected", text: "Unsafe" })
+      } else if (alteration === "planner-history") {
+        f.state.onGrant = () =>
+          f.histories[f.publications[0].published!.bound.planner.childID].push(user("extra-user", "Continue"))
+      } else if (alteration === "unknown-child") {
+        f.state.onPublication = () =>
+          f.emit({ type: "session.created", data: { sessionID: "unknown", parentID: "ses_parent" } })
+      } else {
+        f.state.onControl = () =>
+          f.emit({
+            type: "session.inbox.enqueued",
+            data: { sessionID: "ses_parent", inboxID: "unknown", item: user("unknown", "Extra") },
+          })
+      }
+      const a = f.view()
+      await f.revise(a, "Revise")
+      await settleUntil(() => f.calls.toasts.length > 0)
+      expect(f.calls.claims).toEqual([])
+      expect(() => f.publications[0].owner.assertCurrent()).toThrow()
+      expect(f.view().buttons).toEqual([])
+    })
+  })
+
+for (const outcome of ["result", "failure"] as const)
+  snapshotTest(`late retired generation ${outcome} cannot replace or close C`, async (observer) => {
+    await revisionFixture(observer, async (f) => {
+      let release!: () => void
+      const paused = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      f.state.afterControl = async (revision) => {
+        if (revision.text !== "B") return
+        await paused
+        if (outcome === "failure") throw new Error("retired generation response failed")
+      }
+      try {
+        const a = f.view(),
+          b = await f.revise(a, "B"),
+          c = await f.revise(b, "C")
+        const current = f.publications[2],
+          old = f.publications[0]
+        expect(() => old.owner.expectPublication(old.published!.bound, old.published!.publication)).toThrow(
+          "Planning generation",
+        )
+        release()
+        for (let i = 0; i < 100; i++) await Promise.resolve()
+        expect(f.calls.toasts).toEqual([])
+        expect(() => current.owner.assertCurrent()).not.toThrow()
+        expect(current.published!.bound.revision!.text).toBe("C")
+        c.click(0)
+        await settleUntil(() => f.calls.claims.length === 1)
+        expect(f.calls.claims[0].publicationID).toBe(current.published!.publication.id)
+      } finally {
+        release()
+      }
+    })
+  })
+
+snapshotTest("authorization claim and transfer reject new and delayed revision input", async (observer) => {
+  await revisionFixture(observer, async (f) => {
+    const a = f.view()
+    let release!: (text: string) => void
+    f.state.prompt = () =>
+      new Promise((resolve) => {
+        release = resolve
+      })
+    a.click(2)
+    a.click(0)
+    release("Too late")
+    a.click(2)
+    await settleUntil(() => f.calls.claims.length === 1)
+    a.click(2)
+    for (let i = 0; i < 30; i++) await Promise.resolve()
+    expect(f.state.grants).toEqual([])
+    expect(f.server.originals).toHaveLength(1)
+  })
+})
+
+snapshotTest("revision lineage binds the admitted corrected call after a pre-admission denial", async (observer) => {
+  await revisionFixture(observer, async (f) => {
+    const dispatch = f.server.dispatch
+    f.server.dispatch = async (input, options = {}) => {
+      if (options.id === "revision-call-1") {
+        const deniedError = await dispatch(
+          { ...input, prompt: "Incorrect proposed revision input" },
+          { ...options, id: "denied-revision-call", messageID: "denied-revision-message" },
+        ).then(
+          () => undefined,
+          (error: unknown) => error,
+        )
+        expect(String(deniedError)).toContain("One governed Planner")
+        // Denial precedes the native executor and carries no admission receipt.
+        expect(f.server.originals).toHaveLength(1)
+        const denied = f.histories.ses_parent.find((message) => message.id === "denied-revision-message").content[0]
+        expect(denied.state.status).toBe("error")
+        expect(denied.state.metadata?.[plannerReceiptKey]).toBeUndefined()
+        expect(denied.state.metadata?.sessionID).toBeUndefined()
+      }
+      return await dispatch(input, options)
+    }
+    const a = f.view(),
+      b = await f.revise(a, "B after correcting the denied call")
+    expect(f.calls.toasts).toEqual([])
+    const publishedB = f.publications[1].published!
+    expect(publishedB.bound.planner.messageID).toBe("revision-message-1")
+    expect(publishedB.bound.planner.toolID).toBe("revision-call-1")
+    expect(publishedB.bound.planner.effective.revision).toEqual(f.state.grants[0])
+    expect(publishedB.bound.planner.effective.turn).toMatchObject({
+      messageID: "revision-message-1",
+      toolID: "revision-call-1",
+    })
+    const c = await f.revise(b, "C must follow the admitted call")
+    expect(f.calls.toasts).toEqual([])
+    const publishedC = f.publications[2].published!
+    expect(publishedC.bound.revision?.source).toEqual({
+      messageID: publishedB.bound.planner.messageID,
+      toolID: publishedB.bound.planner.toolID,
+      childID: publishedB.bound.planner.childID,
+    })
+    expect(publishedC.bound.revision?.source.toolID).not.toBe("denied-revision-call")
+    expect(publishedC.bound.planner.childID).not.toBe(publishedB.bound.planner.childID)
+    expect(f.server.originals).toHaveLength(3)
+    expect(f.state.grants).toHaveLength(2)
+    expect(() => f.publications[2].owner.assertCurrent()).not.toThrow()
+    c.click(0)
+    await settleUntil(() => f.calls.claims.length === 1)
+    expect(f.calls.claims[0].publicationID).toBe(publishedC.publication.id)
+  })
+})
+
+snapshotTest("ungranted native Planner calls remain spent after sequential trusted revisions", async (observer) => {
+  await revisionFixture(observer, async (f) => {
+    const a = f.view(),
+      b = await f.revise(a, "B"),
+      c = await f.revise(b, "C")
+    const count = f.server.originals.length
+    await expect(
+      f.server.dispatch(
+        { agent: "planner", description: "Ungrant", prompt: "New task" },
+        { sessionID: "ses_parent", messageID: "ungranted-message", id: "ungranted-call" },
+      ),
+    ).rejects.toThrow("One governed Planner")
+    expect(f.server.originals).toHaveLength(count)
+    f.emit({ type: "session.tool.failed", data: { sessionID: "ses_parent" } })
+    c.click(0)
+    expect(f.calls.claims).toEqual([])
+    expect(() => f.publications[2].owner.assertCurrent()).toThrow()
+  })
+})
+
+snapshotTest(
+  "unsupported revised Planner history and unknown root children fail publication closed",
+  async (observer) => {
+    for (const mutation of ["history", "child"])
+      await revisionFixture(observer, async (f) => {
+        f.server.state.onNative = async () => {
+          const childID = f.server.progress.at(-1).sessionID
+          if (mutation === "history")
+            f.server.histories[childID].splice(1, 0, { type: "system", id: "unexpected-system", text: "Unexpected" })
+          else {
+            f.server.sessions.ses_unknown = { ...f.server.sessions[childID], id: "ses_unknown" }
+            f.server.histories.ses_unknown = structuredClone(f.server.histories[childID])
+          }
+        }
+        const a = f.view()
+        await f.revise(a, "B")
+        await settleUntil(() => f.calls.toasts.some((message) => message.includes("STOP")))
+        expect(f.calls.claims).toEqual([])
+        expect(() => f.publications[0].owner.assertCurrent()).toThrow()
+        expect(f.view().buttons).toEqual([])
+      })
+  },
+)
+
+snapshotTest(
+  "TUI location loss after synchronous supersession stops before inbox retirement or wake",
+  async (observer) => {
+    await revisionFixture(observer, async (f) => {
+      f.state.onGrant = () => {
+        ;(f.context.location as any).directory += "/changed"
+      }
+      await f.revise(f.view(), "B")
+      await settleUntil(() => f.calls.toasts.some((message) => message.includes("STOP")))
+      expect(f.state.order).toEqual(["grant"])
+      expect(f.server.originals).toHaveLength(1)
+      expect(f.calls.claims).toEqual([])
+      expect(() => f.publications[0].owner.assertCurrent()).toThrow()
+    })
+  },
+)
+
+snapshotTest("actual retired inbox resurrection and current projection changes still fail closed", async (observer) => {
+  for (const mutation of ["inbox", "projection"])
+    await revisionFixture(observer, async (f) => {
+      const a = f.view(),
+        b = await f.revise(a, "B")
+      if (mutation === "inbox") f.inboxes.ses_parent.push(f.publications[0].published!.publication)
+      else
+        f.cache.ses_parent.find((message) => message.id === f.publications[1].published!.publication.id).description +=
+          " altered"
+      expect(() => f.publications[1].owner.assertCurrent()).toThrow("projection changed")
+      f.renderer.emit("resize")
+      f.renderer.emit("frame")
+      b.click(0)
+      expect(f.calls.claims).toEqual([])
+      expect(f.view().buttons).toEqual([])
+    })
+})
+
+snapshotTest(
+  "teardown retires the latest revision and rejects delayed dialog input and late completion",
+  async (observer) => {
+    await revisionFixture(observer, async (f) => {
+      const a = f.view(),
+        b = await f.revise(a, "B")
+      let release!: (text: string) => void
+      f.state.prompt = () =>
+        new Promise((resolve) => {
+          release = resolve
+        })
+      b.click(2)
+      f.cleanup()
+      release("C")
+      f.emit({ type: "session.execution.succeeded", id: "evt_revision-1", data: { sessionID: "ses_parent" } })
+      f.renderer.emit("resize")
+      f.renderer.emit("frame")
+      for (let i = 0; i < 30; i++) await Promise.resolve()
+      for (const record of f.publications) expect(() => record.owner.assertCurrent()).toThrow()
+      expect(f.state.grants).toHaveLength(1)
+      expect(f.calls.claims).toEqual([])
+      expect(f.view().buttons).toEqual([])
+    })
   },
 )

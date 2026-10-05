@@ -7,7 +7,7 @@ import { randomUUID } from "node:crypto"
 import { assertLive, exactKeys, frozenCopy, type Generation } from "./cap.ts"
 import { observeGit, requireFresh, type GitSnapshot } from "./git.ts"
 import { candidateIntact, makeCandidate, parseProposal, renderPlan } from "./proposal.ts"
-import type { IntentCandidate } from "./proposal.ts"
+import type { IntentCandidate, Proposal } from "./proposal.ts"
 import { authorizeRpc } from "./authorize-rpc.ts"
 import { receiptInput } from "./receipt.ts"
 
@@ -34,6 +34,83 @@ Before launching Explorer work, identify useful independent investigations alrea
 Once multiple useful independent Explorer investigations are known, emit all corresponding \`subagent\` tool calls in the same assistant response before consuming any Explorer result.
 Do not emit one known-independent Explorer call, wait for its result, and then emit another already-known independent call.`
 export const plannerReceiptKey = "opencodeAgentsPlannerInput"
+// Literal input selected by the publication owner, never inferred from root prose.
+export type Revision = Readonly<{
+  controlID: string
+  publicationID: string
+  parentID: string
+  userID: string
+  request: string
+  proposal: Proposal
+  text: string
+  precedingIdleID: string
+  source: Readonly<{ messageID: string; toolID: string; childID: string }>
+}>
+export function revisionInput(published: PublishedAttempt, text: string): Revision {
+  return frozenCopy({
+    controlID: `msg_${randomUUID()}`,
+    publicationID: published.publication.id,
+    parentID: published.bound.parentID,
+    userID: published.bound.userID,
+    request: published.bound.request,
+    proposal: published.candidate.proposal,
+    text,
+    precedingIdleID: published.bound.terminalIdleID,
+    source: {
+      messageID: published.bound.planner.messageID,
+      toolID: published.bound.planner.toolID,
+      childID: published.bound.planner.childID,
+    },
+  })
+}
+export function checkedRevision(value: unknown): Revision {
+  if (
+    !exactKeys(value, [
+      "controlID",
+      "publicationID",
+      "parentID",
+      "userID",
+      "request",
+      "proposal",
+      "text",
+      "precedingIdleID",
+      "source",
+    ]) ||
+    ![
+      value.controlID,
+      value.publicationID,
+      value.parentID,
+      value.userID,
+      value.request,
+      value.text,
+      value.precedingIdleID,
+    ].every((item) => typeof item === "string" && !!item.trim()) ||
+    !exactKeys(value.source, ["messageID", "toolID", "childID"]) ||
+    !Object.values(value.source).every((item) => typeof item === "string" && !!item.trim()) ||
+    !exactKeys(value.proposal, ["intent", "plan", "files"]) ||
+    typeof value.proposal.intent !== "string" ||
+    !value.proposal.intent.trim() ||
+    typeof value.proposal.plan !== "string" ||
+    !value.proposal.plan.trim() ||
+    !Array.isArray(value.proposal.files) ||
+    !value.proposal.files.every((item) => typeof item === "string")
+  )
+    stop("malformed trusted revision input")
+  return frozenCopy(value) as Revision
+}
+const revisionPrompt = (revision: Revision) =>
+  `${plannerInput(revision.request)}\n\nRevise this exact frozen proposal:\n${JSON.stringify(revision.proposal)}\n\nExact human revision instruction:\n${JSON.stringify(revision.text)}`
+export const revisionArguments = (revision: Revision) => ({
+  agent: "planner" as const,
+  description: "Revise the published plan",
+  prompt: revisionPrompt(revision),
+})
+export const revisionControl = (revision: Revision) =>
+  [
+    "Propose exactly one foreground native subagent call with exactly these arguments:",
+    JSON.stringify(revisionArguments(revision)),
+    "Do not add keys, reuse a session, or change these values. After its result, finish with prose. Trusted runtime owns Plan publication; no implementation is authorized.",
+  ].join("\n")
 export function plannerArguments(value: unknown) {
   if (
     !exactKeys(value, ["agent", "description", "prompt"]) ||
@@ -47,10 +124,19 @@ export function plannerArguments(value: unknown) {
   return { agent: "planner" as const, description: value.description, prompt: value.prompt }
 }
 type PlannerTurn = Readonly<{ precedingIdleID: string | null; messageID: string; toolID: string }>
-export const plannerReceipt = (userID: string, description: string, request: string, turn: PlannerTurn) => ({
+export const plannerReceipt = (
+  userID: string,
+  description: string,
+  request: string,
+  turn: PlannerTurn,
+  revision?: Revision,
+) => ({
   userID,
-  input: { agent: "planner" as const, description, prompt: plannerInput(request) },
+  input: revision
+    ? revisionArguments(revision)
+    : { agent: "planner" as const, description, prompt: plannerInput(request) },
   turn,
+  ...(revision ? { revision } : {}),
 })
 function effectivePlannerReceipt(
   value: unknown,
@@ -58,17 +144,18 @@ function effectivePlannerReceipt(
   request: string,
   proposed: ReturnType<typeof plannerArguments>,
   turn: PlannerTurn,
+  revision?: Revision,
 ) {
-  if (!exactKeys(value, ["userID", "input", "turn"])) stop("missing or malformed trusted Planner input receipt")
+  if (!exactKeys(value, revision ? ["userID", "input", "turn", "revision"] : ["userID", "input", "turn"]))
+    stop("missing or malformed trusted Planner input receipt")
   plannerArguments(value.input)
-  const expected = plannerReceipt(userID, proposed.description, request, turn)
+  const expected = plannerReceipt(userID, proposed.description, request, turn, revision)
   if (!same(value, expected)) stop("trusted Planner input receipt differs from the root request")
   return expected
 }
 // Pinned native bootstrap; authorized payload remains exact.
 export const nativeBootstrap = (prompt: string): string => `You are a subagent spawned by another session.\n${prompt}`
 
-type Assistant = Extract<SessionMessageInfo, { type: "assistant" }>
 type Location = SessionInfo["location"]
 // OpenCode's TUI supplies reactive location info, including project metadata.
 // Retain only Location.Ref's primitive identity fields, never the host proxy.
@@ -92,6 +179,7 @@ export type Bound = Readonly<{
   plannerChild: Child
   parentCreatedAt: number
   terminalIdleID: string
+  revision?: Revision
 }>
 
 type Created = Extract<OpenCodeEvent, { type: "session.created" }>
@@ -244,15 +332,15 @@ function successful(session: SessionInfo, id: string, agent: string, location: L
   )
     stop(`unexpected ${agent} session identity, outcome, or permissions`)
 }
-function oneFinal(history: SessionMessageInfo[], agent: string): Assistant {
-  const assistants = history.filter((message): message is Assistant => message.type === "assistant")
+function oneFinal(history: readonly RootMessage[], agent: string) {
+  const assistants = history.filter((message) => message.type === "assistant")
   const final = assistants.at(-1)
   if (!final || final.finish !== "stop" || assistants.some((message) => message.agent !== agent || message.error)) {
     stop(`unexpected ${agent} assistant result`)
   }
   return final
 }
-function finalText(message: Assistant): string {
+function finalText(message: Extract<RootMessage, { type: "assistant" }>): string {
   return message.content
     .filter((part) => part.type === "text")
     .map((part) => part.text)
@@ -320,7 +408,7 @@ function nonGovernedTurn(history: readonly RootMessage[]): void {
     if (!nonGovernedTool(part)) stop("earlier root turn contains governed or unsafe execution evidence")
   }
 }
-function rootSegment(history: readonly RootMessage[], terminalIdleID?: string) {
+function rootSegment(history: readonly RootMessage[], terminalIdleID?: string, revision?: Revision) {
   if (new Set(history.map((message) => message.id)).size !== history.length) stop("duplicate message ID")
   let end = history.length
   if (terminalIdleID !== undefined) {
@@ -332,24 +420,86 @@ function rootSegment(history: readonly RootMessage[], terminalIdleID?: string) {
   rootTools(history.slice(0, end))
   let start = 0
   let precedingIdleID: string | null = null
+  let previous: ReturnType<typeof completedCalls> | undefined
   for (let index = 0; index < end - (terminalIdleID === undefined ? 0 : 1); index++) {
     const message = history[index]!
     if (message.type !== "idle") continue
     if (message.outcome !== "succeeded") stop("earlier root turn did not succeed")
-    nonGovernedTurn(history.slice(start, index + 1))
+    const earlier = history.slice(start, index + 1)
+    const governed = rootTools(earlier).filter(({ part }) => !nonGovernedTool(part))
+    if (revision && governed.length) {
+      // Denied pre-admission calls have no trusted execution evidence. Recover
+      // the receipt from the sole governed call, then verify its full binding.
+      const call = governed[0]
+      if (governed.length !== 1 || !call || call.part.name !== "subagent")
+        stop("parent did not make exactly one native Planner call")
+      const receipt = "metadata" in call.part.state ? call.part.state.metadata?.[plannerReceiptKey] : undefined
+      const priorRevision =
+        receipt && typeof receipt === "object" && "revision" in receipt ? checkedRevision(receipt.revision) : undefined
+      if (priorRevision) {
+        if (!previous || !revisionFollows(priorRevision, previous)) stop("revision history lineage changed")
+      } else if (previous) stop("ungranted second initial Planner")
+      previous = completedCalls(governedSegment(earlier, precedingIdleID, undefined, priorRevision), message.id)
+      if (previous.userID !== revision.userID || previous.request !== revision.request)
+        stop("original revision request changed")
+    } else {
+      if (previous) stop("unrelated input follows planning")
+      nonGovernedTurn(earlier)
+    }
     start = index + 1
     precedingIdleID = message.id
   }
+  if (revision && (!previous || !revisionFollows(revision, previous)))
+    stop("revision does not follow the bound Planner")
   return { segment: history.slice(start, end), precedingIdleID, end }
+}
+function revisionFollows(revision: Revision, previous: ReturnType<typeof completedCalls>) {
+  return (
+    revision.userID === previous.userID &&
+    revision.request === previous.request &&
+    revision.precedingIdleID === previous.terminalIdleID &&
+    same(revision.source, {
+      messageID: previous.planner.messageID,
+      toolID: previous.planner.toolID,
+      childID: previous.planner.childID,
+    })
+  )
 }
 function governedTurn(
   history: readonly RootMessage[],
   terminalIdleID?: string,
   invocation?: { messageID: string; id: string },
+  revision?: Revision,
 ) {
-  const { segment, precedingIdleID, end } = rootSegment(history, terminalIdleID)
-  const user = rootUser(segment)
-  if (segment.some((message) => !["user", "assistant", "idle", "model-switched"].includes(message.type)))
+  const { segment, precedingIdleID, end } = rootSegment(history, terminalIdleID, revision)
+  if (end !== history.length) stop("new input follows governed completion")
+  return governedSegment(segment, precedingIdleID, invocation, revision)
+}
+function governedSegment(
+  segment: readonly RootMessage[],
+  precedingIdleID: string | null,
+  invocation?: { messageID: string; id: string },
+  revision?: Revision,
+) {
+  const control = segment[0]
+  if (
+    revision &&
+    (precedingIdleID !== revision.precedingIdleID ||
+      control?.type !== "synthetic" ||
+      control.id !== revision.controlID ||
+      control.text !== revisionControl(revision) ||
+      !exactKeys(control.metadata, ["source"]) ||
+      control.metadata.source !== "opencode-agents-revision")
+  )
+    stop("trusted revision control changed")
+  const user = revision ? { id: revision.userID, text: revision.request } : rootUser(segment)
+  if (
+    segment.some(
+      (message, index) =>
+        !(revision && index === 0) &&
+        ![...(revision ? [] : ["user"]), "assistant", "idle", "model-switched"].includes(message.type),
+    )
+  )
     stop("unexpected parent input or control message")
   const tools = rootTools(segment).filter(
     ({ messageID, part }) =>
@@ -359,18 +509,28 @@ function governedTurn(
   if (tools.length !== 1 || !call || call.part.name !== "subagent")
     stop("parent did not make exactly one native Planner call")
   const proposed = plannerArguments(call.part.state.input)
+  if (revision && !same(proposed, revisionArguments(revision))) stop("revision Planner arguments changed")
   const turn = { precedingIdleID, messageID: call.messageID, toolID: call.part.id }
-  if (end !== history.length) stop("new input follows governed completion")
-  return { user, call, proposed, turn, segment }
+  return { user, call, proposed, turn, segment, revision }
 }
-export function plannerTurnInput(history: readonly RootMessage[], invocation: { messageID: string; id: string }) {
-  const { user, call, proposed, turn } = governedTurn(history, undefined, invocation)
+export function plannerTurnInput(
+  history: readonly RootMessage[],
+  invocation: { messageID: string; id: string },
+  revision?: Revision,
+) {
+  const { user, call, proposed, turn } = governedTurn(history, undefined, invocation, revision)
   if (call.messageID !== invocation.messageID || call.part.id !== invocation.id || call.part.state.status !== "running")
     stop("Planner native contender identity changed")
-  return { proposed, effective: plannerReceipt(user.id, proposed.description, user.text, turn) }
+  return { proposed, effective: plannerReceipt(user.id, proposed.description, user.text, turn, revision) }
 }
-function parentCalls(history: SessionMessageInfo[], terminalIdleID: string) {
-  const { user, call, proposed, turn, segment } = governedTurn(history, terminalIdleID)
+export function completedPlannerTurn(history: readonly RootMessage[], terminalIdleID: string, revision?: Revision) {
+  return completedCalls(governedTurn(history, terminalIdleID, undefined, revision), terminalIdleID)
+}
+const parentCalls = completedPlannerTurn
+function completedCalls(
+  { user, call, proposed, turn, segment, revision }: ReturnType<typeof governedSegment>,
+  terminalIdleID: string,
+) {
   const final = segment.filter((message) => message.type === "assistant").at(-1)
   if (final?.type !== "assistant" || final.finish !== "stop") stop("parent final result is missing")
   const tool = call.part
@@ -384,22 +544,25 @@ function parentCalls(history: SessionMessageInfo[], terminalIdleID: string) {
     user.text,
     proposed,
     turn,
+    revision,
   )
   return {
     userID: user.id,
     request: user.text,
     planner: { messageID: call.messageID, toolID: tool.id, childID, proposed, effective },
     terminalIdleID,
+    ...(revision ? { revision } : {}),
   }
 }
 export function inspectCompletedRootTurn(
   history: SessionMessageInfo[],
   terminalIdleID: string,
+  revision?: Revision,
 ): { kind: "non-governed" } | { kind: "governed"; terminalIdleID: string } | { kind: "invalid"; reason: string } {
   try {
-    const { segment } = rootSegment(history, terminalIdleID)
+    const { segment } = rootSegment(history, terminalIdleID, revision)
     if (rootTools(segment).some(({ part }) => !nonGovernedTool(part))) {
-      parentCalls(history, terminalIdleID)
+      parentCalls(history, terminalIdleID, revision)
       return { kind: "governed", terminalIdleID }
     }
     nonGovernedTurn(segment)
@@ -413,13 +576,22 @@ export async function inspectRootCompletion(
   activation: ActivationEvidence,
   guard: AttemptGuard,
   terminalIdleID: string,
+  revision?: Revision,
 ) {
   const check = checks(context, activation, guard)
   check()
-  return inspectCompletedRootTurn(await messages(context, activation.creation.data.sessionID, check), terminalIdleID)
+  return inspectCompletedRootTurn(
+    await messages(context, activation.creation.data.sessionID, check),
+    terminalIdleID,
+    revision,
+  )
 }
 // Native permissions govern observations; history binds supported input and final output.
-function verifyChildHistory(history: SessionMessageInfo[], agent: "planner" | "explorer", prompt: string): Child {
+export function verifyChildHistory(
+  history: readonly RootMessage[],
+  agent: "planner" | "explorer",
+  prompt: string,
+): Child {
   const users = history.filter((message) => message.type === "user")
   if (
     users.length !== 1 ||
@@ -528,17 +700,39 @@ async function bindNativeAttempt(
   parentID: string,
   location: Location,
   terminalIdleID: string,
+  revision?: Revision,
 ): Promise<Bound> {
   const parent = await after(check, context.client.session.get({ sessionID: parentID }))
   successful(parent, parentID, "orchestrator", location)
   await idle(context, parentID, check)
   const parentHistory = await messages(context, parentID, check)
-  const calls = parentCalls(parentHistory, terminalIdleID)
+  const calls = parentCalls(parentHistory, terminalIdleID, revision)
   if (calls.planner.childID === parentID) stop("Planner is not a fresh child")
   const planner = await after(check, context.client.session.get({ sessionID: calls.planner.childID }))
   successful(planner, calls.planner.childID, "planner", location, parentID)
   await idle(context, planner.id, check)
   const plannerChild = await verifyPlannerHistory(context, check, planner, calls.planner.effective.input.prompt)
+  if (revision) {
+    // Retired native Planners remain root children. Unknown children must not
+    // hide in the interval before the new bound child is installed in Ownership.
+    const plannerIDs = parentHistory.flatMap((message) =>
+      message.type === "assistant"
+        ? message.content.flatMap((part) =>
+            part.type === "tool" &&
+            part.name === "subagent" &&
+            part.state.status === "completed" &&
+            typeof part.state.metadata?.sessionID === "string"
+              ? [part.state.metadata.sessionID]
+              : [],
+          )
+        : [],
+    )
+    const expected = new Set(plannerIDs)
+    if (expected.size !== plannerIDs.length) stop("Planner generations reused a child")
+    const actual = await children(context, parentID, check)
+    if (actual.size !== expected.size || [...actual].some((id) => !expected.has(id)))
+      stop("root children differ from trusted Planner generations")
+  }
   return frozenCopy({ parentID, ...calls, plannerChild, parentCreatedAt: parent.time.created })
 }
 function checkedPublication(
@@ -560,16 +754,32 @@ function checkedPublication(
 }
 export function assertPublishedCoherence(published: PublishedAttempt): void {
   const { activation, bound, candidate, publication } = published
+  if (bound.revision) {
+    const revision = checkedRevision(bound.revision)
+    if (
+      revision.parentID !== bound.parentID ||
+      revision.userID !== bound.userID ||
+      revision.request !== bound.request ||
+      revision.precedingIdleID !== bound.planner.effective.turn.precedingIdleID
+    )
+      stop("retained revision input is incoherent")
+  }
   if (
     bound.parentID !== activation.creation.data.sessionID ||
     (Number.isFinite(activation.creation.created) && bound.parentCreatedAt !== activation.creation.created) ||
     !same(
       bound.planner.effective,
-      plannerReceipt(bound.userID, bound.planner.proposed.description, bound.request, {
-        precedingIdleID: bound.planner.effective.turn.precedingIdleID,
-        messageID: bound.planner.messageID,
-        toolID: bound.planner.toolID,
-      }),
+      plannerReceipt(
+        bound.userID,
+        bound.planner.proposed.description,
+        bound.request,
+        {
+          precedingIdleID: bound.planner.effective.turn.precedingIdleID,
+          messageID: bound.planner.messageID,
+          toolID: bound.planner.toolID,
+        },
+        bound.revision,
+      ),
     ) ||
     !candidateIntact(candidate) ||
     candidate.root !== activation.baseline.root ||
@@ -612,13 +822,14 @@ async function verifyParentPlanner(context: Context, published: PublishedAttempt
   if (active[bound.parentID] || inbox.length !== 1 || !publicationMatches(inbox[0], published))
     stop("root is running or pending publication changed")
   const parentHistory = await messages(context, bound.parentID, check)
-  const calls = parentCalls(parentHistory, bound.terminalIdleID)
+  const calls = parentCalls(parentHistory, bound.terminalIdleID, bound.revision)
   if (
     !same(calls, {
       userID: bound.userID,
       request: bound.request,
       planner: bound.planner,
       terminalIdleID: bound.terminalIdleID,
+      ...(bound.revision ? { revision: bound.revision } : {}),
     })
   )
     stop("parent call binding changed")
@@ -651,12 +862,13 @@ export async function verifyPublishedAttempt(
   check()
 }
 
-// One publication per root attempt; no implementation authority is created here.
+// One publication per granted planning generation; no implementation authority is created here.
 export async function publishPlan(
   context: Context,
   activation: ActivationEvidence,
   guard: PublicationOwner,
   terminalIdleID: string,
+  revision?: Revision,
 ): Promise<PublishedAttempt> {
   const { generation, baseline, location, creation } = activation
   const parentID = creation.data.sessionID
@@ -668,7 +880,7 @@ export async function publishPlan(
     check()
     observePublication(activation)
     await after(check, context.client.session.wait({ sessionID: parentID }))
-    const bound = await bindNativeAttempt(context, check, parentID, location, terminalIdleID)
+    const bound = await bindNativeAttempt(context, check, parentID, location, terminalIdleID, revision)
     if (Number.isFinite(creation.created) && bound.parentCreatedAt !== creation.created)
       stop("root creation evidence changed")
     const candidate = makeCandidate(parseProposal(bound.plannerChild.text, baseline.root), baseline.root, baseline.head)

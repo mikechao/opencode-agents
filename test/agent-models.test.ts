@@ -378,7 +378,7 @@ test("settings RPC contracts validate on both sides and expose no authorization 
   const rpc = { error: (type: string, message: string) => ({ type, message }) } as any
   expect(agentModelsRpc.id).not.toBe(authorizeRpc.id)
   expect(Object.keys(agentModelsRpc.methods)).toEqual(["list", "set", "reset"])
-  expect(Object.keys(authorizeRpc.methods)).toEqual(["authorize"])
+  expect(Object.keys(authorizeRpc.methods)).toEqual(["authorize", "revise"])
   for (const method of Object.values(agentModelsRpc.methods)) {
     for (const schema of [method.input, method.output, ...Object.values(method.errors)]) {
       expect(Reflect.ownKeys(schema)).toEqual(["~standard"])

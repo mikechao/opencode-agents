@@ -9,6 +9,10 @@ export const authorizeRpc = Rpc.define({
       input: { type: "object" } as const,
       output: { type: "string" } as const,
     },
+    revise: {
+      input: { type: "object" } as const,
+      output: { type: "null" } as const,
+    },
   },
   events: {},
 })

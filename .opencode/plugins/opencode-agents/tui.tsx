@@ -7,6 +7,7 @@ import { displayPath } from "../../../src/proposal.ts"
 import type { Generation } from "../../../src/cap.ts"
 import { registerAgentModels } from "./agent-models-ui.ts"
 import { observeGit, requireFresh } from "../../../src/git.ts"
+import { authorizeRpc } from "../../../src/authorize-rpc.ts"
 import {
   activationEvidence,
   authorizePublishedAttempt,
@@ -23,6 +24,9 @@ import {
   type ExpectedPublication,
   type PublicationOwner,
   type PublishedAttempt,
+  revisionInput,
+  revisionControl,
+  type Revision,
 } from "../../../src/attempt.ts"
 
 const dirtyStatus =
@@ -120,13 +124,23 @@ const plugin: Definition = {
     function ownRoot(creation: Created, observation: NonNullable<ReturnType<typeof observe>>) {
       const generation: Generation = { revoked: false, busy: false }
       const { location, baseline, observationCompletedAt } = observation
+      type Planning = { readonly revision?: Revision }
       type Ownership =
-        | { kind: "waiting"; creation: Created }
-        | { kind: "binding"; creation: Created }
-        | { kind: "publishing"; creation: Created; bound: Bound; expected: ExpectedPublication }
-        | { kind: "retained" | "pending" | "deciding" | "transferred"; creation: Created; published: PublishedAttempt }
+        | ((
+            | { kind: "waiting"; creation: Created }
+            | { kind: "binding"; creation: Created }
+            | { kind: "publishing"; creation: Created; bound: Bound; expected: ExpectedPublication }
+            | {
+                kind: "retained" | "pending" | "deciding" | "transferred"
+                creation: Created
+                published: PublishedAttempt
+              }
+          ) & { planning: Planning })
         | { kind: "closed" }
-      let ownership: Ownership = { kind: "waiting", creation }
+      let ownership: Ownership = { kind: "waiting", creation, planning: {} }
+      const retiredPublications = new Set<string>()
+      const retiredPlanners = new Set<string>()
+      const retiredCalls = new Set<string>()
       const rootSessionID = creation.data.sessionID
       let pendingSurfaceUsable: (() => boolean) | undefined
       let invalidateLayout: (() => void) | undefined
@@ -199,7 +213,13 @@ const plugin: Definition = {
         expectPublication(bound, expected) {
           if (generation.revoked || ownership.kind !== "binding")
             throw new Error("Publication no longer owns the binding attempt")
-          ownership = { kind: "publishing", creation: ownership.creation, bound, expected }
+          ownership = {
+            kind: "publishing",
+            creation: ownership.creation,
+            bound,
+            expected,
+            planning: ownership.planning,
+          }
         },
         transfer() {
           guard.assertCurrent()
@@ -216,7 +236,7 @@ const plugin: Definition = {
           if (ownership.kind === "closed" || generation.revoked)
             throw new Error("Attempt ownership was closed or revoked")
           if (ownership.kind === "transferred") return
-          if (ownership.kind !== "waiting") {
+          if (ownership.kind !== "waiting" || ownership.planning.revision) {
             // A pending Plan belongs to the attempt, not the mounted route.
             // Only a claimed decision must retain the root view until transfer.
             if (
@@ -228,6 +248,22 @@ const plugin: Definition = {
           if ("published" in ownership && !publishedPresentationMatches(context, ownership.published))
             throw new Error("Published Plan projection changed")
         },
+      }
+      const currentPlanning = (planning: Planning) =>
+        !generation.revoked && ownership.kind !== "closed" && ownership.planning === planning
+      const planningGuard = (planning: Planning): PublicationOwner => ({
+        assertCurrent() {
+          if (ownership.kind === "closed" || generation.revoked) guard.assertCurrent()
+          if (!currentPlanning(planning)) throw new Error("Planning generation no longer owns this root")
+          guard.assertCurrent()
+        },
+        expectPublication(bound, expected) {
+          this.assertCurrent()
+          guard.expectPublication(bound, expected)
+        },
+      })
+      const planningFailed = (planning: Planning, error: unknown) => {
+        if (currentPlanning(planning)) admissionFailed(error)
       }
       const binding = (published: PublishedAttempt) =>
         `Plan ${published.candidate.digest.slice(0, 12)} · HEAD ${published.candidate.head.slice(0, 12)}`
@@ -255,12 +291,14 @@ const plugin: Definition = {
       const armRetained = () => {
         if (ownership.kind !== "retained" || generation.revoked || !rootSelected()) return
         const captured = ownership.published
+        const planning = ownership.planning
+        const owned = planningGuard(planning)
         // Prepare this exact Plan once. Pending ownership survives route changes;
         // navigation never starts another preparation or publication.
         ownership = { ...ownership, kind: "pending" }
-        void verifyPublishedAttempt(context, captured, guard)
+        void verifyPublishedAttempt(context, captured, owned)
           .then(() => {
-            guard.assertCurrent()
+            owned.assertCurrent()
             if (ownership.kind !== "pending" || ownership.published !== captured)
               throw new Error("Root preparation no longer owns the exact published attempt")
             requireFresh(observeGit(location.directory!, captured.activation.baseline), captured.activation.baseline)
@@ -268,7 +306,83 @@ const plugin: Definition = {
             ensurePresentation()
             setPresentation({ kind: "pending", published: captured })
           })
-          .catch(admissionFailed)
+          .catch((error) => planningFailed(planning, error))
+      }
+      const revise = async (captured: PublishedAttempt) => {
+        if (
+          ownership.kind !== "pending" ||
+          ownership.published !== captured ||
+          generation.revoked ||
+          generation.busy ||
+          !rootSelected() ||
+          !pendingSurfaceUsable?.()
+        )
+          return
+        const planning = ownership.planning
+        let failurePlanning = planning
+        try {
+          guard.assertCurrent()
+          const text = await context.ui.dialog.prompt({
+            title: `Revise ${binding(captured)}`,
+            description: "Describe the changes to this Plan. Submitting permanently supersedes it.",
+            placeholder: "Revision instruction",
+          })
+          if (text === undefined) return
+          if (!text.trim()) {
+            if (currentPlanning(planning)) present("Revise", "Enter a nonempty revision instruction.")
+            return
+          }
+          if (
+            ownership.kind !== "pending" ||
+            ownership.published !== captured ||
+            generation.revoked ||
+            generation.busy ||
+            !rootSelected() ||
+            !pendingSurfaceUsable?.()
+          )
+            return
+          guard.assertCurrent()
+          const revision = revisionInput(captured, text)
+          const next = { revision }
+          // Run-to-completion permanently removes A's decision authority. Every
+          // fallible/asynchronous replanning operation begins after this assignment.
+          ownership = { kind: "waiting", creation: ownership.creation, planning: next }
+          failurePlanning = next
+          retiredPublications.add(captured.publication.id)
+          retiredPlanners.add(captured.bound.planner.childID)
+          retiredCalls.add(JSON.stringify([captured.bound.planner.messageID, captured.bound.planner.toolID]))
+          invalidateLayout?.()
+          setPresentation({ kind: "status", message: "Plan superseded — replanning…" })
+          const owned = planningGuard(next)
+          void (async () => {
+            owned.assertCurrent()
+            await context.client.rpc(authorizeRpc).revise(revision, { location })
+            owned.assertCurrent()
+            await context.client.session.inbox.cancel({ sessionID: rootSessionID, inboxID: captured.publication.id })
+            owned.assertCurrent()
+            const admitted = await context.client.session.synthetic({
+              sessionID: rootSessionID,
+              id: revision.controlID,
+              text: revisionControl(revision),
+              metadata: { source: "opencode-agents-revision" },
+              delivery: "steer",
+              resume: true,
+            })
+            owned.assertCurrent()
+            if (
+              admitted.id !== revision.controlID ||
+              admitted.sessionID !== rootSessionID ||
+              admitted.type !== "synthetic" ||
+              admitted.delivery !== "steer" ||
+              admitted.payload.text !== revisionControl(revision) ||
+              admitted.payload.metadata?.source !== "opencode-agents-revision"
+            )
+              throw new Error("Revision control admission changed")
+          })().catch((error) => planningFailed(next, error))
+          setLayoutRevision((value) => value + 1)
+        } catch (error) {
+          planningFailed(failurePlanning, error)
+        }
       }
       const decide = (captured: PublishedAttempt, decision: "authorize" | "cancel") => {
         if (ownership.kind !== "pending" || generation.revoked || ownership.published !== captured || generation.busy)
@@ -325,6 +439,7 @@ const plugin: Definition = {
         let surface: Renderable | undefined
         let authorizeButton: Renderable | undefined
         let cancelButton: Renderable | undefined
+        let reviseButton: Renderable | undefined
         let worktreeText: Renderable | undefined
         let bindingText: Renderable | undefined
         let questionText: Renderable | undefined
@@ -383,10 +498,12 @@ const plugin: Definition = {
             inViewport(authorizeButton) &&
             authorizeButton.width >= 11 &&
             inViewport(cancelButton) &&
-            cancelButton.width >= 8
+            cancelButton.width >= 8 &&
+            inViewport(reviseButton) &&
+            reviseButton.width >= 8
           )
         }
-        pendingSurfaceUsable = () => {
+        const usable = () => {
           if (ownership.kind !== "pending" || ownership.published !== captured || !rootSelected()) return false
           if (!live(surface)) {
             terminate(new Error("Authorization surface is unavailable"))
@@ -402,6 +519,7 @@ const plugin: Definition = {
             validGeometry()
           )
         }
+        pendingSurfaceUsable = usable
         const checkLayout = () => {
           if (ownership.kind !== "pending" || ownership.published !== captured) return
           invalidate()
@@ -439,8 +557,8 @@ const plugin: Definition = {
         onCleanup(() => {
           context.renderer.off("frame", completedFrame)
           invalidate()
-          pendingSurfaceUsable = undefined
-          invalidateLayout = undefined
+          if (pendingSurfaceUsable === usable) pendingSurfaceUsable = undefined
+          if (invalidateLayout === invalidate) invalidateLayout = undefined
           if (ownership.kind === "pending" && ownership.published === captured) {
             // The host keys SessionFrame by route.sessionID and disposes this
             // slot on ordinary navigation. Drop its proof, retaining the exact
@@ -510,6 +628,20 @@ const plugin: Definition = {
               >
                 <text>Cancel</text>
               </box>
+              <box
+                ref={(node) => {
+                  reviseButton = node
+                }}
+                paddingX={1}
+                onMouseUp={(event) => {
+                  if (ready() && event.button === 0) {
+                    event.stopPropagation()
+                    void revise(captured)
+                  }
+                }}
+              >
+                <text>Revise</text>
+              </box>
             </box>
           </box>
         )
@@ -527,22 +659,28 @@ const plugin: Definition = {
         )
           return
         completed.add(event.id)
+        const planning = ownership.planning
+        const owned = planningGuard(planning)
         completionInspection = completionInspection
           .then(async () => {
-            if (generation.revoked || ownership.kind !== "waiting") return
+            if (!currentPlanning(planning) || ownership.kind !== "waiting") return
             const creation = ownership.creation
             const activation = activationEvidence(generation, location, baseline, observationCompletedAt, creation)
             if (!event.id.startsWith("evt_")) throw new Error("Completion event identity is missing")
             const terminalIdleID = event.id.replace(/^evt_/, "msg_")
-            const result = await inspectRootCompletion(context, activation, guard, terminalIdleID)
-            guard.assertCurrent()
+            const result = await inspectRootCompletion(context, activation, owned, terminalIdleID, planning.revision)
+            owned.assertCurrent()
             if (ownership.kind !== "waiting") return
             if (result.kind === "invalid") throw new Error(result.reason)
-            if (result.kind === "non-governed") return
-            ownership = { kind: "binding", creation }
+            if (result.kind === "non-governed") {
+              if (planning.revision) throw new Error("Revision did not execute its granted Planner")
+              return
+            }
+            ownership = { kind: "binding", creation, planning }
+            if (planning.revision) retiredPublications.add(planning.revision.controlID)
             setLayoutRevision((value) => value + 1)
-            const published = await publishPlan(context, activation, guard, result.terminalIdleID)
-            guard.assertCurrent()
+            const published = await publishPlan(context, activation, owned, result.terminalIdleID, planning.revision)
+            owned.assertCurrent()
             if (!initiallyAuthorizable(activation)) {
               const message = baseline.paths.length
                 ? dirtyStatus
@@ -558,10 +696,10 @@ const plugin: Definition = {
               return
             }
             requireFresh(observeGit(location.directory!, baseline), baseline)
-            ownership = { kind: "retained", creation, published }
+            ownership = { kind: "retained", creation, published, planning }
             setLayoutRevision((value) => value + 1)
           })
-          .catch(admissionFailed)
+          .catch((error) => planningFailed(planning, error))
       }
       // Before transfer, notifications invalidate TUI evidence on receipt;
       // independent publication reads also catch delayed notifications.
@@ -569,7 +707,37 @@ const plugin: Definition = {
         if (generation.revoked || ownership.kind === "closed" || ownership.kind === "transferred") return
         const creation = ownership.creation
         const sessionID = "sessionID" in event.data ? event.data.sessionID : undefined
+        if (typeof sessionID === "string" && retiredPlanners.has(sessionID)) return
+        if (
+          sessionID === rootSessionID &&
+          event.type.startsWith("session.tool.") &&
+          "assistantMessageID" in event.data &&
+          "id" in event.data &&
+          retiredCalls.has(JSON.stringify([event.data.assistantMessageID, event.data.id]))
+        )
+          return
+        if (
+          (event.type === "session.inbox.enqueued" ||
+            event.type === "session.inbox.delivered" ||
+            event.type === "session.inbox.cancelled" ||
+            event.type === "session.inbox.delivery.changed") &&
+          retiredPublications.has(event.data.inboxID)
+        )
+          return
         if (ownership.kind === "waiting") {
+          const revision = ownership.planning.revision
+          if (revision && sessionID === rootSessionID && event.type === "session.inbox.enqueued") {
+            const item = event.data.item
+            if (
+              event.data.inboxID !== revision.controlID ||
+              item.type !== "synthetic" ||
+              item.delivery !== "steer" ||
+              item.payload.text !== revisionControl(revision) ||
+              item.payload.metadata?.source !== "opencode-agents-revision"
+            )
+              terminate(new Error("Unexpected revision input; attempt terminated"))
+            return
+          }
           if (
             sessionID === creation.data.sessionID &&
             [
@@ -697,7 +865,7 @@ const plugin: Definition = {
             generation.revoked ||
             ownership.kind === "closed" ||
             ownership.kind === "transferred" ||
-            ownership.kind === "waiting"
+            (ownership.kind === "waiting" && !ownership.planning.revision)
           )
             return
           // Track retained/pending preparation and the positive decision until transfer.

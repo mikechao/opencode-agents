@@ -18,6 +18,12 @@ import {
   directRootTool,
   plannerReceiptKey,
   nativeReadInstruction,
+  checkedRevision,
+  completedPlannerTurn,
+  plannerInput,
+  revisionArguments,
+  type Revision,
+  verifyChildHistory,
 } from "./attempt.ts"
 import { parseProposal, candidateIntact, displayPath, type IntentCandidate } from "./proposal.ts"
 import {
@@ -146,8 +152,80 @@ export function nativeAdmission(context: Context) {
   // denied pre-admission calls create neither a slot nor CAP authority.
   const planners = new Map<
     string,
-    Readonly<{ call: Readonly<Reservation>; receipt: ReturnType<typeof plannerTurnInput>["effective"] }>
+    | (({ kind: "admitted" } | { kind: "completed"; childID: string }) & {
+        call: Readonly<Reservation>
+        receipt: ReturnType<typeof plannerTurnInput>["effective"]
+      })
+    | { kind: "registering" | "granted"; revision: Revision }
+    | { kind: "closed" }
   >()
+  const revise = (input: unknown) =>
+    Effect.gen(function* () {
+      const { revision, previous, registration } = yield* attempt(() => {
+        live()
+        const revision = checkedRevision(input)
+        const previous = planners.get(revision.parentID)
+        if (
+          !previous ||
+          previous.kind !== "completed" ||
+          caps.has(revision.parentID) ||
+          !same(revision.source, {
+            messageID: previous.call.messageID,
+            toolID: previous.call.id,
+            childID: previous.childID,
+          }) ||
+          revision.userID !== previous.receipt.userID ||
+          (previous.receipt.revision
+            ? revision.request !== previous.receipt.revision.request
+            : previous.receipt.input.prompt !== plannerInput(revision.request))
+        )
+          throw new Error("No completed Planner admission for revision grant")
+        const registration = { kind: "registering" as const, revision }
+        planners.set(revision.parentID, registration)
+        return { revision, previous, registration }
+      })
+      return yield* Effect.gen(function* () {
+        const root = yield* context.session.get({ sessionID: Session.ID.make(revision.parentID) })
+        const history = yield* context.session.context({ sessionID: root.id })
+        const child = yield* context.session.get({ sessionID: Session.ID.make(revision.source.childID) })
+        const childHistory = yield* context.session.context({ sessionID: child.id })
+        yield* attempt(() => {
+          live()
+          if (
+            planners.get(revision.parentID) !== registration ||
+            caps.has(revision.parentID) ||
+            !orchestratorRootMatches(root, revision.parentID, snapshotLocation(context.location)) ||
+            root.outcome !== "succeeded" ||
+            !root.time.idle ||
+            child.parentID !== root.id ||
+            child.agent !== "planner" ||
+            child.outcome !== "succeeded" ||
+            child.fork ||
+            child.revert ||
+            child.time.archived ||
+            !child.time.idle ||
+            !emptyPermissions(child.permissions) ||
+            !same(snapshotLocation(child.location), snapshotLocation(root.location))
+          )
+            throw new Error("Revision root or Planner identity changed")
+          const bound = completedPlannerTurn(history, revision.precedingIdleID, previous.receipt.revision)
+          if (!same(bound.planner.effective, previous.receipt) || bound.planner.childID !== child.id)
+            throw new Error("Revision source binding changed")
+          const result = verifyChildHistory(childHistory, "planner", previous.receipt.input.prompt)
+          if (!same(parseProposal(result.text, context.location.directory), revision.proposal))
+            throw new Error("Revision proposal changed")
+          planners.set(revision.parentID, { kind: "granted", revision })
+        })
+        return null
+      }).pipe(
+        Effect.onExit((exit) =>
+          Effect.sync(() => {
+            if (Exit.isFailure(exit) && planners.get(revision.parentID) === registration)
+              planners.set(revision.parentID, { kind: "closed" })
+          }),
+        ),
+      )
+    })
   let revoked = false
   // The location-scoped host activation owns one worktree. Hold exclusion from
   // before the wake through settlement/verification, independently of the root slots.
@@ -301,7 +379,9 @@ export function nativeAdmission(context: Context) {
         if (root.id === event.sessionID && root.parentID) return
         yield* attempt(() => {
           live()
-          if (planners.has(event.sessionID)) throw new Error("One governed Planner attempt per root")
+          const slot = planners.get(event.sessionID)
+          if (slot && (slot.kind !== "granted" || !same(event.input, revisionArguments(slot.revision))))
+            throw new Error("One governed Planner attempt per trusted grant")
           if (event.tool !== "subagent") throw new Error("Forbidden root tool contender")
           if (event.input && typeof event.input === "object" && "agent" in event.input && event.input.agent === target)
             throw new Error("No reserved Implementer call")
@@ -413,7 +493,8 @@ export function nativeAdmission(context: Context) {
       if (root.id === invocation.sessionID && root.parentID) return yield* original(yield* prepare(input), invocation)
       const call = yield* attempt(() => {
         live()
-        if (planners.has(invocation.sessionID)) throw new Error("One governed Planner attempt per root")
+        const slot = planners.get(invocation.sessionID)
+        if (slot && slot.kind !== "granted") throw new Error("One governed Planner attempt per trusted grant")
         return frozenCopy({
           sessionID: invocation.sessionID,
           agent: invocation.agent,
@@ -421,6 +502,8 @@ export function nativeAdmission(context: Context) {
           id: invocation.id,
         })
       })
+      const grant = planners.get(invocation.sessionID)
+      const revision = grant?.kind === "granted" ? grant.revision : undefined
       const history = yield* context.session.context({ sessionID: invocation.sessionID })
       const current = yield* context.session.get({ sessionID: invocation.sessionID })
       const receipt = yield* attempt(() => {
@@ -434,7 +517,7 @@ export function nativeAdmission(context: Context) {
             throw new Error("Planner root identity changed")
         }
         if (!same(snapshotLocation(context.location), location)) throw new Error("Server location changed")
-        const bound = plannerTurnInput(history, call)
+        const bound = plannerTurnInput(history, call, revision)
         if (!same(plannerArguments(input), bound.proposed)) throw new Error("Decoded Planner proposal changed")
         return frozenCopy(bound.effective)
       })
@@ -446,7 +529,7 @@ export function nativeAdmission(context: Context) {
       const latest = yield* context.session.context({ sessionID: invocation.sessionID })
       yield* attempt(() => {
         live()
-        const observed = plannerTurnInput(latest, call)
+        const observed = plannerTurnInput(latest, call, revision)
         if (
           caps.get(invocation.sessionID)?.rootSessionID === invocation.sessionID ||
           !same(snapshotLocation(context.location), location) ||
@@ -457,10 +540,11 @@ export function nativeAdmission(context: Context) {
         // The final synchronous barrier owns this exact invocation. No failure
         // or cancellation after entry restores eligibility; contenders before
         // this point never acquired it.
-        if (planners.has(invocation.sessionID)) throw new Error("One governed Planner attempt per root")
+        if (planners.get(invocation.sessionID) !== grant)
+          throw new Error("One governed Planner attempt per trusted grant")
         // One synchronous insertion records both admission and its exact input
         // evidence. Native code cannot run between spending and recording it.
-        planners.set(invocation.sessionID, Object.freeze({ call, receipt }))
+        planners.set(invocation.sessionID, Object.freeze({ kind: "admitted", call, receipt }))
       })
       return yield* Effect.gen(function* () {
         // Persist admitted-but-failed evidence through native progress/failure
@@ -481,6 +565,12 @@ export function nativeAdmission(context: Context) {
             result.metadata?.status !== "completed"
           )
             throw new Error("Planner did not return a completed native child")
+          const slot = planners.get(invocation.sessionID)
+          if (slot?.kind !== "admitted" || !same(slot.call, call)) throw new Error("Planner admission changed")
+          planners.set(
+            invocation.sessionID,
+            Object.freeze({ ...slot, kind: "completed", childID: result.output.sessionID }),
+          )
         })
         // Tool.Called retains proposed state.input; only trusted metadata records admission.
         const stamped: Tool.Result = { ...result, metadata: { ...result.metadata, [plannerReceiptKey]: receipt } }
@@ -491,6 +581,7 @@ export function nativeAdmission(context: Context) {
         const admitted = planners.get(invocation.sessionID)
         if (
           !admitted ||
+          (admitted.kind !== "admitted" && admitted.kind !== "completed") ||
           !same(admitted.call, {
             sessionID: invocation.sessionID,
             agent: invocation.agent,
@@ -1024,7 +1115,7 @@ export function nativeAdmission(context: Context) {
     reviews.clear()
     executing = undefined
   }
-  return { before, execute, authorize, teardown, sponsorPermission, actor, reviewerActor, caps }
+  return { before, execute, authorize, revise, teardown, sponsorPermission, actor, reviewerActor, caps }
 }
 
 function reviewUnverified(cause: Cause.Cause<unknown>): string {
