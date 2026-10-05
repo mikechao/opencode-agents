@@ -40,7 +40,7 @@ export function columnWidths(terminalWidth: number, showStatus: boolean) {
   const width = Math.max(1, Math.min(88, terminalWidth - 2) - 4)
   const agent = Math.max(8, Math.min(14, Math.floor(width * 0.2)))
   const variant = Math.max(8, Math.min(12, Math.floor(width * 0.16)))
-  const status = showStatus ? Math.max(10, Math.min(14, Math.floor(width * 0.18))) : 0
+  const status = showStatus ? Math.max(10, Math.min(20, Math.floor(width * 0.24))) : 0
   return { agent, variant, status, compact: showStatus && width < 66 }
 }
 
@@ -134,7 +134,7 @@ function AgentModelsView(props: { context: Context; rows: readonly DisplayRow[];
         Agent models
       </text>
       <text fg={theme().text.muted} wrapMode="word">
-        Preferences for future fresh subagents
+        Model preferences for new subagents
       </text>
       <scrollbox
         ref={scroll}
@@ -178,7 +178,7 @@ function AgentModelsView(props: { context: Context; rows: readonly DisplayRow[];
               id={`agent-models-row-${row.role}`}
               flexDirection="row"
               flexShrink={0}
-              paddingY={1}
+              paddingBottom={1}
               backgroundColor={selected() === index() ? theme().background.raised.high : undefined}
               onMouseMove={() => setSelected(index())}
               onMouseUp={() => choose(index())}
@@ -216,10 +216,7 @@ function AgentModelsView(props: { context: Context; rows: readonly DisplayRow[];
         </For>
       </scrollbox>
       <text fg={theme().text.muted} wrapMode="word">
-        ↑/↓ to select · enter or click to edit · esc to close
-      </text>
-      <text fg={theme().text.muted} wrapMode="word">
-        Reset restores OpenCode agent configuration / parent-model inheritance.
+        ↑/↓ select · enter or click to edit · esc close
       </text>
     </box>
   )

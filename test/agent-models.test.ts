@@ -632,9 +632,21 @@ test("healthy explicit/default overrides and native behavior render only Agent, 
       { agent: "Implementer", model: "Native behavior", variant: "—", status: "" },
     ])
     const scroll = f.dialogs[0].nodes.find((node: any) => node.type === "scrollbox")
+    const dialog = f.dialogs[0].nodes.find((node: any) => node.children.includes(scroll))
+    const text = dialog.children.filter((node: any) => node.type === "text")
+    expect(text.map(nodeText)).toEqual([
+      "Agent models",
+      "Model preferences for new subagents",
+      "↑/↓ select · enter or click to edit · esc close",
+    ])
+    for (const node of text.slice(1)) expect(node).toMatchObject({ fg: "gray", wrapMode: "word" })
     expect(nodeText(scroll.children[0])).toBe("AgentModelVariant")
     expect(nodeText(scroll)).not.toContain("Available")
-    for (const row of scroll.children.slice(1)) expect(row.children[2].children).toHaveLength(1)
+    for (const row of scroll.children.slice(1)) {
+      expect(row.children[2].children).toHaveLength(1)
+      expect(row.paddingBottom).toBe(1)
+      expect(row.paddingY).toBeUndefined()
+    }
   } finally {
     f.dispose()
   }
@@ -838,6 +850,12 @@ for (const exceptional of [false, true]) {
       for (const width of [120, 48, 120]) {
         resize({ width, height: width === 48 ? 20 : 40 })
         const widths = columnWidths(width, exceptional)
+        expect(widths).toEqual({
+          agent: width === 48 ? 8 : 14,
+          variant: width === 48 ? 8 : 12,
+          status: exceptional ? (width === 48 ? 10 : 20) : 0,
+          compact: exceptional && width === 48,
+        })
         expect(nodeText(scroll.children[0])).toBe(
           exceptional
             ? widths.compact
