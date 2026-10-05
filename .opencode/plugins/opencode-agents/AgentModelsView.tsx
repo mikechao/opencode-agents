@@ -7,14 +7,16 @@ import type { Role, RolePreference } from "../../../src/agent-models.ts"
 export function displayRows(rows: readonly RolePreference[]) {
   return rows.map((row) => {
     const preference = row.preference
-    const status =
+    const preferenceStatus =
       preference.kind === "override"
-        ? preference.available
-          ? "Available"
-          : "Unavailable"
+        ? preference.availability === "model-unavailable"
+          ? "Model unavailable"
+          : preference.availability === "variant-unavailable"
+            ? "Variant unavailable"
+            : ""
         : preference.kind === "invalid"
-          ? preference.message
-          : "—"
+          ? `Invalid saved preference: ${preference.message}`
+          : ""
     return {
       role: row.role,
       agent: row.label,
@@ -25,7 +27,7 @@ export function displayRows(rows: readonly RolePreference[]) {
             ? "Native behavior"
             : "Invalid saved preference",
       variant: preference.kind === "override" ? (preference.model.variant ?? "default") : "—",
-      status: row.loaded ? status : `${status === "—" ? "" : `${status} · `}Agent not loaded`,
+      status: [preferenceStatus, row.loaded ? "" : "Agent not loaded"].filter(Boolean).join(" · "),
       muted: preference.kind !== "override",
     }
   })
@@ -34,12 +36,12 @@ type DisplayRow = ReturnType<typeof displayRows>[number]
 
 // Match the host's large (88-column) dialog, allowing smaller terminals to
 // shrink the model column without stealing space from variant/status.
-export function columnWidths(terminalWidth: number) {
+export function columnWidths(terminalWidth: number, showStatus: boolean) {
   const width = Math.max(1, Math.min(88, terminalWidth - 2) - 4)
   const agent = Math.max(8, Math.min(14, Math.floor(width * 0.2)))
   const variant = Math.max(8, Math.min(12, Math.floor(width * 0.16)))
-  const status = Math.max(10, Math.min(14, Math.floor(width * 0.18)))
-  return { agent, variant, status, compact: width < 66 }
+  const status = showStatus ? Math.max(10, Math.min(14, Math.floor(width * 0.18))) : 0
+  return { agent, variant, status, compact: showStatus && width < 66 }
 }
 
 export function selectAgentRole(context: Context, rows: readonly RolePreference[]): Promise<Role | undefined> {
@@ -88,7 +90,8 @@ export function AgentModelsDialog(props: {
 
 function AgentModelsView(props: { context: Context; rows: readonly DisplayRow[]; onSelect: (role: Role) => void }) {
   const dimensions = useTerminalDimensions()
-  const widths = () => columnWidths(dimensions().width)
+  const showStatus = () => props.rows.some((row) => row.status !== "")
+  const widths = () => columnWidths(dimensions().width, showStatus())
   const theme = () => props.context.theme.surface("dialog")
   const [selected, setSelected] = createSignal(0)
   let scroll: ScrollBoxRenderable | undefined
@@ -159,7 +162,7 @@ function AgentModelsView(props: { context: Context; rows: readonly DisplayRow[];
                 {widths().compact ? "Variant / Status" : "Variant"}
               </text>
             </box>
-            <Show when={!widths().compact}>
+            <Show when={showStatus() && !widths().compact}>
               <box width={widths().status} flexShrink={0}>
                 <text attributes={TextAttributes.BOLD} fg={theme().text.base}>
                   Status
@@ -186,12 +189,7 @@ function AgentModelsView(props: { context: Context; rows: readonly DisplayRow[];
                 </text>
               </box>
               <box flexGrow={1} flexBasis={0} minWidth={0} paddingRight={1}>
-                <text
-                  wrapMode="char"
-                  maxHeight={3}
-                  overflow="hidden"
-                  fg={row.muted ? theme().text.muted : theme().text.base}
-                >
+                <text wrapMode="char" fg={row.muted ? theme().text.muted : theme().text.base}>
                   {row.model}
                 </text>
               </box>
@@ -205,11 +203,13 @@ function AgentModelsView(props: { context: Context; rows: readonly DisplayRow[];
                     {row.variant}
                   </text>
                 </box>
-                <box width={widths().compact ? widths().variant : widths().status} flexShrink={0}>
-                  <text wrapMode="word" maxHeight={3} overflow="hidden" fg={theme().text.muted}>
-                    {row.status}
-                  </text>
-                </box>
+                <Show when={showStatus()}>
+                  <box width={widths().compact ? widths().variant : widths().status} flexShrink={0}>
+                    <text wrapMode="word" fg={theme().text.muted}>
+                      {row.status}
+                    </text>
+                  </box>
+                </Show>
               </box>
             </box>
           )}

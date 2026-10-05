@@ -19,7 +19,11 @@ const decodeSelection = Schema.decodeUnknownSync(Model.Ref, { onExcessProperty: 
 
 export const Preference = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("native") }),
-  Schema.Struct({ kind: Schema.Literal("override"), model: Model.Ref, available: Schema.Boolean }),
+  Schema.Struct({
+    kind: Schema.Literal("override"),
+    model: Model.Ref,
+    availability: Schema.Literals(["available", "model-unavailable", "variant-unavailable"]),
+  }),
   Schema.Struct({ kind: Schema.Literal("invalid"), message: Schema.String }),
 ])
 export const RolePreference = Schema.Struct({
@@ -67,12 +71,15 @@ export function preferenceKey(location: Pick<Context["location"], "directory" | 
   // Exact host location, not project ID (which may be shared across clones).
   return `agent-models:v1:${JSON.stringify([location.directory, location.workspaceID ?? null, role])}`
 }
-export function selectionAvailable(selection: Model.Ref, models: readonly Model.Info[]) {
+function selectionAvailability(selection: Model.Ref, models: readonly Model.Info[]) {
   const model = models.find((model) => model.providerID === selection.providerID && model.id === selection.id)
-  return (
-    model !== undefined &&
-    (selection.variant === undefined || model.variants.some((variant) => variant.id === selection.variant))
-  )
+  if (!model) return "model-unavailable"
+  if (selection.variant !== undefined && !model.variants.some((variant) => variant.id === selection.variant))
+    return "variant-unavailable"
+  return "available"
+}
+export function selectionAvailable(selection: Model.Ref, models: readonly Model.Info[]) {
+  return selectionAvailability(selection, models) === "available"
 }
 const callRole = (input: unknown) =>
   input && typeof input === "object" && "agent" in input ? managedRole(input.agent) : undefined
@@ -103,7 +110,9 @@ export function agentModels(context: Context) {
           const agent = agents.data.find((agent) => agent.id === role.id)
           const preference: RolePreference["preference"] = yield* read(role.id).pipe(
             Effect.map((model): RolePreference["preference"] =>
-              model ? { kind: "override", model, available: selectionAvailable(model, models) } : { kind: "native" },
+              model
+                ? { kind: "override", model, availability: selectionAvailability(model, models) }
+                : { kind: "native" },
             ),
             Effect.catch((cause) => Effect.succeed({ kind: "invalid" as const, message: cause.message })),
           )

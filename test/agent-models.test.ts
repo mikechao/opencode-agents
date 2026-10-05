@@ -295,7 +295,17 @@ test("catalog loss preserves unavailable preferences and preparation fails visib
     if (change === "model") f.state.models = f.state.models.filter((model) => model.id !== "chosen")
     else f.state.models[0].variants = []
     const row = (await Effect.runPromise(f.settings.list()))[0]
-    expect(row.preference).toEqual({ kind: "override", model: chosen, available: false })
+    expect(row.preference).toEqual({
+      kind: "override",
+      model: chosen,
+      availability: change === "model" ? "model-unavailable" : "variant-unavailable",
+    })
+    expect(displayRows([row])[0]).toMatchObject({
+      model: "test/chosen",
+      variant: "high",
+      status: change === "model" ? "Model unavailable" : "Variant unavailable",
+    })
+    expect(await hostParse(agentModelsRpc.methods.list.output, wire([row]))).toEqual([row])
     await expect(f.dispatch(f.call("planner"))).rejects.toThrow("unavailable")
     expect(f.state.calls).toEqual([])
     expect(f.state.children).toEqual([])
@@ -380,7 +390,7 @@ test("settings RPC contracts validate on both sides and expose no authorization 
   await Effect.runPromise(handlers.set(decoded, rpc))
   const rows = await Effect.runPromise(handlers.list(undefined, rpc))
   expect(await hostParse(agentModelsRpc.methods.list.output, wire(rows))).toEqual(rows)
-  expect(rows[0].preference).toMatchObject({ kind: "override", model: chosen })
+  expect(rows[0].preference).toEqual({ kind: "override", model: chosen, availability: "available" })
   for (const request of [
     { role: "reviewer", model: chosen },
     { role: "planner", model: { ...chosen, id: Model.ID.make("missing") } },
@@ -541,11 +551,11 @@ test("slash/palette picker persists a variant, reopens with saved state, and res
     undefined,
   )
   await f.command.run()
-  expect(f.dialogs[4].rows[0]).toMatchObject({ model: "test/chosen", variant: "high", status: "Available" })
+  expect(f.dialogs[4].rows[0]).toMatchObject({ model: "test/chosen", variant: "high", status: "" })
   expect(nodeText(f.dialogs[4].nodes.find((node: any) => node.id === "agent-models-row-planner"))).toBe(
-    "Plannertest/chosenhighAvailable",
+    "Plannertest/chosenhigh",
   )
-  expect(f.dialogs[4].rows[1]).toMatchObject({ model: "Native behavior", variant: "—", status: "—" })
+  expect(f.dialogs[4].rows[1]).toMatchObject({ model: "Native behavior", variant: "—", status: "" })
   expect(f.store.get(preferenceKey(f.location, "planner"))).toEqual(chosen)
   expect(f.methods.find(([method]) => method === "set")[2].model).toEqual(chosen)
   await f.dispatch(f.call("planner"))
@@ -553,7 +563,7 @@ test("slash/palette picker persists a variant, reopens with saved state, and res
   expect(f.presentations.every((options) => options.size === "large" && options.centered)).toBe(true)
   f.replies.push("planner", "reset", undefined)
   await f.command.run()
-  expect(f.dialogs[5].rows[0]).toMatchObject({ model: "test/chosen", variant: "high", status: "Available" })
+  expect(f.dialogs[5].rows[0]).toMatchObject({ model: "test/chosen", variant: "high", status: "" })
   expect(f.store.size).toBe(0)
   expect(f.methods.every(([, options]) => options.location.directory === "/checkout")).toBe(true)
   expect(f.toasts).toEqual([])
@@ -590,9 +600,9 @@ test("host and plugin with independent Effect runtimes preserve high through sel
       expect(f.store.get(preferenceKey(f.location, "planner"))).toEqual(chosen)
       f.replies.push(undefined)
       await f.command.run()
-      expect(f.dialogs.at(-1).rows[0]).toMatchObject({ model: "test/chosen", variant: "high", status: "Available" })
+      expect(f.dialogs.at(-1).rows[0]).toMatchObject({ model: "test/chosen", variant: "high", status: "" })
       expect(nodeText(f.dialogs.at(-1).nodes.find((node: any) => node.id === "agent-models-row-planner"))).toBe(
-        "Plannertest/chosenhighAvailable",
+        "Plannertest/chosenhigh",
       )
       await f.dispatch(f.call("planner"))
       expect(f.state.calls[0].input.model).toBe("test/chosen#high")
@@ -610,31 +620,104 @@ test("host and plugin with independent Effect runtimes preserve high through sel
   }
 })
 
-test("role rows show explicit or default override variants and preserve native behavior", async () => {
+test("healthy explicit/default overrides and native behavior render only Agent, Model, Variant", async () => {
   const f = uiFixture()
   try {
     await Effect.runPromise(f.settings.set("planner", chosen))
     await Effect.runPromise(f.settings.set("explorer", native))
     await f.command.run()
     expect(f.dialogs[0].rows).toMatchObject([
-      { agent: "Planner", model: "test/chosen", variant: "high", status: "Available" },
-      { agent: "Explorer", model: "test/native", variant: "default", status: "Available" },
-      { agent: "Implementer", model: "Native behavior", variant: "—", status: "—" },
+      { agent: "Planner", model: "test/chosen", variant: "high", status: "" },
+      { agent: "Explorer", model: "test/native", variant: "default", status: "" },
+      { agent: "Implementer", model: "Native behavior", variant: "—", status: "" },
     ])
+    const scroll = f.dialogs[0].nodes.find((node: any) => node.type === "scrollbox")
+    expect(nodeText(scroll.children[0])).toBe("AgentModelVariant")
+    expect(nodeText(scroll)).not.toContain("Available")
+    for (const row of scroll.children.slice(1)) expect(row.children[2].children).toHaveLength(1)
   } finally {
     f.dispose()
   }
 })
 
-test("picker displays unavailable/invalid preferences and permits replacement or reset", async () => {
-  const f = uiFixture()
-  f.store.set(preferenceKey(f.location, "planner"), { ...chosen, id: "removed" })
-  f.store.set(preferenceKey(f.location, "explorer"), { invalid: true })
-  f.replies.push(undefined)
-  await f.command.run()
-  expect(f.dialogs[0].rows[0]).toMatchObject({ model: "test/removed", variant: "high", status: "Unavailable" })
-  expect(f.dialogs[0].rows[1].model).toBe("Invalid saved preference")
-  f.dispose()
+test("exceptional rows show precise independent reasons and leave healthy Status cells blank", async () => {
+  const cases = [
+    { saved: undefined, model: "Native behavior", variant: "—", status: "" },
+    { saved: chosen, model: "test/chosen", variant: "high", status: "" },
+    { saved: { ...chosen, id: "removed" }, model: "test/removed", variant: "high", status: "Model unavailable" },
+    {
+      saved: { ...chosen, variant: "removed" },
+      model: "test/chosen",
+      variant: "removed",
+      status: "Variant unavailable",
+    },
+    {
+      saved: { ...chosen, variant: " " },
+      model: "Invalid saved preference",
+      variant: "—",
+      status: "Invalid saved preference: Malformed model preference",
+    },
+  ]
+  for (const loaded of [true, false]) {
+    for (const input of cases) {
+      const f = uiFixture()
+      try {
+        const key = preferenceKey(f.location, "explorer")
+        if (input.saved) f.store.set(key, input.saved)
+        if (!loaded) f.state.agents = f.state.agents.filter((agent) => agent.id !== "explorer")
+        const status = [input.status, loaded ? "" : "Agent not loaded"].filter(Boolean).join(" · ")
+        f.replies.push(undefined)
+        await f.command.run()
+        const record = f.dialogs[0]
+        expect(record.rows[1]).toMatchObject({ model: input.model, variant: input.variant, status })
+        const scroll = record.nodes.find((node: any) => node.type === "scrollbox")
+        expect(nodeText(scroll.children[0])).toBe(status ? "AgentModelVariantStatus" : "AgentModelVariant")
+        expect(nodeText(scroll.children[2])).toBe(`Explorer${input.model}${input.variant}${status}`)
+        for (const index of [0, 2]) {
+          expect(record.rows[index].status).toBe("")
+          const cells = scroll.children[index + 1].children[2].children
+          expect(cells).toHaveLength(status ? 2 : 1)
+          if (status) expect(nodeText(cells[1])).toBe("")
+        }
+        expect(f.store.get(key)).toEqual(input.saved)
+        const rows = await Effect.runPromise(f.settings.list())
+        expect(await hostParse(agentModelsRpc.methods.list.output, wire(rows))).toEqual(rows)
+      } finally {
+        f.dispose()
+      }
+    }
+  }
+})
+
+test("exceptional saved preferences remain editable and can be explicitly replaced or reset", async () => {
+  for (const saved of [{ ...chosen, id: "removed" }, { ...chosen, variant: "removed" }, { invalid: true }]) {
+    for (const action of ["choose", "reset"]) {
+      const f = uiFixture()
+      try {
+        const key = preferenceKey(f.location, "planner")
+        f.store.set(key, saved)
+        f.replies.push("planner", action)
+        if (action === "choose") {
+          f.replies.push(
+            (picker: any) => picker.options.find((option: any) => option.value.id === "chosen").value,
+            (picker: any) => picker.options.find((option: any) => option.title === "high").value,
+          )
+        }
+        f.replies.push(undefined)
+        await f.command.run()
+        expect(f.dialogs[0].rows[0].status).not.toBe("")
+        expect(f.store.get(key)).toEqual(action === "choose" ? chosen : undefined)
+        expect(f.dialogs.at(-1).rows[0]).toMatchObject({
+          model: action === "choose" ? "test/chosen" : "Native behavior",
+          variant: action === "choose" ? "high" : "—",
+          status: "",
+        })
+        expect(f.toasts).toEqual([])
+      } finally {
+        f.dispose()
+      }
+    }
+  }
 })
 
 test("picker teardown/location departure suppresses stale writes and duplicate invocations", async () => {
@@ -680,12 +763,12 @@ test("native default variant selection omits only the explicit variant and Reset
     )
     await f.command.run()
     expect(f.store.get(preferenceKey(f.location, "planner"))).toEqual({ providerID: "test", id: "chosen" })
-    expect(f.dialogs[4].rows[0]).toMatchObject({ model: "test/chosen", variant: "default", status: "Available" })
+    expect(f.dialogs[4].rows[0]).toMatchObject({ model: "test/chosen", variant: "default", status: "" })
     await f.dispatch(f.call("planner"))
     expect(f.state.calls[0].input.model).toBe("test/chosen")
     f.replies.push("planner", "reset", undefined)
     await f.command.run()
-    expect(f.dialogs.at(-1).rows[0]).toMatchObject({ model: "Native behavior", variant: "—", status: "—" })
+    expect(f.dialogs.at(-1).rows[0]).toMatchObject({ model: "Native behavior", variant: "—", status: "" })
     expect(f.store.size).toBe(0)
   } finally {
     f.dispose()
@@ -711,51 +794,74 @@ test("unexpected variant picker results fail visibly instead of being persisted 
   }
 })
 
-test("large dialog uses independent wrapping cells and responds to terminal resizing without hiding saved variant/status", async () => {
-  const f = uiFixture()
-  const id = `gpt-6.1-sol-${"long-model-identifier".repeat(12)}`
-  f.state.models.push(catalogModel(id, ["high"]))
-  const saved = parseSelection({ providerID: "test", id, variant: "high" })
-  await Effect.runPromise(f.settings.set("planner", saved))
-  f.state.models = f.state.models.filter((model) => model.id !== id)
-  let opened!: () => void, finish!: () => void
-  const ready = new Promise<void>((resolve) => {
-    opened = resolve
-  })
-  f.replies.push(() => {
-    opened()
-    return new Promise((resolve) => {
-      finish = () => resolve(undefined)
+for (const exceptional of [false, true]) {
+  test(`long model IDs wrap without clipping in wide/narrow terminals ${exceptional ? "with" : "without"} Status`, async () => {
+    const f = uiFixture()
+    const id = `gpt-6.1-sol-${"long-model-identifier".repeat(12)}`
+    f.state.models.push(catalogModel(id, ["high"]))
+    const saved = parseSelection({ providerID: "test", id, variant: "high" })
+    await Effect.runPromise(f.settings.set("planner", saved))
+    if (exceptional) {
+      f.state.models = f.state.models.filter((model) => model.id !== id)
+      f.state.agents = f.state.agents.filter((agent) => agent.id !== "planner")
+    }
+    const status = exceptional ? "Model unavailable · Agent not loaded" : ""
+    let opened!: () => void, finish!: () => void
+    const ready = new Promise<void>((resolve) => {
+      opened = resolve
     })
+    f.replies.push(() => {
+      opened()
+      return new Promise((resolve) => {
+        finish = () => resolve(undefined)
+      })
+    })
+    const pending = f.command.run()
+    await ready
+    try {
+      const record = f.dialogs[0]
+      const row = record.nodes.find((node: any) => node.id === "agent-models-row-planner")
+      const scroll = record.nodes.find((node: any) => node.type === "scrollbox")
+      expect(record.rows[0]).toMatchObject({ model: `test/${id}`, variant: "high", status })
+      expect(row.children.map(nodeText)).toEqual(["Planner", `test/${id}`, `high${status}`])
+      expect(row.children[1]).toMatchObject({ flexGrow: 1, flexBasis: 0, minWidth: 0 })
+      expect(row.children[1].children[0].wrapMode).toBe("char")
+      expect(row.children[1].children[0].maxHeight).toBeUndefined()
+      expect(row.children[1].children[0].overflow).toBeUndefined()
+      expect(row.children[2].flexShrink).toBe(0)
+      expect(row.children[2].children).toHaveLength(exceptional ? 2 : 1)
+      if (exceptional) {
+        expect(row.children[2].children[1].children[0].maxHeight).toBeUndefined()
+        expect(row.children[2].children[1].children[0].overflow).toBeUndefined()
+      }
+      expect(f.presentations[0]).toEqual({ size: "large", centered: true })
+      for (const width of [120, 48, 120]) {
+        resize({ width, height: width === 48 ? 20 : 40 })
+        const widths = columnWidths(width, exceptional)
+        expect(nodeText(scroll.children[0])).toBe(
+          exceptional
+            ? widths.compact
+              ? "AgentModelVariant / Status"
+              : "AgentModelVariantStatus"
+            : "AgentModelVariant",
+        )
+        expect(row.children[2].flexDirection).toBe(widths.compact ? "column" : "row")
+        expect(row.children[0].width).toBe(widths.agent)
+        expect(row.children[2].width).toBe(widths.variant + (widths.compact ? 0 : widths.status))
+        expect(nodeText(row.children[2])).toBe(`high${status}`)
+        expect(scroll.maxHeight).toBe(width === 48 ? 10 : 30)
+        const tableWidth = Math.min(88, width - 2) - 4
+        expect(tableWidth - row.children[0].width - row.children[2].width).toBeGreaterThan(0)
+      }
+      expect(f.store.get(preferenceKey(f.location, "planner"))).toEqual(saved)
+    } finally {
+      resize({ width: 120, height: 40 })
+      finish()
+      await pending
+      f.dispose()
+    }
   })
-  const pending = f.command.run()
-  await ready
-  try {
-    const record = f.dialogs[0]
-    const row = record.nodes.find((node: any) => node.id === "agent-models-row-planner")
-    expect(record.rows[0]).toMatchObject({ model: `test/${id}`, variant: "high", status: "Unavailable" })
-    expect(row.children.map(nodeText)).toEqual(["Planner", `test/${id}`, "highUnavailable"])
-    expect(row.children[1]).toMatchObject({ flexGrow: 1, flexBasis: 0, minWidth: 0 })
-    expect(row.children[1].children[0].wrapMode).toBe("char")
-    expect(row.children[1].children[0].maxHeight).toBe(3)
-    expect(row.children[2].flexShrink).toBe(0)
-    expect(row.children[2].flexDirection).toBe("row")
-    expect(f.presentations[0]).toEqual({ size: "large", centered: true })
-    resize({ width: 48, height: 20 })
-    expect(row.children[2].flexDirection).toBe("column")
-    expect(row.children[0].width).toBe(columnWidths(48).agent)
-    expect(row.children[2].width).toBe(columnWidths(48).variant)
-    expect(nodeText(row.children[2])).toBe("highUnavailable")
-    const scroll = record.nodes.find((node: any) => node.type === "scrollbox")
-    expect(scroll.maxHeight).toBe(10)
-    expect(f.store.get(preferenceKey(f.location, "planner"))).toEqual(saved)
-  } finally {
-    resize({ width: 120, height: 40 })
-    finish()
-    await pending
-    f.dispose()
-  }
-})
+}
 
 test("table arrow navigation and Enter open the selected role's editable controls", async () => {
   const f = uiFixture()
