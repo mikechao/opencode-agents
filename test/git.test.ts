@@ -1,9 +1,27 @@
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test"
 import { execFileSync } from "node:child_process"
-import { cpSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync, renameSync, unlinkSync } from "node:fs"
+import {
+  cpSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+  renameSync,
+  unlinkSync,
+  symlinkSync,
+  chmodSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { observeGit, requireFresh, requireInScope, type GitSnapshot } from "../src/git.ts"
+import {
+  observeGit,
+  requireFresh,
+  requireInScope,
+  observeReviewTarget,
+  requireReviewTarget,
+  type GitSnapshot,
+} from "../src/git.ts"
 
 const roots: string[] = []
 let seed: string
@@ -134,4 +152,68 @@ test("freshness and exact scope reject substituted root or HEAD independently of
   }
   expect(() => requireFresh(baseline, baseline)).not.toThrow()
   expect(requireInScope(baseline, baseline, [])).toEqual([])
+})
+
+test("review fingerprint binds worktree bytes and staged identities, including same-path and untracked drift", () => {
+  const root = fixture()
+  writeFileSync(path.join(root, "old.txt"), "implemented\n")
+  writeFileSync(path.join(root, "new.txt"), "untracked\n")
+  const snapshot = observeGit(root)
+  const target = observeReviewTarget(root, snapshot)
+  expect(observeReviewTarget(root, snapshot)).toEqual(target)
+  const assertDrift = () => {
+    expect(observeGit(root).paths).toEqual(snapshot.paths)
+    expect(() => requireReviewTarget(observeReviewTarget(root, snapshot), target)).toThrow("Review target changed")
+  }
+  writeFileSync(path.join(root, "old.txt"), "different!!\n")
+  assertDrift()
+  writeFileSync(path.join(root, "old.txt"), "implemented\n")
+  writeFileSync(path.join(root, "new.txt"), "different\n")
+  assertDrift()
+  writeFileSync(path.join(root, "new.txt"), "untracked\n")
+  git(root, "add", "old.txt")
+  assertDrift() // Identical worktree bytes, different index content.
+  expect(git(root, "status", "--porcelain")).toContain("old.txt")
+})
+
+test("review fingerprint detects tracked bytes hidden from diff, mode/type/deletion changes and rejects widening/HEAD changes", () => {
+  const root = fixture()
+  const snapshot = observeGit(root)
+  const target = observeReviewTarget(root, snapshot)
+  git(root, "update-index", "--assume-unchanged", "old.txt")
+  writeFileSync(path.join(root, "old.txt"), "hidden change\n")
+  expect(observeGit(root).paths).toEqual([])
+  expect(() => requireReviewTarget(observeReviewTarget(root, snapshot), target)).toThrow()
+  git(root, "update-index", "--no-assume-unchanged", "old.txt")
+  writeFileSync(path.join(root, "old.txt"), "changed\n")
+  const changed = observeGit(root)
+  const changedTarget = observeReviewTarget(root, changed)
+  chmodSync(path.join(root, "old.txt"), 0o755)
+  expect(() => requireReviewTarget(observeReviewTarget(root, changed), changedTarget)).toThrow()
+  unlinkSync(path.join(root, "old.txt"))
+  const deletion = observeReviewTarget(root, changed)
+  expect(deletion.digest).not.toBe(changedTarget.digest)
+  symlinkSync("missing-one", path.join(root, "old.txt"))
+  const link = observeReviewTarget(root, changed)
+  unlinkSync(path.join(root, "old.txt"))
+  symlinkSync("missing-two", path.join(root, "old.txt"))
+  expect(observeReviewTarget(root, changed).digest).not.toBe(link.digest)
+  writeFileSync(path.join(root, "outside.txt"), "outside")
+  expect(() => observeReviewTarget(root, changed)).toThrow("Review target changed")
+  git(root, "add", "-A")
+  git(root, "commit", "-qm", "changed head")
+  expect(() => observeReviewTarget(root, changed)).toThrow("Review target changed")
+})
+
+test("review target rejects unsupported Git entries and ambiguous file topology", () => {
+  const root = fixture()
+  const snapshot = observeGit(root)
+  const head = git(root, "rev-parse", "HEAD")
+  git(root, "update-index", "--add", "--cacheinfo", `160000,${head},module`)
+  expect(() => observeReviewTarget(root, observeGit(root))).toThrow("Unsupported or ambiguous index")
+  git(root, "reset", "-q", "HEAD")
+  unlinkSync(path.join(root, "old.txt"))
+  mkdirSync(path.join(root, "old.txt"))
+  expect(() => observeReviewTarget(root, observeGit(root))).toThrow("Unsupported review worktree entry")
+  expect(() => observeReviewTarget("/does-not-exist", snapshot)).toThrow()
 })

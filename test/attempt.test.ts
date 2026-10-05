@@ -31,6 +31,7 @@ import { EventEmitter } from "node:events"
 // Test-scoped JSX property/handler capture. No renderer, terminal, or native UI integration.
 const elements: any[] = []
 mock.module("@opentui/solid", () => ({
+  useTerminalDimensions: () => () => ({ width: 120, height: 40 }),
   createElement: (type: string) => {
     const node = {
       type,
@@ -91,6 +92,8 @@ const gitModulePath = path.resolve(import.meta.dir, "../src/git.ts")
 const HEAD = "1".repeat(40)
 class SnapshotObserver {
   private active = true
+  readonly targetDigests = new Map<string, string>()
+  targetError?: Error
   readonly locations = new Map<
     string,
     { current: GitSnapshot; calls: Array<{ baseline?: GitSnapshot; current: GitSnapshot }> }
@@ -128,6 +131,18 @@ class SnapshotObserver {
     return current
   }
 
+  reviewTarget = (location: string, accepted: GitSnapshot) => {
+    if (this.targetError) throw this.targetError
+    const current = this.observe(location)
+    if (
+      current.root !== accepted.root ||
+      current.head !== accepted.head ||
+      JSON.stringify(current.paths) !== JSON.stringify(accepted.paths)
+    )
+      throw new realGit.ReviewTargetChanged()
+    return Object.freeze({ ...current, digest: this.targetDigests.get(current.root) ?? "a".repeat(64) })
+  }
+
   calls(root: string) {
     return this.locations.get(realpathSync(root))!.calls
   }
@@ -143,7 +158,11 @@ function snapshotTest(name: string, run: (observer: SnapshotObserver) => Promise
   test(name, async () => {
     if (gitModule.observeGit !== realGit.observeGit) throw new Error("Leaked Git observer interception")
     const observer = new SnapshotObserver()
-    mock.module(gitModulePath, () => ({ ...realGit, observeGit: observer.observe }))
+    mock.module(gitModulePath, () => ({
+      ...realGit,
+      observeGit: observer.observe,
+      observeReviewTarget: observer.reviewTarget,
+    }))
     try {
       await run(observer)
     } finally {
@@ -4000,6 +4019,25 @@ function serverFake(root: string, _observer: SnapshotObserver, workspaceID?: str
     sessions,
     wakes,
     receipts: [] as any[],
+    // Review records are separate so existing Implementer admission assertions
+    // continue to prove that boundary; review tests inspect both sets explicitly.
+    reviewWakes: [] as any[],
+    reviewOriginals: [] as any[],
+    reviewEntries: [] as any[],
+    reviewProgress: [] as any[],
+    reviewRun: undefined as ((sessionID: string) => Promise<void>) | undefined,
+    onReviewWake: undefined as ((wake: any) => void | Promise<void>) | undefined,
+    onReviewNative: undefined as (() => void | Promise<void>) | undefined,
+    reviewProgressUpdates: undefined as any[] | undefined,
+    reviewResultMutation: undefined as ((result: any) => void) | undefined,
+    reviewOutput: JSON.stringify({
+      status: "APPROVED",
+      summary: "Implementation satisfies the proposal.",
+      findings: [],
+    }),
+    reviewError: false,
+    reviewWakeError: false,
+    reviewWaitError: false,
     originals,
     nativeEntries,
     progress,
@@ -4064,7 +4102,8 @@ function serverFake(root: string, _observer: SnapshotObserver, workspaceID?: str
             if (f.receiptError) throw new Error("receipt transport unavailable")
             return { sessionID: input.sessionID, type: "synthetic", delivery: input.delivery, payload: input }
           }
-          wakes.push(structuredClone(input))
+          const review = JSON.parse(input.text.split("\n")[1]).agent === "reviewer"
+          ;(review ? f.reviewWakes : wakes).push(structuredClone(input))
           const wake = {
             id: input.id,
             sessionID: input.sessionID,
@@ -4073,8 +4112,9 @@ function serverFake(root: string, _observer: SnapshotObserver, workspaceID?: str
             payload: { text: input.text },
           }
           histories[input.sessionID].push({ id: input.id, type: "synthetic", text: input.text })
-          await f.onWake?.(wake)
-          if (f.wakeError) throw new Error("ambiguous wake")
+          if (review) await f.onReviewWake?.(wake)
+          else await f.onWake?.(wake)
+          if (review ? f.reviewWakeError : f.wakeError) throw new Error("ambiguous wake")
           return wake
         }),
       wait: ({ sessionID }: any) =>
@@ -4083,8 +4123,14 @@ function serverFake(root: string, _observer: SnapshotObserver, workspaceID?: str
             await f.onChildWait?.(sessionID)
             return
           }
-          await f.run?.(sessionID)
-          if (f.waitError) throw new Error("lost root settlement")
+          if (f.reviewWakes.some((wake) => wake.sessionID === sessionID)) {
+            if (f.reviewRun) await f.reviewRun(sessionID)
+            else await dispatchReview(sessionID)
+            if (f.reviewWaitError) throw new Error("lost Reviewer root settlement")
+          } else {
+            await f.run?.(sessionID)
+            if (f.waitError) throw new Error("lost root settlement")
+          }
           f.settled = true
         }),
     },
@@ -4111,20 +4157,39 @@ function serverFake(root: string, _observer: SnapshotObserver, workspaceID?: str
     }),
   )
   host.permissionHooks.push(admission.sponsorPermission)
+  host.transforms.push((editor) => {
+    editor.update(admission.reviewerActor, (agent: any) => {
+      agent.mode = "subagent"
+      agent.hidden = true
+      agent.permissions = [
+        { action: "*", resource: "*", effect: "deny" },
+        { action: "subagent", resource: "reviewer", effect: "allow" },
+      ]
+    })
+    editor.update("reviewer", (agent: any) => {
+      agent.permissions = [
+        { action: "*", resource: "*", effect: "deny" },
+        ...["read", "glob", "grep"].map((action) => ({ action, resource: "*", effect: "allow" })),
+      ]
+    })
+  })
   host.appendConfig([])
   const original: NativeTool.Info["execute"] = (input: any, invocation) =>
     Effect.gen(function* () {
-      nativeEntries.push(invocation)
+      const reviewing = input.agent === "reviewer"
+      ;(reviewing ? f.reviewEntries : nativeEntries).push(invocation)
       const effect = yield* host.evaluate(invocation.agent, "subagent", [input.agent])
       if (effect !== "allow")
         return yield* Effect.fail(new NativeTool.Error({ message: `Native permission ${effect}` }))
-      originals.push({ input: structuredClone(input), context: invocation })
-      const output = input.agent === "planner" ? proposal : "Done"
+      ;(reviewing ? f.reviewOriginals : originals).push({ input: structuredClone(input), context: invocation })
+      const output = reviewing ? f.reviewOutput : input.agent === "planner" ? proposal : "Done"
       const childID =
         invocation.sessionID === "ses_parent"
           ? input.agent === "planner"
             ? "ses_planner"
-            : "ses_child"
+            : reviewing
+              ? "ses_review"
+              : "ses_child"
           : `${invocation.sessionID}-${input.agent}`
       sessions[childID] = {
         id: childID,
@@ -4141,21 +4206,25 @@ function serverFake(root: string, _observer: SnapshotObserver, workspaceID?: str
         answer(`${childID}-final`, input.agent, output),
         idle(`${childID}-idle`),
       ]
-      for (const update of f.nativeProgress)
+      for (const update of reviewing
+        ? (f.reviewProgressUpdates ?? [{ sessionID: "ses_child", status: "running" }])
+        : f.nativeProgress)
         yield* invocation.progress({
           ...update,
           sessionID: update.sessionID === "ses_child" ? childID : update.sessionID,
         })
       yield* Effect.promise(async () => {
-        await f.onNative?.()
+        if (reviewing) await f.onReviewNative?.()
+        else await f.onNative?.()
       })
-      if (f.nativeError) throw new Error("native invocation outcome unknown")
+      if (reviewing ? f.reviewError : f.nativeError) throw new Error("native invocation outcome unknown")
       const result = {
         output: { sessionID: childID, status: "completed", output },
         content: `<subagent sessionID="${childID}" state="completed">\n${output}\n</subagent>`,
         metadata: { sessionID: childID, status: "completed" },
       }
-      f.nativeResultMutation?.(result)
+      if (reviewing) f.reviewResultMutation?.(result)
+      else f.nativeResultMutation?.(result)
       return result
     }).pipe(Effect.mapError((error) => new NativeTool.Error({ message: String(error) })))
   const models = agentModels(context)
@@ -4195,7 +4264,7 @@ function serverFake(root: string, _observer: SnapshotObserver, workspaceID?: str
       id,
       progress: (update: any) =>
         Effect.sync(() => {
-          progress.push(structuredClone(update))
+          ;(raw.agent === "reviewer" ? f.reviewProgress : progress).push(structuredClone(update))
           part.state.metadata = structuredClone(update)
         }),
     }
@@ -4218,7 +4287,7 @@ function serverFake(root: string, _observer: SnapshotObserver, workspaceID?: str
           ),
         ),
       )
-      f.resultMutation?.(result)
+      if (raw.agent !== "reviewer") f.resultMutation?.(result)
       // ToolOutput.truncate runs after native execution/after hooks and adds
       // this field even for short, unchanged output.
       const metadata =
@@ -4236,8 +4305,33 @@ function serverFake(root: string, _observer: SnapshotObserver, workspaceID?: str
       throw error
     }
   }
+  const reviewArguments = (sessionID = "ses_parent") =>
+    JSON.parse(
+      f.reviewWakes
+        .filter((wake) => wake.sessionID === sessionID)
+        .at(-1)
+        .text.split("\n")[1],
+    )
+  const dispatchReview = (
+    sessionID = "ses_parent",
+    raw = reviewArguments(sessionID),
+    opts: Parameters<typeof dispatch>[1] = {},
+  ) => dispatch(raw, { sessionID, id: "review-call", messageID: "review-message", ...opts })
   const authorize = (input: unknown = claim) => Effect.runPromise(admission.authorize(input))
-  return { ...f, state: f, context, admission, cap, original, wrapped, dispatch, authorize, modelPreferences }
+  return {
+    ...f,
+    state: f,
+    context,
+    admission,
+    cap,
+    original,
+    wrapped,
+    dispatch,
+    dispatchReview,
+    reviewArguments,
+    authorize,
+    modelPreferences,
+  }
 }
 
 snapshotTest(
@@ -4280,7 +4374,9 @@ snapshotTest(
     expect(await f.authorize()).toContain("Implementation gate completed successfully")
     expect(f.originals[0].input).toEqual({ ...nativeArguments(f.candidate), model: "test/chosen#high" })
     expect(f.originals[0].context.agent).toBe(f.admission.actor)
-    expect(f.histories.ses_parent.at(-1).content[0].state.input).toEqual(nativeArguments(f.candidate))
+    expect(f.histories.ses_parent.find((item) => item.id === "native-message").content[0].state.input).toEqual(
+      nativeArguments(f.candidate),
+    )
     expect(f.sessions.ses_child.model).toEqual(selected)
     expect(f.cap.claim.candidate).toEqual(f.candidate)
   },
@@ -5607,10 +5703,12 @@ snapshotTest(
     })
     expect(f.progress).toEqual([{ sessionID: "ses_child", status: "running" }])
     expect(f.cap.result).toEqual({ childID: "ses_child", status: "completed" })
-    expect(f.histories.ses_parent.at(-1).content[0].state.metadata).toMatchObject({
-      sessionID: "ses_child",
-      status: "completed",
-    })
+    expect(f.histories.ses_parent.find((item) => item.id === "native-message").content[0].state.metadata).toMatchObject(
+      {
+        sessionID: "ses_child",
+        status: "completed",
+      },
+    )
     expect(f.sessions.ses_parent.permissions).toEqual([])
     expect(await Effect.runPromise(f.host.evaluate("orchestrator", "subagent", ["authorized_implementer"]))).toBe(
       "deny",
@@ -6285,7 +6383,7 @@ snapshotTest(
       }
       const outcome = await f.authorize()
       expect(outcome).toBe(
-        `Implementation gate completed successfully.\nHEAD ${HEAD} remained unchanged.\nResulting paths (1): "old.txt".\nThis attempt ended after the implementation gate; Reviewer and Commit were not run.`,
+        `Implementation gate completed successfully.\nHEAD ${HEAD} remained unchanged.\nResulting paths (1): "old.txt".\nReview APPROVED.\nImplementation satisfies the proposal.\nReview target remained unchanged. This attempt ended before Commit. No repair, additional review, or Commit authority was granted.`,
       )
       expect(f.receipts).toHaveLength(1)
       expect(f.receipts[0]).toEqual({
@@ -6524,7 +6622,7 @@ snapshotTest(
   },
 )
 
-test("Effect server keeps Authorize and model settings RPCs separate with one sponsor and native wrapper", async () => {
+test("Effect server keeps Authorize and model settings RPCs separate with two narrow sponsors and a native wrapper", async () => {
   const host = sponsorHost(),
     hooks: any[] = [],
     rpcs: any[] = []
@@ -6568,13 +6666,21 @@ test("Effect server keeps Authorize and model settings RPCs separate with one sp
         expect(Object.keys(rpcs[1].handlers)).toEqual(["list", "set", "reset"])
         expect(hooks.map((item) => item.name)).toEqual(["execute.before"])
         const editors = [...host.roles().values()]
-        expect(editors).toHaveLength(1)
+        expect(editors).toHaveLength(2)
         expect(editors[0]).toMatchObject({
           hidden: true,
           mode: "subagent",
           permissions: [
             { action: "*", resource: "*", effect: "deny" },
             { action: "subagent", resource: "authorized_implementer", effect: "allow" },
+          ],
+        })
+        expect(editors[1]).toMatchObject({
+          hidden: true,
+          mode: "subagent",
+          permissions: [
+            { action: "*", resource: "*", effect: "deny" },
+            { action: "subagent", resource: "reviewer", effect: "allow" },
           ],
         })
         expect(host.permissionHooks).toHaveLength(1)
@@ -6588,6 +6694,9 @@ test("Effect server keeps Authorize and model settings RPCs separate with one sp
         })
         expect(yield* host.evaluate(editors[0].id, "subagent", ["authorized_implementer"])).toBe("allow")
         expect(yield* host.evaluate(editors[0].id, "edit", ["old.txt"])).toBe("deny")
+        expect(yield* host.evaluate(editors[0].id, "subagent", ["reviewer"])).toBe("deny")
+        expect(yield* host.evaluate(editors[1].id, "subagent", ["reviewer"])).toBe("allow")
+        expect(yield* host.evaluate(editors[1].id, "subagent", ["authorized_implementer"])).toBe("deny")
         host.appendConfig([{ action: "*", resource: "*", effect: "deny" }])
         expect(yield* host.evaluate(editors[0].id, "subagent", ["authorized_implementer"])).toBe("deny")
       }),
@@ -6595,3 +6704,585 @@ test("Effect server keeps Authorize and model settings RPCs separate with one sp
   )
   await expect(Effect.runPromise(native.execute())).rejects.toThrow("revoked")
 })
+
+snapshotTest(
+  "verified implementation automatically launches one separate read-only Reviewer and accepts APPROVED",
+  async (observer) => {
+    const root = snapshotFixture(observer),
+      f = serverFake(root, observer)
+    f.modelPreferences.set(
+      preferenceKey(f.context.location, "reviewer"),
+      parseSelection({ providerID: "test", id: "chosen", variant: "high" }),
+    )
+    f.state.run = async () => {
+      await f.dispatch()
+      observer.configure(root, HEAD, ["old.txt"])
+    }
+    f.state.onReviewWake = () => {
+      expect(f.cap.phase).toBe("closed")
+      expect(f.cap.childID).toBe("ses_child")
+      expect(f.reviewWakes).toHaveLength(1)
+    }
+    let settled = false
+    f.state.onChildWait = async (id) => {
+      if (id === "ses_review") settled = true
+    }
+    f.state.onReceipt = () => {
+      expect(settled).toBe(true)
+      expect(f.cap.phase).toBe("closed")
+    }
+    const outcome = await f.authorize()
+    expect(outcome).toContain("Review APPROVED.")
+    expect(outcome).toContain("No repair, additional review, or Commit")
+    expect(f.reviewOriginals).toHaveLength(1)
+    expect(f.reviewWakes).toHaveLength(1)
+    expect(f.originals).toHaveLength(1)
+    expect(f.wakes).toHaveLength(1) // One human-authorized implementation control.
+    const args = f.reviewArguments()
+    expect(Object.keys(args)).toEqual(["agent", "description", "prompt"])
+    expect(args.prompt).toContain(JSON.stringify(f.candidate.proposal))
+    expect(args.prompt).toContain(`Exact accepted changed paths: ["old.txt"]`)
+    expect(args.prompt).toContain(`Review target SHA-256: ${"a".repeat(64)}`)
+    expect(args.prompt).toContain('"childID":"ses_child"')
+    expect(args.prompt).toContain(HEAD)
+    expect(args.prompt).toContain(root)
+    expect(f.reviewOriginals[0].input).toEqual({ ...args, model: "test/chosen#high" })
+    expect(f.reviewOriginals[0].context).toMatchObject({
+      agent: f.admission.reviewerActor,
+      sessionID: "ses_parent",
+      messageID: "review-message",
+      id: "review-call",
+    })
+    expect(f.admission.reviewerActor).not.toBe(f.admission.actor)
+    expect(f.sessions.ses_review).toMatchObject({
+      id: "ses_review",
+      parentID: "ses_parent",
+      agent: "reviewer",
+      permissions: [],
+      location: f.location,
+      model: { providerID: "test", id: "chosen", variant: "high" },
+    })
+    expect(f.histories.ses_review[0].text).toBe(prefix + args.prompt)
+    expect(f.histories.ses_parent.find((item) => item.id === "review-message").content[0].state.input).toEqual(args)
+    expect(f.receipts).toHaveLength(1)
+    await expect(f.dispatchReview()).rejects.toThrow()
+    await expect(f.dispatch()).rejects.toThrow()
+    expect(await f.authorize()).toContain("One governed")
+    expect(f.reviewOriginals).toHaveLength(1)
+  },
+)
+
+snapshotTest("unverified implementation never launches Reviewer", async (observer) => {
+  for (const failure of [
+    "failed",
+    "interrupted",
+    "identity",
+    "settlement",
+    "provenance",
+    "head",
+    "scope",
+    "receipt",
+    "target-observation",
+    "git",
+  ]) {
+    const root = snapshotFixture(observer),
+      f = serverFake(root, observer)
+    f.state.run = async () => {
+      if (failure === "identity") f.state.nativeProgress = [{ sessionID: "ses_child" }, { sessionID: "other" }]
+      if (failure === "receipt")
+        f.state.nativeResultMutation = (result) => {
+          result.output.status = "running"
+        }
+      if (failure === "receipt") await expect(f.dispatch()).rejects.toThrow()
+      else await f.dispatch()
+      if (failure === "failed" || failure === "interrupted") f.sessions.ses_child.outcome = failure
+      if (failure === "provenance") f.histories.ses_child[0].text += " substituted"
+      if (failure === "head") observer.configure(root, "2".repeat(40))
+      if (failure === "scope") observer.configure(root, HEAD, ["outside.txt"])
+      if (failure === "git")
+        f.state.onRead = (kind, id) => {
+          if (kind === "context" && id === "ses_child") observer.close()
+        }
+      if (failure === "target-observation") observer.targetError = new Error("Target observation failed")
+    }
+    if (failure === "settlement")
+      f.state.onChildWait = async () => {
+        throw new Error("Unknown Implementer settlement")
+      }
+    expect(await f.authorize()).toContain("unverified")
+    expect(f.reviewWakes).toEqual([])
+    expect(f.reviewEntries).toEqual([])
+    expect(f.cap.phase).toBe("closed")
+    observer.targetError = undefined
+    // The deliberately closed double is confined to this case.
+    if (failure === "git") break
+  }
+})
+
+snapshotTest("Reviewer admits only the exact first original foreground call, without replacement", async (observer) => {
+  for (const mutation of [
+    "role",
+    "description",
+    "prompt",
+    "extra",
+    "sessionID",
+    "model",
+    "empty-model",
+    "background",
+    "tool",
+    "earlier-parser-failure",
+    "decoded",
+    "duplicate",
+  ]) {
+    const root = snapshotFixture(observer),
+      f = serverFake(root, observer)
+    f.state.run = async () => {
+      await f.dispatch()
+    }
+    f.state.reviewRun = async () => {
+      const args = f.reviewArguments(),
+        raw = { ...args }
+      if (mutation === "role") raw.agent = "planner"
+      if (mutation === "description") raw.description += " altered"
+      if (mutation === "prompt") raw.prompt += " altered"
+      if (mutation === "extra") raw.extra = true
+      if (mutation === "sessionID") raw.sessionID = "ses_child"
+      if (mutation === "model") raw.model = "test/chosen#high"
+      if (mutation === "empty-model") raw.model = ""
+      if (mutation === "background") raw.background = false
+      if (mutation === "earlier-parser-failure")
+        f.histories.ses_parent.push({
+          ...answer("parser-failure", "orchestrator", ""),
+          content: [{ type: "tool", id: "earlier", name: "subagent", state: { status: "error", input: "{" } }],
+        })
+      if (mutation === "duplicate") {
+        await f.dispatchReview()
+        await expect(f.dispatchReview(undefined, args, { id: "second", messageID: "second-message" })).rejects.toThrow()
+      } else
+        await expect(
+          f.dispatchReview(undefined, raw, {
+            ...(mutation === "tool" ? { tool: "read" } : {}),
+            ...(mutation === "decoded" ? { decoded: { ...args, prompt: "changed by codec" } } : {}),
+            ...(mutation === "empty-model" ? { beforeInput: args } : {}),
+          }),
+        ).rejects.toThrow()
+    }
+    expect(await f.authorize()).toContain("Reviewer outcome was unverified")
+    expect(f.reviewWakes).toHaveLength(1)
+    expect(f.reviewOriginals).toHaveLength(mutation === "duplicate" ? 1 : 0)
+    await expect(f.dispatchReview()).rejects.toThrow()
+    expect(f.reviewWakes).toHaveLength(1)
+  }
+})
+
+snapshotTest(
+  "Reviewer provenance and terminal result fail closed on wrong or ambiguous native evidence",
+  async (observer) => {
+    for (const mutation of [
+      "parent",
+      "role",
+      "location",
+      "permissions",
+      "failed",
+      "interrupted",
+      "fork",
+      "input",
+      "attachment",
+      "assistant",
+      "synthetic",
+      "duplicate-final",
+      "terminal-idle",
+      "tool",
+      "receipt-metadata",
+      "receipt-child",
+      "progress",
+      "receipt-text",
+      "published-metadata",
+      "result-json",
+    ]) {
+      const root = snapshotFixture(observer),
+        f = serverFake(root, observer)
+      f.state.run = async () => {
+        await f.dispatch()
+      }
+      if (mutation === "progress") f.state.reviewProgressUpdates = [{ sessionID: "ses_child" }, { sessionID: "other" }]
+      if (mutation === "result-json") f.state.reviewOutput = '{"status":"APPROVED","summary":"Good","findings":[{}]}'
+      f.state.reviewResultMutation = (result) => {
+        if (mutation === "receipt-metadata") result.metadata.status = "running"
+        if (mutation === "receipt-child") result.output.sessionID = "ses_child"
+        if (mutation === "receipt-text")
+          result.output.output = JSON.stringify({ status: "APPROVED", summary: "Substituted", findings: [] })
+      }
+      f.state.reviewRun = async () => {
+        try {
+          await f.dispatchReview()
+        } catch {
+          /* Host completes failed calls before root settlement. */
+        }
+        const child = f.sessions.ses_review,
+          history = f.histories.ses_review
+        if (mutation === "parent") child.parentID = "other"
+        if (mutation === "role") child.agent = "authorized_implementer"
+        if (mutation === "location") child.location.directory += "/other"
+        if (mutation === "permissions") child.permissions = [{ action: "edit", resource: "*", effect: "allow" }]
+        if (mutation === "failed" || mutation === "interrupted") child.outcome = mutation
+        if (mutation === "fork") child.fork = { sessionID: "old" }
+        if (mutation === "input") history[0].text += " modified"
+        if (mutation === "attachment") history[0].files = ["unexpected"]
+        if (mutation === "assistant") history[1].agent = "orchestrator"
+        if (mutation === "synthetic")
+          history.splice(1, 0, { type: "synthetic", id: "unexpected", text: "different task" })
+        if (mutation === "duplicate-final") history.splice(1, 0, { ...history[1], id: "duplicate-final" })
+        if (mutation === "terminal-idle") history.pop()
+        if (mutation === "tool")
+          history[1].content.push({ type: "tool", id: "edit", name: "edit", state: { status: "completed" } })
+        if (mutation === "published-metadata")
+          f.histories.ses_parent.find((item) => item.id === "review-message").content[0].state.metadata.sessionID =
+            "other"
+      }
+      expect(await f.authorize()).toContain("Reviewer outcome was unverified")
+      expect(f.reviewWakes).toHaveLength(1)
+      expect(f.reviewOriginals).toHaveLength(1)
+      expect(f.cap.phase).toBe("closed")
+      expect(await f.authorize()).toContain("One governed")
+    }
+  },
+)
+
+snapshotTest(
+  "Reviewer accepts bounded changes requested and inconclusive evidence without repair or another review",
+  async (observer) => {
+    for (const result of [
+      {
+        status: "CHANGES_REQUESTED",
+        summary: "A failure needs repair",
+        findings: [
+          {
+            severity: "high",
+            path: "old.txt",
+            scenario: "Empty input",
+            impact: "Crashes",
+            remediation: "Handle empty input",
+          },
+        ],
+      },
+      { status: "INCONCLUSIVE", summary: "Source does not establish correctness", findings: [] },
+    ]) {
+      const root = snapshotFixture(observer),
+        f = serverFake(root, observer)
+      f.state.run = async () => {
+        await f.dispatch()
+      }
+      f.state.reviewOutput = JSON.stringify(result)
+      const outcome = await f.authorize()
+      expect(outcome).toContain(`Review ${result.status}.`)
+      expect(outcome).toContain(result.summary)
+      if (result.status === "CHANGES_REQUESTED") expect(outcome).toContain('"remediation":"Handle empty input"')
+      expect(outcome).toContain("No repair, additional review, or Commit")
+      expect(f.originals).toHaveLength(1)
+      expect(f.reviewOriginals).toHaveLength(1)
+      expect(f.receipts).toHaveLength(1)
+    }
+  },
+)
+
+snapshotTest(
+  "review target drift and observation failures reject review even with unchanged paths",
+  async (observer) => {
+    for (const drift of ["bytes", "head", "paths", "observation", "before-admission"]) {
+      const root = snapshotFixture(observer),
+        f = serverFake(root, observer)
+      f.state.run = async () => {
+        await f.dispatch()
+        observer.configure(root, HEAD, ["old.txt"])
+      }
+      const change = () => {
+        if (drift === "head") observer.configure(root, "2".repeat(40), ["old.txt"])
+        else if (drift === "paths") observer.configure(root, HEAD, ["old.txt", "outside.txt"])
+        else if (drift === "observation") observer.targetError = new Error("Review target observation unavailable")
+        else observer.targetDigests.set(root, "b".repeat(64))
+      }
+      if (drift === "before-admission") f.state.onReviewWake = change
+      else f.state.onReviewNative = change
+      f.state.reviewRun = async () => {
+        try {
+          await f.dispatchReview()
+        } catch {}
+      }
+      const outcome = await f.authorize()
+      expect(outcome).toContain("Reviewer outcome was unverified")
+      expect(outcome).not.toContain("Review APPROVED.")
+      if (drift !== "observation") expect(outcome).toContain("Review target changed.")
+      expect(f.reviewEntries).toHaveLength(drift === "before-admission" ? 0 : 1)
+      observer.targetError = undefined
+    }
+  },
+)
+
+snapshotTest(
+  "Reviewer model preference failures spend review eligibility without child or fallback",
+  async (observer) => {
+    for (const failure of badModelPreferences) {
+      const root = snapshotFixture(observer),
+        f = serverFake(root, observer)
+      f.state.run = async () => {
+        await f.dispatch()
+        breakModelPreference(f, "reviewer", failure)
+      }
+      f.state.reviewRun = async () => {
+        await expect(f.dispatchReview()).rejects.toThrow("Agent model settings:")
+      }
+      expect(await f.authorize()).toContain("unverified")
+      expect(f.reviewEntries).toEqual([])
+      expect(f.sessions.ses_review).toBeUndefined()
+      expect(f.reviewWakes).toHaveLength(1)
+      await expect(f.dispatchReview()).rejects.toThrow()
+      expect(f.cap.phase).toBe("closed")
+    }
+  },
+)
+
+snapshotTest(
+  "Reviewer and its sponsor cannot acquire mutation, delegation, Implementer, or Commit authority",
+  async (observer) => {
+    const root = snapshotFixture(observer),
+      f = serverFake(root, observer)
+    f.host.appendConfig([{ action: "*", resource: "*", effect: "allow" }])
+    f.state.run = async () => {
+      await f.dispatch()
+    }
+    expect(await f.authorize()).toContain("Review APPROVED.")
+    for (const tool of ["edit", "write", "patch", "shell", "execute", "subagent", "session", "commit", "push"]) {
+      await expect(
+        Effect.runPromise(
+          f.admission.before({
+            sessionID: "ses_review",
+            agent: "reviewer",
+            messageID: "bad",
+            id: "bad",
+            tool,
+            input: nativeArguments(f.candidate),
+          } as any),
+        ),
+      ).rejects.toThrow("read-only")
+      expect(await Effect.runPromise(f.host.evaluate("reviewer", tool, ["*"]))).toBe("deny")
+      expect(await Effect.runPromise(f.host.evaluate(f.admission.reviewerActor, tool, ["*"]))).toBe("deny")
+    }
+    expect(
+      await Effect.runPromise(f.host.evaluate(f.admission.reviewerActor, "subagent", ["authorized_implementer"])),
+    ).toBe("deny")
+    expect(await Effect.runPromise(f.host.evaluate(f.admission.actor, "subagent", ["reviewer"]))).toBe("deny")
+    for (const tool of ["read", "glob", "grep"])
+      expect(await Effect.runPromise(f.host.evaluate("reviewer", tool, ["old.txt"]))).toBe("allow")
+    expect(f.originals).toHaveLength(1)
+    expect(f.reviewOriginals).toHaveLength(1)
+  },
+)
+
+snapshotTest(
+  "effective Reviewer host deny or ask is never elevated or offered as a second authorization",
+  async (observer) => {
+    for (const effect of ["deny", "ask"]) {
+      const root = snapshotFixture(observer),
+        f = serverFake(root, observer)
+      f.host.appendConfig([{ action: "subagent", resource: "reviewer", effect }])
+      f.state.run = async () => {
+        await f.dispatch()
+      }
+      f.state.reviewRun = async () => {
+        await expect(f.dispatchReview()).rejects.toThrow("Native permission deny")
+      }
+      expect(await f.authorize()).toContain("unverified")
+      expect(f.reviewEntries).toHaveLength(1)
+      expect(f.reviewOriginals).toEqual([])
+      expect(f.reviewWakes).toHaveLength(1)
+      expect(f.sessions.ses_review).toBeUndefined()
+    }
+  },
+)
+
+snapshotTest(
+  "worktree exclusion spans Reviewer, terminal receipt, and unknown Reviewer settlement",
+  async (observer) => {
+    for (const terminal of ["succeeded", "interrupted", "unknown", "identity"] as const) {
+      const root = snapshotFixture(observer),
+        f = serverFake(root, observer)
+      for (const id of ["ses_b", "ses_c"]) {
+        f.sessions[id] = { ...structuredClone(f.sessions.ses_parent), id }
+        f.histories[id] = []
+      }
+      let finish!: () => void, started!: () => void
+      const pending = new Promise<void>((resolve) => {
+        finish = resolve
+      })
+      const ready = new Promise<void>((resolve) => {
+        started = resolve
+      })
+      f.state.run = async (id) => {
+        if (f.admission.caps.get(id)?.phase === "available") await f.dispatch(undefined, { sessionID: id })
+      }
+      f.state.reviewResultMutation = (result) => {
+        if (result.output.sessionID !== "ses_review") return
+        result.output.status = "running"
+        delete f.sessions.ses_review.outcome
+        delete f.sessions.ses_review.time.idle
+      }
+      f.state.reviewRun = async (id) => {
+        if (id === "ses_parent") await expect(f.dispatchReview()).rejects.toThrow()
+        else await f.dispatchReview(id)
+      }
+      f.state.onChildWait = async (id) => {
+        if (id !== "ses_review") return
+        started()
+        await pending
+        if (terminal === "unknown") throw new Error("Reviewer settlement unavailable")
+      }
+      const owner = f.authorize()
+      await ready
+      expect(f.cap.phase).toBe("closed")
+      expect(f.receipts.filter((receipt) => receipt.sessionID === "ses_parent")).toEqual([])
+      expect(await f.authorize({ ...f.claim, rootSessionID: "ses_b" })).toContain("worktree implementation exclusion")
+      expect(f.reviewWakes).toHaveLength(1)
+      f.sessions.ses_review.time.idle = 4
+      f.sessions.ses_review.outcome = terminal === "interrupted" ? "interrupted" : "succeeded"
+      if (terminal === "identity") f.sessions.ses_review.parentID = "different"
+      finish()
+      expect(await owner).toContain("unverified")
+      const next = await f.authorize({ ...f.claim, rootSessionID: "ses_c" })
+      expect(next).toContain(
+        terminal === "unknown" || terminal === "identity" ? "worktree implementation exclusion" : "Review APPROVED.",
+      )
+      expect(f.reviewWakes.filter((wake) => wake.sessionID === "ses_parent")).toHaveLength(1)
+    }
+  },
+)
+
+snapshotTest("exclusion releases after the accepted owner's terminal review receipt, not before", async (observer) => {
+  const root = snapshotFixture(observer),
+    f = serverFake(root, observer)
+  for (const id of ["ses_b", "ses_c"]) {
+    f.sessions[id] = { ...structuredClone(f.sessions.ses_parent), id }
+    f.histories[id] = []
+  }
+  f.state.run = async (id) => {
+    if (f.admission.caps.get(id)?.phase === "available") await f.dispatch(undefined, { sessionID: id })
+  }
+  f.state.onReceipt = async (receipt) => {
+    if (receipt.sessionID !== "ses_parent") return
+    expect(receipt.text).toContain("Review APPROVED.")
+    expect(await f.authorize({ ...f.claim, rootSessionID: "ses_b" })).toContain("worktree implementation exclusion")
+  }
+  expect(await f.authorize()).toContain("Review APPROVED.")
+  expect(await f.authorize({ ...f.claim, rootSessionID: "ses_c" })).toContain("Review APPROVED.")
+})
+
+snapshotTest(
+  "Reviewer refusal, ambiguous wake, native failure, backgrounding, unreadable settlement and revocation never replace it",
+  async (observer) => {
+    for (const failure of ["refusal", "wake", "native", "background", "wait", "teardown"]) {
+      const root = snapshotFixture(observer),
+        f = serverFake(root, observer)
+      f.state.run = async () => {
+        await f.dispatch()
+      }
+      f.state.reviewWakeError = failure === "wake"
+      f.state.reviewError = failure === "native"
+      f.state.reviewWaitError = failure === "wait"
+      if (failure === "background")
+        f.state.reviewResultMutation = (result) => {
+          result.output.status = "running"
+        }
+      if (failure === "teardown") f.state.onReviewNative = () => f.admission.teardown()
+      f.state.reviewRun = async () => {
+        if (failure === "refusal") return
+        try {
+          await f.dispatchReview()
+        } catch {}
+      }
+      const outcome = await f.authorize()
+      expect(outcome).toContain("Reviewer outcome was unverified")
+      expect(f.reviewWakes).toHaveLength(1)
+      expect(f.reviewOriginals.length).toBe(failure === "refusal" || failure === "wake" ? 0 : 1)
+      if (failure === "wait") expect(f.receipts).toEqual([])
+      await expect(f.dispatchReview()).rejects.toThrow()
+      expect(f.reviewWakes).toHaveLength(1)
+      expect(f.originals).toHaveLength(1)
+    }
+  },
+)
+
+snapshotTest(
+  "Reviewer native read instructions are observations, not new task or result authority",
+  async (observer) => {
+    const root = snapshotFixture(observer),
+      f = serverFake(root, observer)
+    f.state.run = async () => {
+      await f.dispatch()
+    }
+    f.state.onReviewNative = () => {
+      f.histories.ses_review.splice(1, 0, {
+        type: "synthetic",
+        id: "read-instructions",
+        text: `Instructions from: ${root}/AGENTS.md\nRead carefully`,
+        metadata: { instruction: { paths: [`${root}/AGENTS.md`] } },
+      })
+    }
+    expect(await f.authorize()).toContain("Review APPROVED.")
+    expect(f.reviewOriginals).toHaveLength(1)
+  },
+)
+
+snapshotTest(
+  "concurrent Reviewer reservation and executor losers cannot alter the in-flight owner",
+  async (observer) => {
+    const root = snapshotFixture(observer),
+      f = serverFake(root, observer)
+    f.state.run = async () => {
+      await f.dispatch()
+    }
+    let release!: () => void, started!: () => void
+    const pending = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const ready = new Promise<void>((resolve) => {
+      started = resolve
+    })
+    let held = false,
+      observations = 0
+    f.state.onRead = async (kind, id) => {
+      if (!held && f.reviewWakes.length && kind === "context" && id === "ses_parent" && ++observations === 2) {
+        held = true
+        started()
+        await pending
+      }
+    }
+    f.state.reviewRun = async () => {
+      const owner = f.dispatchReview()
+      await ready
+      const invocation = {
+        sessionID: "ses_parent",
+        agent: "orchestrator",
+        messageID: "review-message",
+        id: "review-call",
+        progress: () => Effect.void,
+      } as any
+      try {
+        await expect(
+          Effect.runPromise(
+            f.admission.before({ ...invocation, id: "loser", tool: "subagent", input: f.reviewArguments() }),
+          ),
+        ).rejects.toThrow("reserved, consumed, or closed")
+        await expect(Effect.runPromise(f.wrapped(f.reviewArguments(), invocation))).rejects.toThrow(
+          "reservation mismatch",
+        )
+        expect(f.reviewEntries).toEqual([])
+      } finally {
+        release()
+      }
+      await owner
+    }
+    expect(await f.authorize()).toContain("Review APPROVED.")
+    expect(f.reviewOriginals).toHaveLength(1)
+    expect(f.reviewWakes).toHaveLength(1)
+  },
+)

@@ -17,20 +17,38 @@ import {
   plannerTurnInput,
   directRootTool,
   plannerReceiptKey,
+  nativeReadInstruction,
 } from "./attempt.ts"
 import { parseProposal, candidateIntact, displayPath, type IntentCandidate } from "./proposal.ts"
-import { observeGit, requireFresh, requireInScope } from "./git.ts"
+import {
+  observeGit,
+  requireFresh,
+  requireInScope,
+  observeReviewTarget,
+  requireReviewTarget,
+  type ReviewTarget,
+  ReviewTargetChanged,
+} from "./git.ts"
 import { receiptInput } from "./receipt.ts"
+import { reviewerArguments, parseReviewResult, reviewReceipt } from "./review.ts"
 
 const target = "authorized_implementer"
 export const sponsorRules = [
   { action: "*", resource: "*", effect: "deny" },
   { action: "subagent", resource: target, effect: "allow" },
 ] as const
+export const reviewerSponsorRules = [
+  { action: "*", resource: "*", effect: "deny" },
+  { action: "subagent", resource: "reviewer", effect: "allow" },
+] as const
 const same = (a: unknown, b: unknown) => exactEvidence(a) === exactEvidence(b)
 const fail = (message: string) => new Tool.Error({ message: `CAP admission: ${message}` })
 const attempt = <T>(body: () => T) =>
-  Effect.try({ try: body, catch: (error) => fail(error instanceof Error ? error.message : String(error)) })
+  Effect.try({
+    try: body,
+    catch: (error) =>
+      new Tool.Error({ message: `CAP admission: ${error instanceof Error ? error.message : String(error)}`, error }),
+  })
 export const nativeArguments = (candidate: IntentCandidate) =>
   Object.freeze({
     agent: target,
@@ -41,7 +59,7 @@ export const controlText = (candidate: IntentCandidate) =>
   [
     "Propose exactly one foreground native subagent call with exactly these arguments:",
     JSON.stringify(nativeArguments(candidate)),
-    "Do not add keys, reuse a session, or change these values. After its result, finish with prose and STOP before Reviewer / Commit.",
+    "Do not add keys, reuse a session, or change these values. After its result, finish with prose. Trusted runtime owns the automatic review transition. STOP before Commit.",
   ].join("\n")
 function exactArguments(value: unknown, candidate: IntentCandidate): void {
   if (!exactKeys(value, ["agent", "description", "prompt"]) || !same(value, nativeArguments(candidate)))
@@ -68,11 +86,44 @@ function orchestratorRootMatches(
 }
 
 type ChildBinding = { kind: "unknown" } | { kind: "exact"; childID: string } | { kind: "ambiguous" }
+function bindChild(
+  execution: { child: ChildBinding },
+  childID: unknown,
+  parentID: string,
+  forbidden: readonly string[] = [],
+) {
+  if (execution.child.kind === "ambiguous") return
+  if (
+    typeof childID !== "string" ||
+    !childID ||
+    childID === parentID ||
+    forbidden.includes(childID) ||
+    (execution.child.kind === "exact" && execution.child.childID !== childID)
+  )
+    execution.child = { kind: "ambiguous" }
+  else execution.child = { kind: "exact", childID }
+}
+type ReviewAdmission =
+  | { kind: "available" }
+  | { kind: "reserved"; call: Readonly<Reservation> }
+  | { kind: "entered"; call: Readonly<Reservation> }
+  | { kind: "consumed"; call: Readonly<Reservation> }
+  | { kind: "closed" }
+type ReviewAttempt = {
+  readonly target: ReviewTarget
+  readonly arguments: ReturnType<typeof reviewerArguments>
+  readonly control: Readonly<{ id: string; text: string }>
+  readonly implementerID: string
+  admission: ReviewAdmission
+  failure?: Cause.Cause<unknown>
+  execution?: { call: Readonly<Reservation>; child: ChildBinding; result?: Readonly<Tool.Result> }
+}
 
 // Server-only host adapter. All reads use the supported Effect session API.
 // Root-local one-shot slots live only in this closure; no transcript recovery.
 export function nativeAdmission(context: Context) {
   const caps = new Map<string, NativeCap>()
+  const reviews = new Map<string, ReviewAttempt>()
   // Only successful trusted admission spends eligibility. Failed syntax and
   // denied pre-admission calls create neither a slot nor CAP authority.
   const planners = new Map<
@@ -87,6 +138,7 @@ export function nativeAdmission(context: Context) {
     if (revoked) throw new Error("Server CAP activation was revoked")
   }
   const actor = Agent.ID.make(`cap_sponsor_${randomUUID()}`)
+  const reviewerActor = Agent.ID.make(`review_sponsor_${randomUUID()}`)
   // ConfigAgentPlugin runs after external plugins and appends global/agent
   // rules. Narrow even configured allows, without ever elevating a host deny.
   const sponsorPermission = (event: PermissionEvaluation) =>
@@ -98,6 +150,16 @@ export function nativeAdmission(context: Context) {
           event.resources[0] !== target ||
           event.effect !== "allow")
       )
+        event.effect = "deny"
+      if (
+        event.agent === reviewerActor &&
+        (event.action !== "subagent" ||
+          event.resources.length !== 1 ||
+          event.resources[0] !== "reviewer" ||
+          event.effect !== "allow")
+      )
+        event.effect = "deny"
+      if (event.agent === "reviewer" && (!directRootTool(event.action) || event.effect !== "allow"))
         event.effect = "deny"
     })
   const local = (cap: NativeCap) => {
@@ -113,13 +175,13 @@ export function nativeAdmission(context: Context) {
       throw new Error("Root role, location, or permissions changed")
   }
   const baseline = (cap: NativeCap) => ({ root: cap.claim.candidate.root, head: cap.claim.candidate.head, paths: [] })
-  const actualCall = (
-    cap: NativeCap,
+  const observedCall = (
+    control: Readonly<{ id: string; text: string }>,
+    expected: unknown,
     history: readonly SessionMessage.Info[],
     call: Reservation,
     status: "running" | "completed",
   ) => {
-    const control = cap.control
     const controls = history.filter((message) => message.id === control.id)
     const messages = history.filter((message) => message.id === call.messageID)
     const message = messages[0]
@@ -157,12 +219,50 @@ export function nativeAdmission(context: Context) {
       .flatMap((item) => (item.type === "assistant" ? item.content : []))
       .find((part) => part.type === "tool")
     if (first !== parts[0]) throw new Error("Earlier tool contender follows CAP control input")
-    exactArguments(parts[0].state.input, cap.claim.candidate) // Original, before native empty-key normalization.
+    if (!exactKeys(parts[0].state.input, ["agent", "description", "prompt"]) || !same(parts[0].state.input, expected))
+      throw new Error("Native arguments differ from frozen contract")
     return parts[0]
   }
+  const actualCall = (
+    cap: NativeCap,
+    history: readonly SessionMessage.Info[],
+    call: Reservation,
+    status: "running" | "completed",
+  ) => observedCall(cap.control, nativeArguments(cap.claim.candidate), history, call, status)
   const before = (event: ToolHooks["execute.before"]) =>
     Effect.gen(function* () {
       yield* attempt(live)
+      if (event.agent === "reviewer" && !directRootTool(event.tool))
+        return yield* Effect.fail(fail("Reviewer is read-only"))
+      const review = reviews.get(event.sessionID)
+      if (review) {
+        yield* attempt(() => {
+          if (review.admission.kind !== "available")
+            throw new Error("Reviewer admission is reserved, consumed, or closed")
+          review.admission = {
+            kind: "reserved",
+            call: frozenCopy({
+              sessionID: event.sessionID,
+              agent: event.agent,
+              messageID: event.messageID,
+              id: event.id,
+            }),
+          }
+        })
+        yield* attempt(() => {
+          if (event.tool !== "subagent" || event.agent !== "orchestrator")
+            throw new Error("Unexpected first Reviewer contender")
+        }).pipe(
+          Effect.onError(() =>
+            Effect.sync(() => {
+              review.admission = { kind: "closed" }
+            }),
+          ),
+        )
+        return
+      }
+      if (event.input && typeof event.input === "object" && "agent" in event.input && event.input.agent === "reviewer")
+        return yield* Effect.fail(fail("No reserved Reviewer call"))
       const cap = caps.get(event.sessionID)
       if (!cap || event.sessionID !== cap.rootSessionID) {
         if (event.agent !== "orchestrator" || directRootTool(event.tool)) {
@@ -195,6 +295,84 @@ export function nativeAdmission(context: Context) {
       )
     }).pipe(Effect.mapError((error) => (error instanceof Tool.Error ? error : fail(String(error)))))
   type PrepareInput = (input: unknown) => Effect.Effect<unknown, Tool.Error>
+  const executeReview = (
+    original: Tool.Info["execute"],
+    prepare: PrepareInput,
+    input: unknown,
+    invocation: Tool.Context,
+    review: ReviewAttempt,
+    cap: NativeCap,
+  ) =>
+    Effect.gen(function* () {
+      const call = frozenCopy({
+        sessionID: invocation.sessionID,
+        agent: invocation.agent,
+        messageID: invocation.messageID,
+        id: invocation.id,
+      })
+      // Claim executor entry synchronously. Losers cannot close this owner.
+      yield* attempt(() => {
+        if (review.admission.kind !== "reserved" || !same(review.admission.call, call))
+          throw new Error("Reviewer reservation mismatch")
+        review.admission = { kind: "entered", call }
+      })
+      return yield* Effect.gen(function* () {
+        const history = yield* context.session.context({ sessionID: invocation.sessionID })
+        yield* attempt(() => {
+          observedCall(review.control, review.arguments, history, call, "running")
+          if (!exactKeys(input, ["agent", "description", "prompt"]) || !same(input, review.arguments))
+            throw new Error("Reviewer arguments changed")
+        })
+        const effective = yield* prepare(input)
+        const root = yield* context.session.get({ sessionID: invocation.sessionID })
+        const execution = yield* attempt(() => {
+          local(cap)
+          rootIdentity(cap, root)
+          if (cap.phase !== "closed" || executing?.cap !== cap)
+            throw new Error("Reviewer does not own verified execution exclusion")
+          requireReviewTarget(observeReviewTarget(cap.claim.location.directory!, review.target), review.target)
+          review.admission = { kind: "consumed", call }
+          const execution: NonNullable<ReviewAttempt["execution"]> = { call, child: { kind: "unknown" } }
+          review.execution = execution
+          return execution
+        })
+        const result = yield* original(effective, {
+          ...invocation,
+          agent: reviewerActor,
+          progress: (update) =>
+            Effect.sync(() => bindChild(execution, update.sessionID, call.sessionID, [review.implementerID])).pipe(
+              Effect.andThen(() => invocation.progress(update)),
+            ),
+        })
+        yield* attempt(() => {
+          const output = result.output
+          bindChild(execution, output?.sessionID, call.sessionID, [review.implementerID])
+          if (
+            !exactKeys(output, ["sessionID", "status", "output"]) ||
+            typeof output.sessionID !== "string" ||
+            !output.sessionID ||
+            output.status !== "completed" ||
+            typeof output.output !== "string" ||
+            result.metadata?.sessionID !== output.sessionID ||
+            result.metadata?.status !== "completed"
+          )
+            throw new Error("Reviewer native completion receipt mismatch")
+          if (execution.child.kind !== "exact") throw new Error("Reviewer child identity ambiguous")
+          execution.result = frozenCopy(result)
+        })
+        return result
+      }).pipe(
+        Effect.catchCause((cause) => {
+          review.failure = cause
+          return Effect.failCause(cause)
+        }),
+        Effect.ensuring(
+          Effect.sync(() => {
+            review.admission = { kind: "closed" }
+          }),
+        ),
+      )
+    })
   const executePlanner = (
     original: Tool.Info["execute"],
     prepare: PrepareInput,
@@ -311,6 +489,14 @@ export function nativeAdmission(context: Context) {
     (input: unknown, invocation: Tool.Context) =>
       Effect.gen(function* () {
         yield* attempt(live)
+        const review = reviews.get(invocation.sessionID)
+        if (review) {
+          const owner = caps.get(invocation.sessionID)
+          if (!owner) return yield* Effect.fail(fail("Reviewer has no implementation owner"))
+          return yield* executeReview(original, prepare, input, invocation, review, owner)
+        }
+        if (input && typeof input === "object" && "agent" in input && input.agent === "reviewer")
+          return yield* Effect.fail(fail("No reserved Reviewer call"))
         const cap = caps.get(invocation.sessionID)
         const governed =
           (!!cap && invocation.sessionID === cap.rootSessionID) ||
@@ -359,30 +545,19 @@ export function nativeAdmission(context: Context) {
           })
           const execution: { call: Reservation; child: ChildBinding } = { call, child: { kind: "unknown" } }
           lease.native = execution
-          const bindChild = (childID: unknown) => {
-            if (execution.child.kind === "ambiguous") return
-            if (
-              typeof childID !== "string" ||
-              !childID ||
-              childID === call.sessionID ||
-              (execution.child.kind === "exact" && execution.child.childID !== childID)
-            ) {
-              execution.child = { kind: "ambiguous" }
-              return
-            }
-            execution.child = { kind: "exact", childID }
-          }
           // Pinned OpenCode seam: native Permission.assert uses this explicit actor,
           // the real parent/source IDs, and effective policy before creating a child.
           const result = yield* original(effectiveInput, {
             ...invocation,
             agent: actor,
             progress: (update) =>
-              Effect.sync(() => bindChild(update.sessionID)).pipe(Effect.andThen(() => invocation.progress(update))),
+              Effect.sync(() => bindChild(execution, update.sessionID, call.sessionID)).pipe(
+                Effect.andThen(() => invocation.progress(update)),
+              ),
           })
           yield* attempt(() => {
             cap.receipt(result)
-            bindChild(cap.childID)
+            bindChild(execution, cap.childID, call.sessionID)
           })
           return result // Native output normalization, after hooks and publication remain native.
         }).pipe(
@@ -452,13 +627,204 @@ export function nativeAdmission(context: Context) {
           claim.candidate.proposal.files,
         )
         cap.live()
-        return [
-          "Implementation gate completed successfully.",
-          `HEAD ${claim.candidate.head} remained unchanged.`,
-          `Resulting paths (${paths.length}): ${paths.map(displayPath).join(", ") || "(none)"}.`,
-          "This attempt ended after the implementation gate; Reviewer and Commit were not run.",
-        ].join("\n")
+        return observeReviewTarget(claim.location.directory!, { ...baseline(cap), paths })
       })
+    })
+  const verifyReview = (cap: NativeCap, review: ReviewAttempt) =>
+    Effect.gen(function* () {
+      const execution = yield* attempt(() => {
+        local(cap)
+        if (!review.execution || review.execution.child.kind !== "exact" || !review.execution.result)
+          throw new Error("Reviewer settled without a verified native execution")
+        return review.execution
+      })
+      const childID = yield* attempt(() => {
+        if (execution.child.kind !== "exact") throw new Error("Reviewer identity ambiguous")
+        return Session.ID.make(execution.child.childID)
+      })
+      const root = yield* context.session.get({ sessionID: Session.ID.make(cap.claim.rootSessionID) })
+      const child = yield* context.session.get({ sessionID: childID })
+      const history = yield* context.session.context({ sessionID: root.id })
+      const childHistory = yield* context.session.context({ sessionID: childID })
+      return yield* attempt(() => {
+        local(cap)
+        rootIdentity(cap, root)
+        if (
+          root.outcome !== "succeeded" ||
+          !root.time.idle ||
+          child.id !== childID ||
+          child.parentID !== root.id ||
+          child.agent !== "reviewer" ||
+          child.fork ||
+          child.revert ||
+          child.time.archived ||
+          !same(snapshotLocation(child.location), cap.claim.location) ||
+          !emptyPermissions(child.permissions) ||
+          child.outcome !== "succeeded" ||
+          !child.time.idle
+        )
+          throw new Error("Reviewer root/child completion binding failed")
+        const users = childHistory.filter((message) => message.type === "user")
+        const assistants = childHistory.filter((message) => message.type === "assistant")
+        const final = assistants.at(-1)
+        const terminals = assistants.filter((message) => message.finish === "stop")
+        if (
+          users.length !== 1 ||
+          childHistory[0] !== users[0] ||
+          users[0]?.text !== nativeBootstrap(review.arguments.prompt) ||
+          [users[0]?.files, users[0]?.agents, users[0]?.skills].some((items) => items && items.length) ||
+          childHistory.some(
+            (message) =>
+              !["user", "assistant", "idle", "model-switched"].includes(message.type) &&
+              !nativeReadInstruction(message),
+          ) ||
+          childHistory.at(-1)?.type !== "idle" ||
+          childHistory.some((message) => message.type === "idle" && message.outcome !== "succeeded") ||
+          !final ||
+          terminals.length !== 1 ||
+          terminals[0] !== final ||
+          assistants.some(
+            (message) =>
+              message.agent !== "reviewer" ||
+              message.error ||
+              message.content.some(
+                (part) =>
+                  part.type === "tool" &&
+                  (part.executed === true ||
+                    !directRootTool(part.name) ||
+                    !["completed", "error"].includes(part.state.status)),
+              ),
+          )
+        )
+          throw new Error("Reviewer input/final history is missing or ambiguous")
+        const result = execution.result
+        const text = final.content
+          .filter((part) => part.type === "text")
+          .map((part) => part.text)
+          .join("")
+        if (!result || result.output?.sessionID !== childID || result.output?.output !== text)
+          throw new Error("Reviewer structured result differs from terminal child text")
+        const part = observedCall(review.control, review.arguments, history, execution.call, "completed")
+        const start = history.findIndex((message) => message.id === review.control.id)
+        const contenders = history
+          .slice(start + 1)
+          .flatMap((message) =>
+            message.type === "assistant" ? message.content.filter((part) => part.type === "tool") : [],
+          )
+        if (
+          contenders.length !== 1 ||
+          part.state.status !== "completed" ||
+          part.state.metadata?.sessionID !== childID ||
+          part.state.metadata?.status !== "completed"
+        )
+          throw new Error("Reviewer published completion mismatch")
+        // Re-observe exact bytes only after the final trusted host reads.
+        const current = observeReviewTarget(cap.claim.location.directory!, review.target)
+        requireInScope(current, baseline(cap), cap.claim.candidate.proposal.files)
+        requireReviewTarget(current, review.target)
+        const parsed = parseReviewResult(text)
+        local(cap)
+        return reviewReceipt(parsed)
+      })
+    })
+  const runReview = (cap: NativeCap, target: ReviewTarget, settlement: (proven: boolean) => void) =>
+    Effect.gen(function* () {
+      const rootID = Session.ID.make(cap.claim.rootSessionID)
+      const review = yield* attempt(() => {
+        local(cap)
+        if (reviews.has(rootID) || !cap.childID || executing?.cap !== cap)
+          throw new Error("Reviewer attempt is unavailable")
+        const call = cap.reservation
+        const args = reviewerArguments(cap.claim.candidate, target, {
+          rootSessionID: rootID,
+          messageID: call.messageID,
+          toolID: call.id,
+          childID: cap.childID,
+        })
+        const review: ReviewAttempt = {
+          target,
+          arguments: args,
+          implementerID: cap.childID,
+          control: Object.freeze({
+            id: `msg_${randomUUID()}`,
+            text: [
+              "Propose exactly one foreground native subagent call with exactly these arguments:",
+              JSON.stringify(args),
+              "Do not add keys, reuse a session, alter values, substitute roles, or retry. After its result finish with prose and STOP before Commit.",
+            ].join("\n"),
+          }),
+          admission: { kind: "available" },
+        }
+        cap.close()
+        reviews.set(rootID, review)
+        return review
+      })
+      // Implementation settlement cannot settle this new root/child execution.
+      settlement(false)
+      const wake = yield* Effect.gen(function* () {
+        const admitted = yield* context.session.synthetic({
+          sessionID: rootID,
+          id: SessionMessage.ID.make(review.control.id),
+          text: review.control.text,
+          delivery: "steer",
+          resume: true,
+        })
+        yield* attempt(() => {
+          local(cap)
+          if (
+            admitted.id !== review.control.id ||
+            admitted.sessionID !== rootID ||
+            admitted.type !== "synthetic" ||
+            admitted.delivery !== "steer" ||
+            admitted.payload.text !== review.control.text
+          )
+            throw new Error("Reviewer synthetic wake changed")
+        })
+      }).pipe(Effect.exit)
+      if (Exit.isFailure(wake)) review.admission = { kind: "closed" }
+      const rootSettled = yield* context.session.wait({ sessionID: rootID }).pipe(Effect.exit)
+      review.admission = { kind: "closed" }
+      if (Exit.isFailure(rootSettled)) return { outcome: reviewUnverified(rootSettled.cause), publish: false }
+      const childSettled = yield* Effect.gen(function* () {
+        const execution = review.execution
+        if (!execution) {
+          settlement(true)
+          return
+        }
+        const id = yield* attempt(() => {
+          if (execution.child.kind !== "exact") throw new Error("Reviewer settlement identity unknown")
+          return Session.ID.make(execution.child.childID)
+        })
+        yield* context.session.wait({ sessionID: id })
+        const child = yield* context.session.get({ sessionID: id })
+        yield* attempt(() => {
+          local(cap)
+          if (
+            child.id !== id ||
+            child.parentID !== rootID ||
+            child.agent !== "reviewer" ||
+            child.fork ||
+            child.revert ||
+            child.time.archived ||
+            !same(snapshotLocation(child.location), cap.claim.location) ||
+            !emptyPermissions(child.permissions) ||
+            !child.time.idle ||
+            !["succeeded", "failed", "interrupted"].includes(child.outcome ?? "")
+          )
+            throw new Error("Exact Reviewer terminal settlement was not proven")
+          settlement(true)
+        })
+      }).pipe(Effect.exit)
+      const outcome = Exit.isFailure(wake)
+        ? reviewUnverified(wake.cause)
+        : Exit.isFailure(childSettled)
+          ? reviewUnverified(childSettled.cause)
+          : review.failure
+            ? reviewUnverified(review.failure)
+            : yield* verifyReview(cap, review).pipe(
+                Effect.catchCause((cause) => Effect.succeed(reviewUnverified(cause))),
+              )
+      return { outcome, publish: true }
     })
   const authorize = (input: unknown) =>
     Effect.gen(function* () {
@@ -563,12 +929,26 @@ export function nativeAdmission(context: Context) {
           // CAP prevents any later contender from creating a child.
           settlementProven = true
         }
-        const outcome = Exit.isFailure(admission)
+        const implementation = Exit.isFailure(admission)
           ? unverified(admission.cause)
           : settlementFailure
             ? unverified(settlementFailure)
             : yield* verifyResult(cap).pipe(Effect.catchCause((cause) => Effect.succeed(unverified(cause))))
         cap.close()
+        let outcome: string
+        if (typeof implementation === "string") outcome = implementation
+        else {
+          const review = yield* runReview(cap, implementation, (proven) => {
+            settlementProven = proven
+          }).pipe(Effect.catchCause((cause) => Effect.succeed({ outcome: reviewUnverified(cause), publish: false })))
+          outcome = [
+            "Implementation gate completed successfully.",
+            `HEAD ${implementation.head} remained unchanged.`,
+            `Resulting paths (${implementation.paths.length}): ${implementation.paths.map(displayPath).join(", ") || "(none)"}.`,
+            review.outcome,
+          ].join("\n")
+          if (!review.publish) return outcome
+        }
         // This accepted RPC alone owns terminal publication. Losing RPCs never
         // reach it; publication failure cannot change or retry the outcome.
         yield* Effect.suspend(() =>
@@ -581,6 +961,8 @@ export function nativeAdmission(context: Context) {
         Effect.ensuring(
           Effect.sync(() => {
             cap.close()
+            const review = reviews.get(rootSessionID)
+            if (review) review.admission = { kind: "closed" }
             // Unknown settlement retains exclusion until activation teardown.
             if (settlementProven && executing?.cap === cap) executing = undefined
           }),
@@ -591,9 +973,21 @@ export function nativeAdmission(context: Context) {
     revoked = true
     for (const cap of caps.values()) cap.teardown()
     planners.clear()
+    for (const review of reviews.values()) review.admission = { kind: "closed" }
+    reviews.clear()
     executing = undefined
   }
-  return { before, execute, authorize, teardown, sponsorPermission, actor, caps }
+  return { before, execute, authorize, teardown, sponsorPermission, actor, reviewerActor, caps }
+}
+
+function reviewUnverified(cause: Cause.Cause<unknown>): string {
+  const error = Cause.squash(cause)
+  if (
+    error instanceof ReviewTargetChanged ||
+    (error instanceof Tool.Error && error.error instanceof ReviewTargetChanged)
+  )
+    return "Review target changed. Reviewer outcome was unverified; result was rejected. No retry, replacement, repair, or Commit was issued."
+  return `Reviewer outcome was unverified. No retry, replacement, repair, or Commit was issued.\nReason: ${String(Cause.squash(cause))}`
 }
 
 function unverified(cause: Cause.Cause<unknown>): string {

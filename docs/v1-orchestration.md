@@ -32,8 +32,10 @@ clean initial Git observation → fresh Orchestrator
 → consume → original native executor with private sponsorship actor
 → native child creation/prompt/progress/result/row/navigation
 → root settlement → trusted native receipt + child/result binding
-→ unchanged HEAD + exact changed-path gate → STOP before Reviewer / Commit
-→ closed authority → terminal synthetic root receipt → composer controls retired
+→ unchanged HEAD + exact changed-path gate → capture immutable review-target fingerprint
+→ close implementation authority → one trusted Reviewer steer and separate sponsored admission
+→ fresh read-only reviewer sibling → exact Reviewer settlement/result + target revalidation
+→ terminal trusted review receipt → STOP before Commit → composer controls retired
 ```
 
 Before governance, Orchestrator may answer directly and use only read/glob/grep.
@@ -103,12 +105,15 @@ Issue #9's one-shot semantics apply independently to each root throughout the
 activation. The server occupies that root's slot before any RPC await. Duplicate
 submissions, lost-response retransmission, and submissions after successful or
 failed completion remain rejected for that root. Closed slots are never reset.
-Worktree implementation exclusion is separate: another root cannot start an
-Implementer until the exact admitted Implementer child settles. The runtime lease
+Worktree execution exclusion is separate: another root cannot start an
+Implementer while implementation, verification, automatic review, or terminal
+receipt publication owns the worktree. The runtime lease
 records its native call and child ID from trusted built-in progress (or the
 completed structured receipt), awaits `session.wait(childID)`, and checks that
 exact child's root, role, location and terminal outcome. Root idle and CAP closure
-alone never release exclusion. Unknown or ambiguous child settlement keeps
+alone never release exclusion. A verified implementation transfers neither
+mutation authority nor a settled-child assumption to Reviewer. Unknown or
+ambiguous child settlement keeps
 exclusion held until server teardown. Result verification and CAP authority remain
 separate from this execution exclusion. Pending Plans in other
 roots retain ownership, but authorization still requires fresh Git evidence.
@@ -270,8 +275,8 @@ and nonempty Implementer prose do not decide authority. A separate fresh Git
 observation verifies unchanged HEAD and exact changed-path membership.
 The root must settle successfully before a verified outcome is returned. Harmless
 prose is allowed; refusal/prose without admission closes unused authority.
-There is no provider-request counting, retry/compaction policing, or follow-up
-orchestration. If the required control/call evidence is no longer readable,
+There is no provider-request counting or retry/compaction policing. The only
+automatic continuation is the one read-only review after trusted verification. If the required control/call evidence is no longer readable,
 verification fails closed.
 
 Failure, ambiguous wake/reservation/execution, settlement and teardown never
@@ -279,13 +284,65 @@ reopen authority, issue another wake, create a replacement, or replay a prompt.
 Retained executor closures reject after server teardown. The installed bounded
 Implementer role and ordinary recovery of the same admitted child remain native.
 Restart cannot reconstruct a CAP claim from transcripts; recovery is not a new
-CAP admission. Lost verification never becomes verified success. Reviewer and
-Commit remain unauthorized.
+CAP admission. Lost verification never becomes verified success. Ordinary
+Orchestrator Reviewer calls and all Commit authority remain denied.
 
 Native creation inherits the root's full location, including workspace identity.
 A supported attempt still needs proven canonical local Git/worktree
 correspondence. This is not remote topology attestation, an external filesystem
 lock, or exhaustive shell-effect detection.
+
+### Automatic read-only review
+
+After successful Implementer settlement, exact native provenance, unchanged HEAD,
+and exact path scope, the same accepted RPC captures a deterministic SHA-256
+review target through `src/git.ts:observeReviewTarget`. The target binds canonical
+root, authorized HEAD, exact accepted paths, index entries, and actual bytes/types
+of all tracked and ordinary untracked files. It includes executable bits, symlink
+link text, and deletion markers. Ignored untracked files remain outside the ordinary
+Git boundary; referenced tracked/untracked content is hashed independently.
+Unmerged entries, Gitlinks/submodules, unsupported file kinds, invalid paths, and
+unstable observations fail closed. Two content collections and intervening/final
+fresh Git observations must agree. This is a transient immutable observation, not
+a filesystem snapshot, external lock, or defense against hostile same-user actors.
+
+The Implementer CAP closes before one separate Reviewer control input is admitted.
+The runtime constructs exact three-key arguments with the frozen proposal, root,
+HEAD, accepted paths, target digest, and implementation root/message/tool/child
+identity. A private local Reviewer slot binds that control and the first exact
+native contender. Its separate hidden sponsor allows only `subagent:reviewer`;
+configured deny is never elevated and ask fails closed. The same root becomes
+Reviewer’s parent, so Reviewer is a fresh sibling of Implementer. Original
+published keys must remain exact; `/agent-models` injects a saved model/variant only
+into the executor copy after trusted call verification. Neither role's admission
+can recreate the other's authority.
+
+Reviewer starts from deny-all with only read/glob/grep. Trusted tool and permission
+hooks deny mutation, execution, session control, and delegation even after appended
+configured allows. It cannot repair, widen scope, stage, commit, push, request
+another implementation, or authorize Commit. Native child progress/receipt identity
+is reconciled monotonically. The RPC waits for both root and exact child and
+checks successful role/location/parent/no-overrides, exact bootstrap, supported
+history, exactly one terminal assistant result, original structured output, and
+persisted parent call. Supported native read instruction loading is observation
+context, not task/result authority. Duplicate calls/results and ambiguous evidence
+fail closed with no replacement.
+
+After settlement and the final host reads, the runtime re-observes content and exact
+scope and compares the target. `src/review.ts` accepts one strict bounded JSON
+object with `status`, nonempty `summary`, and `findings`. APPROVED and INCONCLUSIVE
+require no findings. CHANGES_REQUESTED requires 1–8 actionable findings with
+severity, scenario, impact, remediation, and optional repository path, location,
+and test gap. Unknown/extra/duplicate keys, malformed JSON, contradictory findings,
+and excessive/empty text fail closed. The exact result is evidence only.
+
+The worktree exclusion spans verification, review, target revalidation and receipt
+publication. Root idle or the previously settled Implementer cannot release it for
+a running/unknown Reviewer. Exact failed/interrupted settlement permits release
+without accepting review; unknown/ambiguous settlement holds exclusion until
+activation teardown. Reviewer refusal, launch/admission errors, stale model
+preferences, failed execution, invalid output and target drift never cause retry,
+replacement, or repair. All outcomes end before Commit, with no new authorization.
 
 ### Terminal workflow receipts
 
@@ -296,7 +353,10 @@ results are never retained there. The existing native Plan publication remains
 authorization provenance; a terminal receipt cannot authorize or reopen it.
 
 The accepted server RPC owns one terminal receipt after root execution settles
-and CAP closes. Verified success records unchanged HEAD and resulting paths;
+and CAP closes. Verified implementation alone is not terminal success: its
+automatic Reviewer must settle and its target must be revalidated. Receipts record
+unchanged authorized HEAD, accepted paths, and APPROVED, CHANGES_REQUESTED,
+INCONCLUSIVE, unverified Reviewer execution/result, or review-target change;
 Git/scope rejection and native admission/result failures record only the trusted
 unverified disposition and retained reason. Duplicate losing RPCs and repeated
 CAP closure do not publish. Cancellation and definitive local operation failures
@@ -322,7 +382,7 @@ session deletion and history revert may remove native receipts.
 ## Validation and status
 
 `/agent-models` (also available in the command palette) stores personal overrides
-for Planner, Explorer and Implementer in OpenCode-owned plugin storage, keyed
+for Planner, Explorer, Implementer and Reviewer in OpenCode-owned plugin storage, keyed
 by the exact location directory and workspace identity. Choose a catalog model
 and optional native variant, or Reset to remove the override and expose normal
 agent configuration / parent-model inheritance. Unavailable saved selections
@@ -331,7 +391,8 @@ remain visible and fail during trusted preparation; they are not replaced.
 Preferences affect only fresh native child calls. The trusted executor copies
 the validated three-key call and adds the saved model solely to its internal
 native executor argument. Preference reads, decoding and catalog validation
-finish before Planner admission is spent or Implementer CAP is consumed. Settings
+finish before Planner admission is spent, Implementer CAP is consumed, or
+Reviewer enters native execution. Settings
 failures therefore leave no native child settlement ownership and do not strand
 worktree exclusion. Failures arising during native execution retain normal
 settlement semantics. Published call inputs and Planner admission receipts
@@ -375,7 +436,9 @@ changed exactly `README.md`; HEAD stayed unchanged, the trusted Git gate passed,
 and execution stopped before Reviewer / Commit. In a separate check after
 Planner completion, Cancel admitted no Implementer and left the worktree clean.
 
-Reviewer, reviewed-target construction and Commit are future work.
+The above is historical implementation-only validation. Automatic Reviewer and
+review-target verification are now implemented for Issue #21 but have not been
+live-validated in this pass. Commit remains future work.
 
 Historical OpenCode 2.0.20 dogfood and Issue #4 resize results describe prior
 paths, not validation of this native path. See the retained

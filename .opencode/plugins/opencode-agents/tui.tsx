@@ -283,7 +283,10 @@ const plugin: Definition = {
             present("Cancelled", message)
             return
           }
-          setPresentation({ kind: "status", message: "Authorization claimed — implementation admission in progress…" })
+          setPresentation({
+            kind: "status",
+            message: "Authorization claimed — implementation and automatic review in progress…",
+          })
           implementing = true
           void authorizePublishedAttempt(context, captured, guard)
             .finally(() => {
@@ -292,7 +295,7 @@ const plugin: Definition = {
             .then((message) => {
               if (generation.revoked) return
               closeAuthority()
-              present(message.includes("unverified") ? "STOP" : "Implementation gate", message)
+              present(message.includes("unverified") ? "STOP" : "Implementation and review", message)
             })
             .catch(admissionFailed)
         } catch (error) {

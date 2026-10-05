@@ -179,10 +179,10 @@ test("managed roster is explicit; native selections round trip without a reasoni
     ["planner", "Planner"],
     ["explorer", "Explorer"],
     ["authorized_implementer", "Implementer"],
+    ["reviewer", "Reviewer"],
   ])
   for (const role of managedRoles) expect(requireRole(role.id)).toBe(role.id)
-  for (const value of ["reviewer", "committer", "build", undefined, {}, "__proto__"])
-    expect(() => requireRole(value)).toThrow()
+  for (const value of ["committer", "build", undefined, {}, "__proto__"]) expect(() => requireRole(value)).toThrow()
   expect(parseSelection(JSON.parse(JSON.stringify(chosen)))).toEqual(chosen)
   expect(Model.Ref.parse(formatSelection(chosen))).toEqual(chosen)
   expect(formatSelection(native)).toBe("test/native")
@@ -333,7 +333,7 @@ test("missing roles are never manufactured and cannot acquire a new saved overri
     loaded: false,
     preference: { kind: "native" },
   })
-  expect(f.state.agents).toHaveLength(2)
+  expect(f.state.agents).toHaveLength(3)
   expect(f.store.size).toBe(0)
 })
 
@@ -392,7 +392,7 @@ test("settings RPC contracts validate on both sides and expose no authorization 
   expect(await hostParse(agentModelsRpc.methods.list.output, wire(rows))).toEqual(rows)
   expect(rows[0].preference).toEqual({ kind: "override", model: chosen, availability: "available" })
   for (const request of [
-    { role: "reviewer", model: chosen },
+    { role: "committer", model: chosen },
     { role: "planner", model: { ...chosen, id: Model.ID.make("missing") } },
     { role: "planner", model: { ...chosen, variant: Model.VariantID.make("missing") } },
   ])
@@ -630,6 +630,7 @@ test("healthy explicit/default overrides and native behavior render only Agent, 
       { agent: "Planner", model: "test/chosen", variant: "high", status: "" },
       { agent: "Explorer", model: "test/native", variant: "default", status: "" },
       { agent: "Implementer", model: "Native behavior", variant: "—", status: "" },
+      { agent: "Reviewer", model: "Native behavior", variant: "—", status: "" },
     ])
     const scroll = f.dialogs[0].nodes.find((node: any) => node.type === "scrollbox")
     const dialog = f.dialogs[0].nodes.find((node: any) => node.children.includes(scroll))

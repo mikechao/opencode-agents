@@ -273,7 +273,7 @@ function nonGovernedTool(part: RootTool): boolean {
   if (metadata && (plannerReceiptKey in metadata || "sessionID" in metadata)) return false
   return directRootTool(part.name) || part.state.status === "error"
 }
-function nativeReadInstruction(message: RootMessage): boolean {
+export function nativeReadInstruction(message: RootMessage): boolean {
   if (message.type !== "synthetic" || !message.text.trim() || !exactKeys(message.metadata, ["instruction"]))
     return false
   const instruction = message.metadata.instruction

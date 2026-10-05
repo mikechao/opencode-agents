@@ -10,12 +10,13 @@ This document owns the normative coding-authority contract for
 The TUI publishes an exact trusted Plan and claims one positive readable-frame
 Authorize decision. It transfers the frozen claim to a local server RPC for
 one native Implementer admission. Trusted native result binding and independent
-unchanged-HEAD/exact-path verification must pass before STOP. Reviewer and
-Commit remain future obligations.
+unchanged-HEAD/exact-path verification must pass before automatic read-only
+Reviewer admission. Trusted review result and exact-target revalidation precede
+STOP before Commit. Commit remains a future separately authorized obligation.
 
 Issue #9's one-shot CAP semantics remain intact. Issue #16 gives each eligible
 root its own governed attempt within the plugin activation, with shared-worktree
-implementation exclusion. Repeated authorization of the same root is rejected.
+execution exclusion spanning implementation, review and terminal publication. Repeated authorization of the same root is rejected.
 
 ## Authority and trust
 
@@ -234,7 +235,8 @@ direct implementation prompt dispatch belongs to CAP.
 
 Harmless root prose is allowed. Prose/refusal with no admitted call MUST close
 unused authority at settlement. CAP MUST NOT introduce provider-request counts,
-retry/compaction policing or follow-up orchestration. Consumed/closed claims
+retry/compaction policing. Automatic read-only Reviewer admission is separate
+from implementation authority. Consumed/closed claims
 MUST reject new Implementer invocations. Reservation or execution ambiguity
 MUST never permit reopening, another wake, replacement or direct prompt replay.
 
@@ -244,7 +246,8 @@ The installed bounded Implementer role remains distinct from the read-only
 Planner and root. It MUST deny delegation, `execute`, session control and
 equivalent exposed tools. The root retains deny-all except Planner delegation;
 the trusted sponsor admits only the exact one implementation invocation.
-Reviewer and Commit remain unauthorized. No planning conversation is copied
+General Orchestrator Reviewer authority and all Commit authority remain denied.
+No planning conversation is copied
 to the Implementer; its deterministic prompt carries the frozen proposal.
 
 Implementer instructions MUST require exact authorized paths, unchanged HEAD,
@@ -272,21 +275,61 @@ path, including concurrent/unattributed changes and both observable rename
 endpoints. Changed HEAD, invalid observation or an outside path MUST fail the
 gate without amending scope or admitting a retry.
 
-A passing gate MUST STOP before Reviewer / Commit. It establishes neither
+A passing implementation gate MUST close implementation authority and initiate
+exactly one automatic read-only Reviewer attempt. It establishes neither
 semantic satisfaction nor commit readiness, exhaustive detection of physical
 mutations, or an atomic filesystem lock. Shell access can conceal changes or
 perform unauthorized history effects; CAP does not claim physical prevention.
 The native row/status/navigation is supplied by OpenCode. Trusted TUI status
 reports the RPC verdict; uncertain results MUST NOT be labeled success.
 
-## Future Reviewer and separate Commit contract
+## Automatic Reviewer contract
 
-Reviewer, exact reviewed-target construction, validation integration and Commit
-are not implemented. A future Reviewer MUST be a fresh invocation distinct
-from Implementer and Orchestrator, receiving explicit bounded artifacts rather
-than inherited Implementer context. Independence does not require a separate
-process or model family. Trusted code MUST bind passing independent review
-and successful Reviewer-owned validation to that invocation and exact target.
+Reviewer MUST be a fresh native sibling under the same Orchestrator root, distinct
+from Implementer. Trusted runtime MUST construct its exact task from the frozen
+proposal, canonical root, unchanged authorized HEAD, exact accepted changed paths,
+completed implementation identity, review-target digest and strict result schema.
+Ordinary Orchestrator/Implementer prose MUST NOT initiate or authorize review.
+Implementation authority MUST be closed before the sole Reviewer steer. A separate
+one-shot admission and Reviewer-only sponsor MUST preserve original three-key
+arguments, actual source IDs, fresh native execution, child identity, effective
+host policy and absence of session-level overrides. No second human authorization
+is needed for this bounded read-only continuation.
+
+Reviewer MUST start from deny-all with only read/glob/grep. Trusted hooks MUST
+prevent mutation, shell/execute, session control, delegation, repair, staging,
+Commit, push or new authority even when configured policy appends allows.
+Reviewer MUST NOT inherit, reopen or enlarge Implementer authority.
+
+Trusted code MUST capture an immutable deterministic content fingerprint immediately
+after implementation verification, binding root, HEAD, accepted paths, staged index
+identities and actual tracked/ordinary-untracked bytes/types. The ordinary boundary
+excludes ignored untracked content. Unmerged entries, Gitlinks and ambiguous or
+unsupported observations MUST fail closed. It MUST independently re-observe and
+compare that target after exact Reviewer settlement before accepting output.
+Same HEAD and changed-path names alone MUST NOT establish target stability.
+
+Successful review MUST bind the exact child role/parent/location/no-overrides,
+bootstrap, one terminal assistant result, original structured receipt and published
+parent call. Failed/interrupted or ambiguous execution MUST NOT be accepted.
+The strict JSON result MUST have exactly status, nonempty bounded summary and
+findings. APPROVED and INCONCLUSIVE MUST have empty findings; CHANGES_REQUESTED
+MUST have 1–8 actionable blocking findings. Unknown/extra/duplicate keys, malformed
+or contradictory results and target drift MUST be rejected. Reviewer findings and
+approval are evidence, never Commit, repair, scope-change or implementation authority.
+
+Worktree exclusion MUST remain held through Reviewer settlement, target
+revalidation and terminal receipt publication. Previously proven Implementer
+settlement MUST NOT release an unknown/running Reviewer. Unknown child settlement
+MUST retain exclusion until activation teardown. Exactly one Reviewer attempt is
+allowed; failure MUST NOT launch a replacement, retry, repair or another Implementer.
+All terminal outcomes MUST stop before Commit. No persisted review/workflow state
+or transcript recovery grants authority.
+
+## Future separate Commit contract
+
+Commit authorization, Reviewer-owned executable validation, and commit effects
+are not implemented. The following obligations apply only to future Commit work.
 
 Reviewed-target commit authority MUST be distinct from intent authority. Its
 candidate MUST bind passing review, exact reviewed target or unambiguous digest,

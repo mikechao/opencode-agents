@@ -8,6 +8,7 @@ export const managedRoles = [
   { id: "planner", label: "Planner" },
   { id: "explorer", label: "Explorer" },
   { id: "authorized_implementer", label: "Implementer" },
+  { id: "reviewer", label: "Reviewer" },
 ] as const
 export const Role = Schema.Literals(managedRoles.map((role) => role.id))
 export type Role = typeof Role.Type
