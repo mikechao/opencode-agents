@@ -7,6 +7,7 @@ import { NativeCap, type Generation } from "../src/cap.ts"
 import * as attemptModule from "../src/attempt.ts"
 import * as gitModule from "../src/git.ts"
 import { observeGit, type GitSnapshot } from "../src/git.ts"
+import { reviewerGitInput, reviewerGitName } from "../src/reviewer-git.ts"
 import { makeCandidate, parseProposal, renderPlan } from "../src/proposal.ts"
 import {
   activationEvidence,
@@ -1556,6 +1557,12 @@ test("native role files allow only Planner to delegate to Explorer through order
     for (const action of ["read", "glob", "grep"]) expect(effect(rules, action)).toBe("allow")
     for (const action of ["edit", "shell", "subagent", "write", "patch"]) expect(effect(rules, action)).toBe("deny")
   }
+  for (const name of ["orchestrator", "planner", "explorer", "authorized_implementer"])
+    expect(effect(load(name), reviewerGitName)).toBe("deny")
+  const reviewer = load("reviewer")
+  for (const action of ["read", "glob", "grep", reviewerGitName]) expect(effect(reviewer, action)).toBe("allow")
+  for (const action of ["shell", "edit", "subagent", "execute", "commit", "push"])
+    expect(effect(reviewer, action)).toBe("deny")
   expect(JSON.parse(readFileSync(path.join(import.meta.dir, "../opencode.json"), "utf8"))).toEqual({
     experimental: { subagent_depth: 2 },
   })
@@ -4169,7 +4176,7 @@ function serverFake(root: string, _observer: SnapshotObserver, workspaceID?: str
     editor.update("reviewer", (agent: any) => {
       agent.permissions = [
         { action: "*", resource: "*", effect: "deny" },
-        ...["read", "glob", "grep"].map((action) => ({ action, resource: "*", effect: "allow" })),
+        ...["read", "glob", "grep", reviewerGitName].map((action) => ({ action, resource: "*", effect: "allow" })),
       ]
     })
   })
@@ -6625,6 +6632,7 @@ snapshotTest(
 test("Effect server keeps Authorize and model settings RPCs separate with two narrow sponsors and a native wrapper", async () => {
   const host = sponsorHost(),
     hooks: any[] = [],
+    added: any[] = [],
     rpcs: any[] = []
   const native = { name: "subagent", input: nativeInput, execute: () => Effect.succeed({}) }
   const context = {
@@ -6642,6 +6650,7 @@ test("Effect server keeps Authorize and model settings RPCs separate with two na
       transform: (update: any) =>
         Effect.sync(() =>
           update({
+            add: (tool: any) => added.push(tool),
             update: (id: string, fn: any) => {
               expect(id).toBe("subagent")
               fn(native)
@@ -6659,6 +6668,9 @@ test("Effect server keeps Authorize and model settings RPCs separate with two na
         yield* serverPlugin.effect(context)
         expect(native.input).toBe(schema)
         expect(native.execute).not.toBe(execute)
+        expect(added).toHaveLength(1)
+        expect(added[0]).toMatchObject({ name: reviewerGitName, options: { codemode: false } })
+        expect(added[0].input).toBe(reviewerGitInput)
         expect(rpcs).toHaveLength(2)
         expect(rpcs[0].definition).toBe(authorizeRpc)
         expect(Object.keys(rpcs[0].handlers)).toEqual(["authorize"])
@@ -6746,6 +6758,10 @@ snapshotTest(
     expect(args.prompt).toContain('"childID":"ses_child"')
     expect(args.prompt).toContain(HEAD)
     expect(args.prompt).toContain(root)
+    expect(args.prompt).toContain(
+      "Inspect the Git delta from HEAD before judging preservation or removal of prior content",
+    )
+    expect(args.prompt).toContain("Git observations cannot replace those checks or authorize mutation")
     expect(f.reviewOriginals[0].input).toEqual({ ...args, model: "test/chosen#high" })
     expect(f.reviewOriginals[0].context).toMatchObject({
       agent: f.admission.reviewerActor,
@@ -7072,10 +7088,127 @@ snapshotTest(
       await Effect.runPromise(f.host.evaluate(f.admission.reviewerActor, "subagent", ["authorized_implementer"])),
     ).toBe("deny")
     expect(await Effect.runPromise(f.host.evaluate(f.admission.actor, "subagent", ["reviewer"]))).toBe("deny")
-    for (const tool of ["read", "glob", "grep"])
+    for (const tool of ["read", "glob", "grep", reviewerGitName])
       expect(await Effect.runPromise(f.host.evaluate("reviewer", tool, ["old.txt"]))).toBe("allow")
     expect(f.originals).toHaveLength(1)
     expect(f.reviewOriginals).toHaveLength(1)
+  },
+)
+
+snapshotTest(
+  "Reviewer Git admission preserves source reads and denies shell composition and other roles",
+  async (observer) => {
+    const root = snapshotFixture(observer),
+      f = serverFake(root, observer)
+    const before = (tool: string, input: unknown, agent = "reviewer") =>
+      Effect.runPromise(
+        f.admission.before({ sessionID: "ses_review", agent, messageID: "inspect", id: "inspect", tool, input } as any),
+      )
+    for (const input of [
+      { operation: "rev-parse" },
+      { operation: "status" },
+      { operation: "diff", paths: ["README.md"] },
+      { operation: "show", path: "README.md" },
+      { operation: "grep", pattern: "sentence", paths: ["README.md"] },
+    ])
+      await before(reviewerGitName, input)
+    for (const tool of ["read", "glob", "grep"]) await before(tool, { path: "README.md" })
+    for (const command of [
+      "git status",
+      "touch README.md",
+      "git add .",
+      "git reset --hard HEAD",
+      "git config core.fsmonitor evil",
+      "git diff HEAD; git clean -fd",
+      "git status && git commit -am evil",
+      "git diff HEAD | tee README.md",
+      "git diff HEAD > README.md",
+      "git show HEAD:$(touch marker)",
+      "git grep `touch marker`",
+      "git status &",
+      "GIT_EXTERNAL_DIFF=evil git diff HEAD",
+    ]) {
+      await expect(before("shell", { command })).rejects.toThrow("read-only")
+      expect(await Effect.runPromise(f.host.evaluate("reviewer", "shell", [command]))).toBe("deny")
+    }
+    await expect(before("shell", { command: "git status", background: true })).rejects.toThrow("read-only")
+    for (const input of [
+      { operation: "commit" },
+      { operation: "diff", paths: ["README.md"], options: ["--output=README.md"] },
+      { operation: "status", command: "git status; touch marker" },
+      { operation: "status", background: true },
+    ])
+      await expect(before(reviewerGitName, input)).rejects.toThrow()
+    for (const agent of ["orchestrator", "planner", "explorer", "authorized_implementer"])
+      await expect(before(reviewerGitName, { operation: "status" }, agent)).rejects.toThrow("Reviewer-only")
+    for (const effect of ["deny", "ask"]) {
+      f.host.appendConfig([], { reviewer: [{ action: reviewerGitName, resource: "*", effect }] })
+      expect(await Effect.runPromise(f.host.evaluate("reviewer", reviewerGitName, ["*"]))).toBe("deny")
+    }
+    expect(f.originals).toEqual([])
+    expect(f.reviewOriginals).toEqual([])
+    expect(f.cap.phase).toBe("closed")
+    f.admission.teardown()
+    await expect(before(reviewerGitName, { operation: "status" })).rejects.toThrow("revoked")
+  },
+)
+
+snapshotTest(
+  "completed Reviewer Git evidence is accepted without replacing trusted fingerprint verification",
+  async (observer) => {
+    for (const drift of [false, true]) {
+      const root = snapshotFixture(observer),
+        f = serverFake(root, observer)
+      f.state.run = async () => {
+        await f.dispatch()
+      }
+      f.state.onReviewNative = async () => {
+        const inputs = [
+          { operation: "rev-parse" },
+          { operation: "status" },
+          { operation: "diff", paths: ["old.txt"] },
+          { operation: "show", path: "old.txt" },
+          { operation: "grep", pattern: "text", paths: ["old.txt"] },
+        ]
+        const parts = []
+        for (const [index, input] of inputs.entries()) {
+          const id = `git-${index}`
+          await Effect.runPromise(
+            f.admission.before({
+              sessionID: "ses_review",
+              agent: "reviewer",
+              messageID: "git-evidence",
+              id,
+              tool: reviewerGitName,
+              input,
+            } as any),
+          )
+          parts.push({
+            type: "tool",
+            id,
+            name: reviewerGitName,
+            state: {
+              status: "completed",
+              input,
+              content: [{ type: "text", text: "Read-only Git evidence; target appears stable." }],
+              metadata: {},
+            },
+          })
+        }
+        f.histories.ses_review.splice(1, 0, {
+          id: "git-evidence",
+          type: "assistant",
+          agent: "reviewer",
+          content: parts,
+        })
+        if (drift) observer.targetDigests.set(root, "b".repeat(64))
+      }
+      const outcome = await f.authorize()
+      expect(outcome).toContain(drift ? "Review target changed." : "Review target remained unchanged.")
+      if (drift) expect(outcome).not.toContain("Review APPROVED.")
+      expect(f.reviewOriginals).toHaveLength(1)
+      expect(f.originals).toHaveLength(1)
+    }
   },
 )
 

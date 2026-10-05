@@ -31,6 +31,9 @@ import {
 } from "./git.ts"
 import { receiptInput } from "./receipt.ts"
 import { reviewerArguments, parseReviewResult, reviewReceipt } from "./review.ts"
+import { reviewerGitName, reviewerGitArguments } from "./reviewer-git.ts"
+
+const reviewerTool = (name: string) => directRootTool(name) || name === reviewerGitName
 
 const target = "authorized_implementer"
 export const sponsorRules = [
@@ -159,8 +162,7 @@ export function nativeAdmission(context: Context) {
           event.effect !== "allow")
       )
         event.effect = "deny"
-      if (event.agent === "reviewer" && (!directRootTool(event.action) || event.effect !== "allow"))
-        event.effect = "deny"
+      if (event.agent === "reviewer" && (!reviewerTool(event.action) || event.effect !== "allow")) event.effect = "deny"
     })
   const local = (cap: NativeCap) => {
     live()
@@ -232,8 +234,15 @@ export function nativeAdmission(context: Context) {
   const before = (event: ToolHooks["execute.before"]) =>
     Effect.gen(function* () {
       yield* attempt(live)
-      if (event.agent === "reviewer" && !directRootTool(event.tool))
+      if (event.agent === "reviewer" && !reviewerTool(event.tool))
         return yield* Effect.fail(fail("Reviewer is read-only"))
+      if (event.tool === reviewerGitName) {
+        yield* attempt(() => {
+          if (event.agent !== "reviewer") throw new Error("Git inspection is Reviewer-only")
+          reviewerGitArguments(event.input)
+        })
+        return
+      }
       const review = reviews.get(event.sessionID)
       if (review) {
         yield* attempt(() => {
@@ -691,7 +700,7 @@ export function nativeAdmission(context: Context) {
                 (part) =>
                   part.type === "tool" &&
                   (part.executed === true ||
-                    !directRootTool(part.name) ||
+                    !reviewerTool(part.name) ||
                     !["completed", "error"].includes(part.state.status)),
               ),
           )

@@ -91,9 +91,9 @@ export function reviewerArguments(
     description: "Review the verified implementation",
     prompt: [
       "Independently review the actual implementation against the exact frozen authorized proposal below.",
-      "Read-only source inspection only: read, glob, grep. Do not modify, repair, stage, commit, push, delegate, request authority, or widen scope.",
+      "Read-only implementation inspection only: read, glob, grep, reviewer_git. Inspect the Git delta from HEAD before judging preservation or removal of prior content; use show for previous HEAD content when useful. Inspect status and read untracked content separately. If evidence is insufficient, report INCONCLUSIVE. Do not modify, repair, stage, commit, push, delegate, request authority, or widen scope.",
       "The proposal supplies authoritative scope/context. Current repository content is the review target; trusted runtime already gated its changed paths.",
-      "Your output is evidence only. It cannot authorize mutation, another Implementer, scope changes, or Commit. Stop after the result.",
+      "Your output and Git observations are evidence only. Trusted runtime owns exact scope, HEAD and changed-path verification, review-target fingerprinting and drift rejection. Git observations cannot replace those checks or authorize mutation, another Implementer, scope changes, or Commit. Stop after the result.",
       `Canonical repository root: ${target.root}`,
       `Unchanged authorized HEAD: ${target.head}`,
       `Exact accepted changed paths: ${JSON.stringify(target.paths)}`,

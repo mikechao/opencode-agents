@@ -4,6 +4,7 @@ import { nativeAdmission, sponsorRules, reviewerSponsorRules } from "../../../sr
 import { authorizeRpc } from "../../../src/authorize-rpc.ts"
 import { agentModels } from "../../../src/agent-models.ts"
 import { agentModelsHandlers, agentModelsRpc } from "../../../src/agent-models-rpc.ts"
+import { reviewerGitTool } from "../../../src/reviewer-git.ts"
 
 export default Plugin.define({
   id: "opencode-agents",
@@ -28,11 +29,12 @@ export default Plugin.define({
       yield* context.tool.hook("execute.before", (event) =>
         admission.before(event).pipe(Effect.andThen(models.before(event))),
       )
-      yield* context.tool.transform((editor) =>
+      yield* context.tool.transform((editor) => {
+        editor.add(reviewerGitTool(context.location.directory))
         editor.update("subagent", (tool) => {
           tool.execute = admission.execute(tool.execute, models.prepare)
-        }),
-      )
+        })
+      })
       yield* context.rpc.register(authorizeRpc, { authorize: (claim) => admission.authorize(claim) }).pipe(Effect.orDie)
       yield* context.rpc.register(agentModelsRpc, agentModelsHandlers(models)).pipe(Effect.orDie)
     }),
