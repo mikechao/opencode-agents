@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, expect, test } from "bun:test"
+import { afterAll, afterEach, beforeAll, expect, spyOn, test } from "bun:test"
 import { execFileSync } from "node:child_process"
 import {
   cpSync,
@@ -14,6 +14,7 @@ import {
 } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
+import * as gitModule from "../src/git.ts"
 import {
   observeGit,
   requireFresh,
@@ -154,16 +155,29 @@ test("freshness and exact scope reject substituted root or HEAD independently of
   expect(requireInScope(baseline, baseline, [])).toEqual([])
 })
 
+// Digest-only checks retain real index reads and filesystem hashing. Reuse the
+// exact observed path/HEAD state while the case holds it fixed; initial targets,
+// scope/HEAD rejection and unsupported topology below use the full observer.
+function fingerprintAt(snapshot: GitSnapshot) {
+  const observer = spyOn(gitModule, "observeGit").mockReturnValue(snapshot)
+  try {
+    return observeReviewTarget(snapshot.root, snapshot)
+  } finally {
+    observer.mockRestore()
+  }
+}
+
 test("review fingerprint binds worktree bytes and staged identities, including same-path and untracked drift", () => {
   const root = fixture()
   writeFileSync(path.join(root, "old.txt"), "implemented\n")
   writeFileSync(path.join(root, "new.txt"), "untracked\n")
   const snapshot = observeGit(root)
   const target = observeReviewTarget(root, snapshot)
-  expect(observeReviewTarget(root, snapshot)).toEqual(target)
+  expect(fingerprintAt(snapshot)).toEqual(target)
   const assertDrift = () => {
-    expect(observeGit(root).paths).toEqual(snapshot.paths)
-    expect(() => requireReviewTarget(observeReviewTarget(root, snapshot), target)).toThrow("Review target changed")
+    const current = observeGit(root)
+    expect(current.paths).toEqual(snapshot.paths)
+    expect(() => requireReviewTarget(fingerprintAt(current), target)).toThrow("Review target changed")
   }
   writeFileSync(path.join(root, "old.txt"), "different!!\n")
   assertDrift()
@@ -182,22 +196,23 @@ test("review fingerprint detects tracked bytes hidden from diff, mode/type/delet
   const target = observeReviewTarget(root, snapshot)
   git(root, "update-index", "--assume-unchanged", "old.txt")
   writeFileSync(path.join(root, "old.txt"), "hidden change\n")
-  expect(observeGit(root).paths).toEqual([])
-  expect(() => requireReviewTarget(observeReviewTarget(root, snapshot), target)).toThrow()
+  const hidden = observeGit(root)
+  expect(hidden.paths).toEqual([])
+  expect(() => requireReviewTarget(fingerprintAt(hidden), target)).toThrow()
   git(root, "update-index", "--no-assume-unchanged", "old.txt")
   writeFileSync(path.join(root, "old.txt"), "changed\n")
   const changed = observeGit(root)
-  const changedTarget = observeReviewTarget(root, changed)
+  const changedTarget = fingerprintAt(changed)
   chmodSync(path.join(root, "old.txt"), 0o755)
-  expect(() => requireReviewTarget(observeReviewTarget(root, changed), changedTarget)).toThrow()
+  expect(() => requireReviewTarget(fingerprintAt(changed), changedTarget)).toThrow()
   unlinkSync(path.join(root, "old.txt"))
-  const deletion = observeReviewTarget(root, changed)
+  const deletion = fingerprintAt(changed)
   expect(deletion.digest).not.toBe(changedTarget.digest)
   symlinkSync("missing-one", path.join(root, "old.txt"))
-  const link = observeReviewTarget(root, changed)
+  const link = fingerprintAt(changed)
   unlinkSync(path.join(root, "old.txt"))
   symlinkSync("missing-two", path.join(root, "old.txt"))
-  expect(observeReviewTarget(root, changed).digest).not.toBe(link.digest)
+  expect(fingerprintAt(changed).digest).not.toBe(link.digest)
   writeFileSync(path.join(root, "outside.txt"), "outside")
   expect(() => observeReviewTarget(root, changed)).toThrow("Review target changed")
   git(root, "add", "-A")

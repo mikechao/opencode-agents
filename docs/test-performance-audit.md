@@ -1,4 +1,12 @@
-# Current test performance audit
+# Historical test performance audit
+
+This document records the pre-optimization 45-test suite, not the current
+suite. Fixture reuse landed in `fce67d6` and observer doubles in `65c1f84`;
+the latter reproduced a 2.878 s median on 2026-10-05 in an isolated archive
+using the currently installed dependencies. The current measurement script
+reports counts by default and accepts explicit `--expected-tests` and
+`--minimum-assertions` checks; the historical counts below apply only to this
+revision.
 
 Measured 2026-09-29 at implementation revision
 `da4eb24bdb1647a4723c3340d48a81f9e14d2472`. No runtime or test implementation was
@@ -259,7 +267,8 @@ low priority.
 
 The first three changes suggest a suite around 13–14 s; that is a projection,
 not a measured optimized result. Observer doubles could bring it into the
-3–5 s range, also unmeasured. Neither optimization has been implemented.
+3–5 s range, also unmeasured. At the audited revision, neither optimization
+had been implemented.
 
 ## Proposed budget and regression detection
 
@@ -272,7 +281,8 @@ CAP 0.35 s. Track CPU times as evidence; wall time is the primary gate.
 Use the standard-library-only measurement script:
 
 ```sh
-python3 scripts/measure-tests.py --runs 3 --budget 22 --output /tmp/test-times.json
+python3 scripts/measure-tests.py --runs 3 --budget 22 \
+  --expected-tests 45 --minimum-assertions 459 --output /tmp/test-times.json
 ```
 
 It exits nonzero on a test failure, a suite count other than 45, fewer than 459

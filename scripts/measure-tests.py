@@ -16,8 +16,8 @@ def main():
     parser.add_argument("--runs", type=int, default=3)
     parser.add_argument("--per-file", action="store_true")
     parser.add_argument("--budget", type=float, help="Maximum suite median wall seconds")
-    parser.add_argument("--expected-tests", type=int, default=45)
-    parser.add_argument("--minimum-assertions", type=int, default=459)
+    parser.add_argument("--expected-tests", type=int, help="Optional exact suite test count")
+    parser.add_argument("--minimum-assertions", type=int, help="Optional minimum suite assertion count")
     parser.add_argument("--output", type=Path, help="Save samples and complete runner output as JSON")
     args = parser.parse_args()
     if args.runs < 1:
@@ -47,14 +47,18 @@ def main():
                           system=after.ru_stime - before.ru_stime,
                           tests=tests, assertions=assertions, exit_code=result.returncode, log=log)
             samples.append(sample)
-            failed |= result.returncode != 0 or (target == "suite" and tests != args.expected_tests)
-            failed |= target == "suite" and (assertions is None or assertions < args.minimum_assertions)
+            count_mismatch = target == "suite" and (
+                tests is None or assertions is None or
+                (args.expected_tests is not None and tests != args.expected_tests) or
+                (args.minimum_assertions is not None and assertions < args.minimum_assertions)
+            )
+            failed |= result.returncode != 0 or count_mismatch
             print(f"run {repetition}: {target}: wall={elapsed:.3f}s "
                   f"user={sample['user']:.3f}s system={sample['system']:.3f}s "
                   f"tests={tests} assertions={assertions} exit={result.returncode}", flush=True)
-            if target == "suite" and (tests != args.expected_tests or
-                                      assertions is None or assertions < args.minimum_assertions):
-                print(f"Expected {args.expected_tests} tests and at least {args.minimum_assertions} assertions")
+            if count_mismatch:
+                print(f"Suite count check failed: expected-tests={args.expected_tests}, "
+                      f"minimum-assertions={args.minimum_assertions}")
             if result.returncode:
                 print(log)
     medians = {}

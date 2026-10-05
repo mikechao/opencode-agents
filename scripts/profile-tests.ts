@@ -33,6 +33,8 @@ const test = (name: string, fn: any, ...options: any[]) =>
   )
 mock.module("bun:test", () => ({ ...testAPI, test }))
 const rootStarts = new Map<string, number>()
+const initializing = new Set<string>()
+const copies = new Set<string>()
 const canon = (p: string) => {
   try {
     return fs.realpathSync(p)
@@ -49,6 +51,16 @@ mock.module("node:fs", () => ({
     stamp("repo", { root, ms: now() - start })
     return root
   },
+  cpSync: (...args: any[]) => {
+    const start = now()
+    try {
+      const result = (fs.cpSync as any)(...args)
+      copies.add(canon(args[1]))
+      return result
+    } finally {
+      stamp("copy", { root: args[1], ms: now() - start })
+    }
+  },
   rmSync: (...args: any[]) => {
     const start = now()
     try {
@@ -61,10 +73,18 @@ mock.module("node:fs", () => ({
 mock.module("node:child_process", () => ({
   ...childProcess,
   execFileSync: (cmd: string, args: string[], ...options: any[]) => {
-    if (cmd !== "git") return (nativeExec as any)(cmd, args, ...options)
+    if (path.basename(cmd) !== "git") return (nativeExec as any)(cmd, args, ...options)
     const stack = new Error().stack ?? ""
-    const root = canon(args[args.indexOf("-C") + 1])
-    const category = stack.includes("fixture") ? "fixture" : stack.includes("observeGit") ? "observe" : "test-action"
+    const rootIndex = args.indexOf("-C")
+    const root = canon(rootIndex >= 0 ? args[rootIndex + 1] : (options[0]?.cwd ?? process.cwd()))
+    if (args.includes("init")) initializing.add(root)
+    const refreshingCopy = copies.has(root) && args.includes("update-index") && args.includes("--refresh")
+    const category =
+      initializing.has(root) || refreshingCopy || stack.includes("fixture")
+        ? "fixture"
+        : stack.includes("observeGit")
+          ? "observe"
+          : "test-action"
     const start = now()
     try {
       return (nativeExec as any)(cmd, args, ...options)
@@ -72,8 +92,11 @@ mock.module("node:child_process", () => ({
       const elapsed = now() - start
       syncGitMs += elapsed
       stamp("git", { args, root, category, ms: elapsed })
-      if (category === "fixture" && args.includes("commit"))
+      if ((initializing.has(root) && args.includes("commit")) || refreshingCopy) {
         stamp("fixture", { root, ms: now() - (rootStarts.get(root) ?? start) })
+        initializing.delete(root)
+        copies.delete(root)
+      }
     }
   },
 }))
@@ -109,7 +132,7 @@ mock.module(modulePath, () => ({
     const stack = new Error().stack ?? ""
     const site = stack
       .split("\n")
-      .filter((s) => !s.includes("profile.ts") && /(?:src\/|test\/|\.opencode\/)/.test(s))
+      .filter((s) => !s.includes("profile-tests.ts") && /(?:src\/|test\/|\.opencode\/)/.test(s))
       .join("\n")
     const start = now()
     let ok = false
