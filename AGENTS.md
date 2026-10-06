@@ -21,6 +21,8 @@ Two sibling repositories may be used as read-only references:
 
 - Prefer type-driven simplification when a type can eliminate invalid states, coupled booleans/optionals, duplicated branching, or unnecessary casts. Do not add types merely to name existing shapes or create abstraction. Preserve runtime validation for untrusted host and external data.
 
+- For TUI work, inspect the exact installed OpenTUI APIs and the corresponding `../opencode` host implementation before inventing interaction or presentation patterns. Prefer supported OpenTUI primitives and existing OpenCode conventions. When no suitable primitive exists, use the smallest local composition rather than introducing a generic UI abstraction, and preserve host-owned keymap, focus, mouse, and dialog semantics.
+
 ## Validation
 
 - Finish relevant implementation work with `bun run check` (formatting check, lint, typecheck, and tests), then `git diff --check`.
