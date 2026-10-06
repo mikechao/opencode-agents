@@ -1,4 +1,4 @@
-import { Cause, Effect, Exit } from "effect"
+import { Cause, DateTime, Effect, Exit } from "effect"
 import { Tool } from "@opencode/schema/tool"
 import { Session } from "@opencode/schema/session"
 import type { Context } from "@opencode/plugin/effect/plugin"
@@ -144,7 +144,7 @@ type VerifiedReview = Readonly<{
   implementation: VerifiedImplementation
   result: ReviewResult
   reviewer: RepairDecision["reviewer"]
-  boundary: Readonly<{ length: number; digest: string; created: Session.Info["time"]["created"]; rootIdleID: string }>
+  boundary: Readonly<{ length: number; digest: string; created: number; rootIdleID: string }>
 }>
 const historyDigest = (history: readonly SessionMessage.Info[]) =>
   createHash("sha256").update(exactEvidence(history)).digest("hex")
@@ -803,7 +803,7 @@ export function nativeAdmission(context: Context) {
             if (!candidateIntact(cap.claim.candidate)) throw new Error("Frozen claim integrity changed")
             if (executing?.cap !== cap) throw new Error("Root does not own worktree implementation exclusion")
             if (cap instanceof RepairClaim) {
-              if (!same(root.time.created, cap.evidence.boundary.created))
+              if (DateTime.toEpochMillis(root.time.created) !== cap.evidence.boundary.created)
                 throw new Error("Repair root creation changed")
               if (latest) {
                 reviewBoundary(cap.evidence, latest, cap.control.id)
@@ -1024,7 +1024,9 @@ export function nativeAdmission(context: Context) {
           boundary: {
             length: history.length,
             digest: historyDigest(history),
-            created: root.time.created,
+            // structuredClone strips the host DateTime prototype. Bind its
+            // exact primitive value before freezing evidence for later checks.
+            created: DateTime.toEpochMillis(root.time.created),
             rootIdleID: rootIdle.id,
           },
         })
@@ -1184,7 +1186,7 @@ export function nativeAdmission(context: Context) {
               if (
                 root.outcome !== "succeeded" ||
                 !root.time.idle ||
-                !same(root.time.created, cap.evidence.boundary.created)
+                DateTime.toEpochMillis(root.time.created) !== cap.evidence.boundary.created
               )
                 throw new Error("Repair root is not the reviewed settled root")
               repairFresh(cap)
@@ -1201,7 +1203,7 @@ export function nativeAdmission(context: Context) {
               if (
                 latestRoot.outcome !== "succeeded" ||
                 !latestRoot.time.idle ||
-                !same(latestRoot.time.created, cap.evidence.boundary.created)
+                DateTime.toEpochMillis(latestRoot.time.created) !== cap.evidence.boundary.created
               )
                 throw new Error("Repair root changed during preparation")
               reviewBoundary(cap.evidence, history, cap.control.id)
@@ -1320,7 +1322,7 @@ export function nativeAdmission(context: Context) {
           if (
             finalRoot.outcome !== "succeeded" ||
             !finalRoot.time.idle ||
-            !same(finalRoot.time.created, evidence.boundary.created)
+            DateTime.toEpochMillis(finalRoot.time.created) !== evidence.boundary.created
           )
             throw new Error("Reviewed root changed during publication")
           reviewBoundary(evidence, finalHistory)

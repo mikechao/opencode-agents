@@ -4316,7 +4316,7 @@ snapshotTest(
 
 // Native admission uses host doubles and the same test-scoped Git observer.
 // No real repositories, native child imports, or production injection seams.
-import { Cause, Effect, Exit, Schema, Stream } from "effect"
+import { Cause, DateTime, Effect, Exit, Schema, Stream } from "effect"
 import { Tool as NativeTool } from "@opencode/schema/tool"
 import { Model as NativeModel } from "@opencode/schema/model"
 import { agentModels, preferenceKey, parseSelection, type Role } from "../src/agent-models.ts"
@@ -4411,7 +4411,7 @@ function serverFake(root: string, _observer: SnapshotObserver, workspaceID?: str
       location,
       permissions: [],
       outcome: "succeeded",
-      time: { idle: 1 },
+      time: { created: 1, idle: 1 },
     },
   }
   const wakes: any[] = [],
@@ -4503,7 +4503,25 @@ function serverFake(root: string, _observer: SnapshotObserver, workspaceID?: str
         }),
     },
     session: {
-      get: ({ sessionID }: any) => f.read("get", sessionID, () => sessions[sessionID]),
+      get: ({ sessionID }: any) =>
+        f
+          .read("get", sessionID, () => sessions[sessionID])
+          .pipe(
+            // Session.get returns decoded Effect DateTimes, not wire timestamps.
+            Effect.map((session) =>
+              session
+                ? {
+                    ...session,
+                    time: Object.fromEntries(
+                      Object.entries(session.time).map(([key, value]) => [
+                        key,
+                        value === undefined ? undefined : DateTime.makeUnsafe(value as number),
+                      ]),
+                    ),
+                  }
+                : session,
+            ),
+          ),
       context: ({ sessionID }: any) => f.read("context", sessionID, () => histories[sessionID]),
       synthetic: (input: any) =>
         Effect.promise(async () => {
@@ -8977,6 +8995,79 @@ async function pendingRepair(f: ReturnType<typeof serverFake>, observer: Snapsho
 }
 const chooseRepair = (f: ReturnType<typeof serverFake>, decisionID: string, action: "Repair" | "Stop" = "Repair") =>
   Effect.runPromise(f.admission.decideRepair({ decisionID, action }))
+
+snapshotTest(
+  "decoded host timestamps survive non-waking review publication and successive Repair",
+  async (observer) => {
+    for (const delivered of [false, true]) {
+      const f = serverFake(snapshotFixture(observer), observer)
+      const created = 1791325782103
+      f.sessions.ses_parent.time.created = created
+      f.sessions.ses_parent.time.updated = created
+      f.state.onReceipt = (input) => {
+        // InboxEnqueued updates time.updated, including when resume is false.
+        f.sessions.ses_parent.time.updated++
+        if (!input.text.startsWith("Review CHANGES_REQUESTED.")) return
+        expect(input.resume).toBe(false)
+        expect(f.reviewOriginals.length).toBeGreaterThan(0)
+        expect(f.histories.ses_parent.at(-1).type).toBe("idle")
+        if (delivered) f.histories.ses_parent.push({ ...input, type: "synthetic" })
+      }
+      const first = await pendingRepair(f, observer)
+      expect(first.decision.rootIdleID).toBe(
+        f.histories.ses_parent.filter((message) => message.type === "idle").at(-1).id,
+      )
+      expect(f.sessions.ses_parent.time).toEqual({ created, updated: created + 2, idle: 1 })
+      expect(f.originals).toHaveLength(1) // Publication never launches a repair.
+      const second = await chooseRepair(f, first.decision.id)
+      expect(second.kind).toBe("repair")
+      if (second.kind !== "repair") throw new Error(second.receipt)
+      expect(second.decision.rootIdleID).not.toBe(first.decision.rootIdleID)
+      expect(f.sessions.ses_parent.time).toEqual({ created, updated: created + 4, idle: 1 })
+      expect(f.originals).toHaveLength(2)
+      expect(f.reviewOriginals).toHaveLength(2)
+      expect((await chooseRepair(f, second.decision.id, "Stop")).receipt).toContain("Stopped by human")
+    }
+  },
+)
+
+snapshotTest(
+  "unknown root transitions across review publication still reject Repair and approval",
+  async (observer) => {
+    for (const status of ["APPROVED", "CHANGES_REQUESTED"] as const) {
+      for (const drift of ["created", "outcome", "settlement", "receipt"] as const) {
+        const f = serverFake(snapshotFixture(observer), observer)
+        f.state.reviewOutput = status === "CHANGES_REQUESTED" ? JSON.stringify(repairFindings) : f.state.reviewOutput
+        f.state.run = async () => {
+          await f.dispatch()
+        }
+        f.state.onReceipt = (input) => {
+          f.sessions.ses_parent.time.updated = 3
+          if (f.receipts.length !== 2) return
+          if (drift === "created") f.sessions.ses_parent.time.created++
+          if (drift === "outcome") f.sessions.ses_parent.outcome = "interrupted"
+          if (drift === "settlement") {
+            f.sessions.ses_parent.time.idle++
+            f.histories.ses_parent.push(idle("msg_unknown-settlement"))
+          }
+          if (drift === "receipt")
+            f.histories.ses_parent.push({ ...input, type: "synthetic", text: `${input.text}\nContinue.` })
+        }
+        const rejected = await f.authorizeOutcome()
+        expect(rejected.kind).toBe("terminal")
+        expect(rejected.receipt).toContain(
+          drift === "created" || drift === "outcome"
+            ? "Reviewed root changed during publication"
+            : "Reviewed root history was superseded",
+        )
+        expect(f.admission.currentApproval("ses_parent")).toBeUndefined()
+        expect((await chooseRepair(f, "unknown")).receipt).toContain("stale, spent")
+        expect(f.originals).toHaveLength(1)
+        expect(f.reviewOriginals).toHaveLength(1)
+      }
+    }
+  },
+)
 
 snapshotTest(
   "verified findings create immutable pending evidence, release exclusion, and Stop admits no worker",
