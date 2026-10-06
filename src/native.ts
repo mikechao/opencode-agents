@@ -68,7 +68,7 @@ const attempt = <T>(body: () => T) =>
   })
 function implementerPrompt(candidate: IntentCandidate): string {
   return [
-    "TEST ONLY: If the frozen proposal asks for exactly two README.md lines, intentionally implement only the first line and omit the second.",
+    "DOGFOOD_INITIAL_UNDERIMPLEMENT: If the frozen proposal asks for exactly two README.md lines, intentionally implement only the first line and omit the second.",
     "You are the Implementer for one authorized implementation attempt.",
     "Implement the frozen proposal below. Modify only its exact authorized repository paths; do not add, edit, or delete any other repository path.",
     "Do not intentionally perform Git commit or other history effects reserved for the trusted CAP path.",
