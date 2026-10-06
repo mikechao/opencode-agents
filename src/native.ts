@@ -144,7 +144,7 @@ type VerifiedReview = Readonly<{
   implementation: VerifiedImplementation
   result: ReviewResult
   reviewer: RepairDecision["reviewer"]
-  boundary: Readonly<{ length: number; digest: string; created: Session.Info["time"]["created"] }>
+  boundary: Readonly<{ length: number; digest: string; created: Session.Info["time"]["created"]; rootIdleID: string }>
 }>
 const historyDigest = (history: readonly SessionMessage.Info[]) =>
   createHash("sha256").update(exactEvidence(history)).digest("hex")
@@ -227,6 +227,9 @@ export function nativeAdmission(context: Context) {
     for (const key of contenderKeys(call)) contenders.set(key, owner)
   }
   const receipts = new Map<string, Readonly<{ rootSessionID: string; text: string }>>()
+  // Settlement notifications can arrive after the RPC that verified them.
+  // These exact historical identities are inert facts, never admission evidence.
+  const settledRoots = new Map<string, string>()
   const knownReceipt = (message: SessionMessage.Info) =>
     message.type === "synthetic" && receipts.get(message.id)?.text === message.text
   const bindFreshChild = (execution: { child: ChildBinding }, id: unknown, root: string) => {
@@ -1003,13 +1006,27 @@ export function nativeAdmission(context: Context) {
         requireInScope(current, baseline(claim), claim.candidate.proposal.files)
         requireReviewTarget(current, target)
         const parsed = parseReviewResult(text)
+        const rootIdle = history.filter((message) => message.type === "idle").at(-1)
+        if (
+          rootIdle?.type !== "idle" ||
+          rootIdle.outcome !== "succeeded" ||
+          !rootIdle.id.startsWith("msg_") ||
+          history.filter((message) => message.id === rootIdle.id).length !== 1 ||
+          history.indexOf(rootIdle) <= history.findIndex((message) => message.id === execution.call.messageID)
+        )
+          throw new Error("Reviewer root terminal identity is missing")
         local(cap, claim)
         if (reviews.get(claim.rootSessionID) !== review) throw new Error("Reviewer owner was superseded")
         return frozenCopy({
           implementation: review.implementation,
           result: parsed,
           reviewer: { messageID: execution.call.messageID, toolID: execution.call.id, childID, resultID: final.id },
-          boundary: { length: history.length, digest: historyDigest(history), created: root.time.created },
+          boundary: {
+            length: history.length,
+            digest: historyDigest(history),
+            created: root.time.created,
+            rootIdleID: rootIdle.id,
+          },
         })
       })
     })
@@ -1307,6 +1324,7 @@ export function nativeAdmission(context: Context) {
           )
             throw new Error("Reviewed root changed during publication")
           reviewBoundary(evidence, finalHistory)
+          settledRoots.set(evidence.boundary.rootIdleID, rootSessionID)
           // Publication may await external activity. Keep exclusion until its
           // completion and reject any drift before making a decision selectable.
           requireInScope(
@@ -1329,6 +1347,7 @@ export function nativeAdmission(context: Context) {
             decision: frozenCopy({
               id: decision.id,
               rootSessionID,
+              rootIdleID: evidence.boundary.rootIdleID,
               candidate: implementation.claim.candidate,
               target: evidence.implementation.target,
               result: evidence.result,
@@ -1394,10 +1413,17 @@ export function nativeAdmission(context: Context) {
         ),
       )
     }).pipe(Effect.catchCause((cause) => Effect.succeed(terminal(unverified(cause)))))
-  const eventReceived = (event: { type: string; data: Record<string, unknown> }) => {
+  const eventReceived = (event: { id?: string; type: string; data: Record<string, unknown> }) => {
     if (!("sessionID" in event.data)) return
     const id = event.data.sessionID
     if (typeof id !== "string") return
+    if (
+      event.type === "session.execution.succeeded" &&
+      typeof event.id === "string" &&
+      event.id.startsWith("evt_") &&
+      settledRoots.get(event.id.replace(/^evt_/, "msg_")) === id
+    )
+      return
     if (event.type === "session.inbox.enqueued" && typeof event.data.inboxID === "string") {
       const item = event.data.item as { type?: unknown; payload?: { text?: unknown } } | undefined
       const receipt = receipts.get(event.data.inboxID)
@@ -1473,6 +1499,7 @@ export function nativeAdmission(context: Context) {
     pending.clear()
     currentReviews.clear()
     receipts.clear()
+    settledRoots.clear()
     children.clear()
     contenders.clear()
     planners.clear()

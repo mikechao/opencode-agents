@@ -4541,6 +4541,7 @@ function serverFake(root: string, _observer: SnapshotObserver, workspaceID?: str
             if (f.reviewRun) await f.reviewRun(sessionID)
             else await dispatchReview(sessionID)
             if (f.reviewWaitError) throw new Error("lost Reviewer root settlement")
+            histories[sessionID].push(idle(`msg_settled-${latestControl.id}`))
           } else {
             await f.run?.(sessionID)
             if (f.waitError) throw new Error("lost root settlement")
@@ -9333,6 +9334,7 @@ function tuiRepairOutcome(root: string, id = "live-repair"): CycleOutcome & { ki
     decision: {
       id,
       rootSessionID: "parent",
+      rootIdleID: `msg_settled-${id}`,
       candidate,
       target: { root, head: HEAD, paths: ["old.txt"], digest: "a".repeat(64) },
       result: repairFindings,
@@ -9348,6 +9350,107 @@ function readRepairPages(f: ReturnType<typeof fake>, view: ReturnType<typeof mou
   }
   f.renderer.emit("frame")
 }
+
+snapshotTest(
+  "exact verified settlement echoes are inert across Repair decisions; unknown successes retire them",
+  async (observer) => {
+    const f = serverFake(snapshotFixture(observer), observer)
+    const first = await pendingRepair(f, observer)
+    const echo = (rootIdleID: string) => ({
+      id: rootIdleID.replace(/^msg_/, "evt_"),
+      type: "session.execution.succeeded",
+      data: { sessionID: "ses_parent" },
+    })
+    f.admission.eventReceived(echo(first.decision.rootIdleID))
+    f.admission.eventReceived(echo(first.decision.rootIdleID))
+    expect(f.originals).toHaveLength(1)
+    const second = await chooseRepair(f, first.decision.id)
+    expect(second.kind).toBe("repair")
+    if (second.kind !== "repair") throw new Error(second.receipt)
+    expect(second.decision.rootIdleID).not.toBe(first.decision.rootIdleID)
+    f.admission.eventReceived(echo(first.decision.rootIdleID))
+    f.admission.eventReceived(echo(second.decision.rootIdleID))
+    expect((await chooseRepair(f, second.decision.id, "Stop")).receipt).toContain("Stopped by human")
+    expect(f.originals).toHaveLength(2)
+    const unknown = serverFake(snapshotFixture(observer), observer)
+    const pending = await pendingRepair(unknown, observer)
+    unknown.admission.eventReceived(echo("msg_unverified-success"))
+    expect((await chooseRepair(unknown, pending.decision.id)).receipt).toContain("stale, spent")
+    expect(unknown.originals).toHaveLength(1)
+  },
+)
+
+snapshotTest(
+  "Repair cannot obtain a settlement-echo exemption from missing or ambiguous root terminal history",
+  async (observer) => {
+    for (const corrupt of ["missing", "aliased", "failed"] as const) {
+      const f = serverFake(snapshotFixture(observer), observer)
+      f.state.reviewOutput = JSON.stringify(repairFindings)
+      f.state.run = async () => {
+        await f.dispatch()
+      }
+      f.state.onRead = (kind, id) => {
+        if (kind !== "context" || id !== "ses_parent" || !f.reviewOriginals.length) return
+        const history = f.histories.ses_parent
+        const terminal = history.at(-1)
+        if (terminal?.type !== "idle") return
+        if (corrupt === "missing") history.pop()
+        if (corrupt === "aliased") history.push(structuredClone(terminal))
+        if (corrupt === "failed") terminal.outcome = "failed"
+      }
+      const outcome = await f.authorizeOutcome()
+      expect(outcome.kind).toBe("terminal")
+      expect(outcome.receipt).toContain("Reviewer root terminal identity")
+      expect(f.originals).toHaveLength(1)
+      expect(f.admission.currentApproval("ses_parent")).toBeUndefined()
+    }
+  },
+)
+
+snapshotTest("TUI tolerates only exact server-verified settlement echoes after the RPC response", async (observer) => {
+  const root = snapshotFixture(observer),
+    f = fake(root)
+  const first = tuiRepairOutcome(root)
+  f.options.onAuthorize = async () => {
+    f.inboxes.parent.splice(0)
+    return first
+  }
+  f.options.onRepair = async () => tuiRepairOutcome(root, "next")
+  const cleanup = await activate(f),
+    initial = mount(f)
+  initial.click(0)
+  await settleUntil(() => f.slots.length === 2)
+  const echo = (rootIdleID: string) => ({
+    id: rootIdleID.replace(/^msg_/, "evt_"),
+    type: "session.execution.succeeded",
+    data: { sessionID: "parent" },
+  })
+  // Match the host's independently batched SSE echo, before the first Repair frame.
+  f.emit(echo(first.decision.rootIdleID))
+  expect(f.slots.at(-1).removed).toBe(false)
+  expect(f.calls.toasts).toEqual([])
+  const repair = mount(f, "parent", false)
+  repair.click(0)
+  expect(f.calls.repairs).toEqual([])
+  readRepairPages(f, repair)
+  repair.click(0)
+  await settleUntil(() => f.slots.length === 3)
+  f.emit(echo(first.decision.rootIdleID))
+  f.emit(echo("msg_settled-next"))
+  expect(f.slots.at(-1).removed).toBe(false)
+  expect(f.calls.repairs).toHaveLength(1)
+  const next = mount(f)
+  readRepairPages(f, next)
+  f.emit(echo("msg_unverified-success"))
+  expect(f.slots.at(-1).removed).toBe(true)
+  next.click(0)
+  repair.click(0)
+  expect(f.calls.repairs).toHaveLength(1)
+  cleanup()
+  initial.dispose()
+  repair.dispose()
+  next.dispose()
+})
 
 snapshotTest(
   "TUI Repair requires all readable evidence pages, sends only selector/action, and retires stale callbacks through another cycle",
@@ -9741,6 +9844,8 @@ snapshotTest(
       { ...valid, decision: { ...valid.decision, reviewer: { ...valid.decision.reviewer, resultID: "" } } },
       { ...valid, decision: { ...valid.decision, receipts: [{ id: "receipt", text: 1 }] } },
       { ...valid, decision: { ...valid.decision, id: "" } },
+      { ...valid, decision: { ...valid.decision, rootIdleID: undefined } },
+      { ...valid, decision: { ...valid.decision, rootIdleID: "evt_unverified" } },
     ]) {
       expect(() => checkedCycleOutcome(bad)).toThrow()
       expect(schema["~standard"].validate(bad).issues).toHaveLength(1)

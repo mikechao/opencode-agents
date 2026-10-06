@@ -7,6 +7,7 @@ import type { ReviewTarget } from "./git.ts"
 export type RepairDecision = Readonly<{
   id: string
   rootSessionID: string
+  rootIdleID: string
   candidate: IntentCandidate
   target: ReviewTarget
   result: Extract<ReviewResult, { status: "CHANGES_REQUESTED" }>
@@ -29,11 +30,22 @@ export function checkedCycleOutcome(value: unknown): CycleOutcome {
   const decision = value.decision as RepairDecision
   if (
     value.kind !== "repair" ||
-    !exactKeys(decision, ["id", "rootSessionID", "candidate", "target", "result", "reviewer", "receipts"]) ||
+    !exactKeys(decision, [
+      "id",
+      "rootSessionID",
+      "rootIdleID",
+      "candidate",
+      "target",
+      "result",
+      "reviewer",
+      "receipts",
+    ]) ||
     typeof decision.id !== "string" ||
     !decision.id ||
     typeof decision.rootSessionID !== "string" ||
     !decision.rootSessionID ||
+    typeof decision.rootIdleID !== "string" ||
+    !decision.rootIdleID.startsWith("msg_") ||
     !exactKeys(decision.candidate, ["kind", "proposal", "root", "head", "encoding", "digest"]) ||
     decision.candidate.kind !== "intent" ||
     !candidateIntact(decision.candidate) ||

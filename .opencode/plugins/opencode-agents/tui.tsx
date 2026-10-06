@@ -151,6 +151,7 @@ const plugin: Definition = {
       const retiredPublications = new Set<string>()
       const retiredPlanners = new Set<string>()
       const retiredCalls = new Set<string>()
+      const settledRoots = new Set<string>()
       const rootSessionID = creation.data.sessionID
       let pendingSurfaceUsable: (() => boolean) | undefined
       let invalidateLayout: (() => void) | undefined
@@ -241,6 +242,7 @@ const plugin: Definition = {
           return
         }
         repairOwner = { kind: "pending", decision: outcome.decision }
+        settledRoots.add(outcome.decision.rootIdleID)
         ensurePresentation()
         setPresentation({ kind: "repair", decision: outcome.decision })
         setLayoutRevision((value) => value + 1)
@@ -711,12 +713,17 @@ const plugin: Definition = {
               return
             }
             const frame = surface.parent ?? surface
+            // The host frame can include padding/borders. Page the evidence to
+            // its actual laid-out width, not that frame's outer width; otherwise
+            // OpenTUI wraps it again and a readable proof can never be established.
+            const evidenceWidth = evidence?.width
+            if (evidenceWidth === undefined || evidenceWidth <= 0 || !Number.isFinite(evidenceWidth)) return
             const nextRows = Math.max(1, Math.min(10, context.renderer.terminalHeight - 10))
-            if (width() !== frame.width || rows() !== nextRows) {
+            if (width() !== evidenceWidth || rows() !== nextRows) {
               viewed.clear()
               setReadAll(false)
               setPage(0)
-              setWidth(frame.width)
+              setWidth(evidenceWidth)
               setRows(nextRows)
               return
             }
@@ -752,7 +759,8 @@ const plugin: Definition = {
                 evidence = node
               }}
               height={evidenceHeight()}
-              wrapMode="char"
+              wrapMode="none"
+              fg={theme.text.base}
             >
               {evidenceText()}
             </text>
@@ -762,6 +770,7 @@ const plugin: Definition = {
               }}
               height={1}
               wrapMode="char"
+              fg={theme.text.base}
             >
               {questionText()}
             </text>
@@ -1127,6 +1136,15 @@ const plugin: Definition = {
         if (repairOwner && repairOwner.kind !== "transferred") {
           const captured = repairOwner.decision
           if ("sessionID" in event.data && event.data.sessionID === rootSessionID) {
+            // The SSE stream is batched independently of the RPC response.
+            // An echo of an already verified idle cannot supersede that review.
+            if (
+              event.type === "session.execution.succeeded" &&
+              typeof event.id === "string" &&
+              event.id.startsWith("evt_") &&
+              settledRoots.has(event.id.replace(/^evt_/, "msg_"))
+            )
+              return
             if (event.type === "session.inbox.enqueued" && event.data.item.type === "synthetic") {
               const text = event.data.item.payload.text
               if (captured.receipts.some((receipt) => receipt.id === event.data.inboxID && receipt.text === text))
@@ -1353,6 +1371,7 @@ const plugin: Definition = {
       })
       const dispose = () => {
         generation.revoked = true
+        settledRoots.clear()
         repairOwner = undefined
         repairUsable = undefined
         repairInvalidate = undefined
