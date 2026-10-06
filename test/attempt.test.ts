@@ -2,7 +2,7 @@ import { afterEach, expect, mock, spyOn, test } from "bun:test"
 import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync, symlinkSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import type { Context } from "@opencode/plugin/tui/context"
+import type { Context, KeymapLayer } from "@opencode/plugin/tui/context"
 import { NativeCap, type Generation } from "../src/cap.ts"
 import * as attemptModule from "../src/attempt.ts"
 import * as gitModule from "../src/git.ts"
@@ -31,7 +31,7 @@ import {
   type Revision,
 } from "../src/planner-history.ts"
 import { snapshotLocation } from "../src/host-evidence.ts"
-import { createRoot, createEffect, createMemo, createComponent, createSignal } from "solid-js"
+import { createRoot, createEffect, createMemo, createComponent, createSignal, onCleanup } from "solid-js"
 import { createStore, reconcile } from "solid-js/store"
 import { EventEmitter } from "node:events"
 
@@ -304,6 +304,7 @@ function fake(root: string, options: FakeOptions = {}) {
   const handlers = new Map<string, (event: any) => void>()
   const listeners = new Set<(event: any) => void>()
   const slots: any[] = []
+  const layers: Array<() => KeymapLayer> = []
   const renderer = Object.assign(new EventEmitter(), { terminalWidth: 120, terminalHeight: 60, isDestroyed: false })
   const calls = {
     claims: [] as any[],
@@ -320,9 +321,35 @@ function fake(root: string, options: FakeOptions = {}) {
         .map((item) => ({ id: item.id, type: item.type, ...item.payload, time: item.time })),
     ])
   }
+  const theme = {
+    text: {
+      base: "white",
+      muted: "gray",
+      feedback: { info: { base: "blue" } },
+      formfield: { base: "white" },
+      action: {
+        primary: { base: "black", focused: "white" },
+        secondary: { base: "gray", focused: "yellow" },
+      },
+    },
+    background: {
+      formfield: { base: "black" },
+      action: {
+        primary: { base: "cyan", focused: "blue" },
+        secondary: { base: "#202020", focused: "#404040" },
+      },
+    },
+    border: { base: "gray" },
+  }
   const context = {
     location: { directory: root },
     renderer,
+    keymap: {
+      layer: (read: () => KeymapLayer) => {
+        layers.push(read)
+        onCleanup(() => layers.splice(layers.indexOf(read), 1))
+      },
+    },
     data: {
       on: (type: string, handler: (event: any) => void) => {
         handlers.set(type, handler)
@@ -437,22 +464,7 @@ function fake(root: string, options: FakeOptions = {}) {
         },
       },
     },
-    theme: {
-      text: { feedback: { info: { base: "blue" } } },
-      surface: () => ({
-        text: {
-          base: "white",
-          muted: "gray",
-          formfield: { base: "white" },
-          action: { primary: { focused: "white" }, secondary: { base: "gray" } },
-        },
-        background: {
-          formfield: { base: "black" },
-          action: { primary: { focused: "blue" }, secondary: { base: "#202020" } },
-        },
-        border: { base: "gray" },
-      }),
-    },
+    theme: { ...theme, surface: () => theme },
     ui: {
       router: { current: () => ({ type: "session", sessionID: "parent" }) },
       slot: (claim: any) => {
@@ -516,6 +528,7 @@ function fake(root: string, options: FakeOptions = {}) {
     inboxes,
     cache,
     slots,
+    layers,
     handlers,
     listeners,
     calls,
@@ -650,6 +663,7 @@ function mount(
 ) {
   expect(registration.claim.append).toBe("session.composer.top")
   const begin = elements.length
+  const layerBegin = f.layers.length
   let releaseRoot!: () => void
   let disposed = false
   const dispose = () => {
@@ -672,7 +686,11 @@ function mount(
       .filter((node) => node.type === "literal")
       .map((node) => String(node.value))
       .join(" ")
-  return { view, mounted, buttons, click, text, dispose }
+  return { view, mounted, buttons, layers: f.layers.slice(layerBegin), click, text, dispose }
+}
+
+function layerEnabled(layer: KeymapLayer) {
+  return typeof layer.enabled === "function" ? layer.enabled() : layer.enabled !== false
 }
 
 // A second independent native transcript in the same trusted host double.
@@ -2837,7 +2855,13 @@ snapshotTest("Cancel wins once, keeps the Plan, and stale Authorize stays inert"
   const view = mount(f)
   const plan = structuredClone(f.cache.parent)
   const publication = structuredClone(f.inboxes.parent)
+  const layer = view.layers[0]()
+  view.click(1, 1)
+  expect(f.calls.toasts).toEqual([])
+  // Cancel's padded box works while the logical selection is Authorize.
   view.click(1)
+  expect(layerEnabled(layer)).toBe(false)
+  for (const command of layer.commands!.slice(1)) command.run()
   view.click(0)
   view.click(1)
   expect(f.calls.toasts).toEqual(["Cancelled — no implementation admitted"])
@@ -2956,11 +2980,16 @@ snapshotTest(
         const cleanup = await activate(f)
         const publication = structuredClone(f.calls.synthetic[0])
         const view = mount(f)
+        const layer = view.layers[0]()
         let child: ReturnType<typeof mount> | undefined, returned: ReturnType<typeof mount> | undefined
         try {
           // Native Subagent.onClick changes route; app.tsx's keyed SessionFrame
           // disposes the root composer/slot and mounts the child's own slot.
           setRoute({ type: "session", sessionID: "planner-child" })
+          expect(layerEnabled(layer)).toBe(false)
+          for (const command of layer.commands!.slice(1)) command.run()
+          expect(view.buttons[1].backgroundColor).toBe("#202020")
+          expectNoImplementation(f)
           view.dispose()
           f.emit({ type: "session.viewed", id: "view-child", data: { sessionID: "planner-child" } })
           expect(f.calls.toasts).toEqual([])
@@ -2980,14 +3009,24 @@ snapshotTest(
           f.emit({ type: "session.viewed", id: "view-root", data: { sessionID: "parent" } })
           returned = mount(f, "parent", false)
           expect(returned.buttons).toHaveLength(3)
+          const current = returned.layers[0]()
+          expect(layerEnabled(current)).toBe(false)
+          for (const command of current.commands!.slice(1)) command.run()
+          expectNoImplementation(f)
           returned.click(0)
           returned.click(1)
           expectNoImplementation(f) // The old readable frame cannot authorize.
           f.renderer.emit("frame")
+          for (const command of layer.commands!.slice(1)) command.run()
           view.click(0)
           view.click(1) // Old view closures stay inert on return.
           expectNoImplementation(f)
-          returned.click(decision === "authorize" ? 0 : 1)
+          expect(layerEnabled(current)).toBe(true)
+          current.commands![1].run() // Cancel selected for both activation paths.
+          if (decision === "authorize") returned.click(0)
+          else current.commands![2].run()
+          expect(layerEnabled(current)).toBe(false)
+          for (const command of current.commands!.slice(1)) command.run()
           await settleUntil(() => f.calls.toasts.length > 0)
           expect(f.calls.toasts[0]).toContain(decision === "authorize" ? "Implementation gate complete" : "Cancelled")
           expect(f.calls.claims).toHaveLength(decision === "authorize" ? 1 : 0)
@@ -3149,18 +3188,80 @@ snapshotTest("pending authorization rejects changed trusted evidence after Plann
   }
 })
 
+snapshotTest("authorization keyboard selection changes only local action theme states", async (observer) => {
+  const f = fake(snapshotFixture(observer))
+  const cleanup = await activate(f)
+  const view = mount(f)
+  try {
+    expect(view.layers).toHaveLength(1)
+    const layer = view.layers[0]()
+    expect(layer.mode).toBe("base")
+    expect(layer.priority).toBe(1)
+    expect(layer.target).toBeUndefined()
+    expect(layer.commands?.map((command) => command.bind)).toEqual(["left", "right", "return"])
+    expect(layer.commands?.every((command) => command.id === undefined)).toBe(true)
+    const [left, right] = layer.commands!
+    const appearance = () =>
+      view.buttons.map((button) => [
+        button.backgroundColor,
+        button.children.find((node: any) => node.type === "text").fg,
+      ])
+    const initial = [
+      ["blue", "white"],
+      ["#202020", "gray"],
+      ["#202020", "gray"],
+    ]
+    const cancel = [
+      ["cyan", "black"],
+      ["#404040", "yellow"],
+      ["#202020", "gray"],
+    ]
+    expect(appearance()).toEqual(initial)
+    expect(layerEnabled(layer)).toBe(true)
+    right.run()
+    expect(appearance()).toEqual(cancel)
+    left.run()
+    expect(appearance()).toEqual(initial)
+    for (const button of view.buttons) {
+      expect(button).toMatchObject({ type: "box", paddingX: 1, flexShrink: 0 })
+      expect(button.children.every((node: any) => !node.onMouseUp)).toBe(true)
+      expect(button.focusable).toBeUndefined()
+      expect(button.onKeyDown).toBeUndefined()
+    }
+    expectNoImplementation(f)
+    expect(f.calls.toasts).toEqual([])
+    const replacement = mount(f)
+    expect(layerEnabled(layer)).toBe(false)
+    for (const command of layer.commands!.slice(1)) command.run()
+    expect(appearance()).toEqual(initial)
+    expectNoImplementation(f)
+    expect(layerEnabled(replacement.layers[0]())).toBe(true)
+    replacement.dispose()
+  } finally {
+    cleanup()
+    view.dispose()
+    expect(f.layers).toEqual([])
+  }
+})
+
 snapshotTest("lost root surface, projection mutation, and cleanup cannot restore controls", async (observer) => {
   for (const loss of ["unmount", "location", "projection", "projection-loss", "wake", "cleanup"] as const) {
     const root = snapshotFixture(observer)
     const f = fake(root)
     const cleanup = await activate(f)
     const view = mount(f)
+    const layer = view.layers[0]()
     if (loss === "unmount") view.dispose()
     if (loss === "location") (f.context as any).location.directory = "different"
     if (loss === "projection") f.cache.parent.at(-1).description += " changed"
     if (loss === "projection-loss") f.cache.parent.pop()
     if (loss === "wake") f.emit({ type: "session.execution.started", id: "evt_wake", data: { sessionID: "parent" } })
     if (loss === "cleanup") cleanup()
+    expect(layerEnabled(layer)).toBe(false)
+    for (const command of layer.commands!.slice(1)) command.run()
+    expect(view.buttons[1].backgroundColor).toBe("#202020")
+    expectNoImplementation(f)
+    expect(f.calls.receipts).toEqual([])
     view.click(0)
     expectNoImplementation(f)
     if (loss === "unmount") expect(f.calls.toasts.at(-1)).toContain("Authorization view was lost")
@@ -3249,15 +3350,22 @@ snapshotTest(
     const f = fake(root)
     const cleanup = await activate(f)
     const view = mount(f)
+    const layer = view.layers[0]()
     const retainedPublication = structuredClone(f.inboxes.parent)
     f.renderer.terminalWidth = 80
     f.renderer.emit("resize")
     // Descendants and captured callbacks still belong to the old valid frame.
     expect(view.mounted[0].width).toBe(120)
+    expect(layerEnabled(layer)).toBe(false)
+    for (const command of layer.commands!.slice(1)) command.run()
+    expectNoImplementation(f)
     view.click(0)
     view.click(1)
     f.renderer.terminalWidth = 120
     f.renderer.emit("resize")
+    expect(layerEnabled(layer)).toBe(false)
+    for (const command of layer.commands!.slice(1)) command.run()
+    expectNoImplementation(f)
     view.click(0)
     view.click(1)
     expectNoImplementation(f)
@@ -3294,6 +3402,7 @@ snapshotTest(
       const f = fake(root)
       const cleanup = await activate(f)
       const view = mount(f)
+      const layer = view.layers[0]()
       const copy = view.mounted.filter((node) => node.type === "text" && node.wrapMode === "char")
       // Keep viewport identity unchanged for detailed-check failures: an early
       // viewport snapshot must not turn a partially validated frame into proof.
@@ -3314,6 +3423,10 @@ snapshotTest(
       if (invalid === "cancel") view.buttons[1].width = 3
       if (invalid === "viewport") view.buttons[1].screenY = 60
       f.renderer.emit("frame")
+      expect(layerEnabled(layer)).toBe(false)
+      for (const command of layer.commands!.slice(1)) command.run()
+      expect(view.buttons[1].backgroundColor).toBe("#202020")
+      expectNoImplementation(f)
       view.click(0)
       view.click(1)
       expectNoImplementation(f)
@@ -3383,8 +3496,12 @@ snapshotTest(
     const f = fake(root)
     const cleanup = await activate(f)
     const view = mount(f)
+    const layer = view.layers[0]()
     // Mutate a descendant after a valid frame without delivering another frame.
     view.buttons[1].screenX = 120
+    expect(layerEnabled(layer)).toBe(false)
+    for (const command of layer.commands!.slice(1)) command.run()
+    expectNoImplementation(f)
     view.click(0)
     expect(f.calls.toasts).toEqual([])
     expectNoImplementation(f)
@@ -3808,6 +3925,10 @@ snapshotTest(
       const f = fake(root)
       const cleanup = await activate(f)
       const view = mount(f, "parent", false)
+      const layer = view.layers[0]()
+      expect(layerEnabled(layer)).toBe(false)
+      for (const command of layer.commands!.slice(1)) command.run()
+      expectNoImplementation(f)
       view.click(0)
       expectNoImplementation(f)
       expect(f.calls.toasts).toEqual([])
@@ -3819,9 +3940,13 @@ snapshotTest(
       if (layout === "question-clipped") copy[2].width = 1
       f.renderer.emit("frame")
       if (layout === "partial") {
+        expect(layerEnabled(layer)).toBe(true)
         view.click(1)
         expect(f.calls.toasts).toEqual(["Cancelled — no implementation admitted"])
       } else {
+        expect(layerEnabled(layer)).toBe(false)
+        for (const command of layer.commands!.slice(1)) command.run()
+        expectNoImplementation(f)
         view.click(0)
         if (layout === "hidden") expect(f.calls.toasts.at(-1)).toContain("surface")
         else expect(f.calls.toasts).toEqual([])
@@ -7876,8 +8001,12 @@ async function prepareRevisionFixture(root: string, observer: SnapshotObserver) 
     closeDialog = undefined
     previous?.()
   }
+  const registerLayer = f.context.keymap.layer
   ;(f.context as any).keymap = {
-    layer: (read: () => any) => state.dialogs.at(-1)!.layers.push(read),
+    layer: (read: () => any) => {
+      if (read().mode === "modal") state.dialogs.at(-1)!.layers.push(read)
+      else registerLayer(read)
+    },
     shortcuts: (id: string) => (id === "dialog.prompt.submit" ? state.submitBindings : state.newlineBindings),
   }
   Object.assign(f.context.ui.dialog, {
@@ -8182,7 +8311,12 @@ snapshotTest(
         owner = f.publications[0].owner,
         plan = structuredClone(f.cache.ses_parent),
         publication = structuredClone(f.inboxes.ses_parent)
+      const layer = a.layers[0]()
+      layer.commands![1].run()
+      expect(a.buttons[1].backgroundColor).toBe("#404040")
       f.state.prompt = () => new Promise(() => {})
+      a.click(2, 1)
+      expect(f.state.dialogs).toEqual([])
       a.click(2)
       const old = f.state.dialogs.at(-1)!,
         editor = old.nodes.find((node) => node.type === "textarea")
@@ -8196,6 +8330,8 @@ snapshotTest(
       expect(() => owner.assertCurrent()).not.toThrow()
       expect(f.cache.ses_parent).toEqual(plan)
       expect(f.inboxes.ses_parent).toEqual(publication)
+      expect(layerEnabled(layer)).toBe(true)
+      expect(a.buttons[1].backgroundColor).toBe("#404040")
       a.click(2)
       const next = f.state.dialogs.at(-1)!
       editor.onSubmit()
@@ -8213,6 +8349,16 @@ snapshotTest(
       expect(() => owner.assertCurrent()).not.toThrow()
       expect(f.cache.ses_parent).toEqual(plan)
       expect(f.inboxes.ses_parent).toEqual(publication)
+      const generation = f.publications[0].published!.activation.generation
+      for (const flag of ["busy", "revoked"] as const) {
+        generation[flag] = true
+        expect(layerEnabled(layer)).toBe(false)
+        for (const command of layer.commands!.slice(1)) command.run()
+        expect(a.buttons[1].backgroundColor).toBe("#404040")
+        expect(f.calls.claims).toEqual([])
+        expect(f.calls.receipts).toEqual([])
+        if (flag === "busy") generation.busy = false
+      }
     })
   },
 )
@@ -8249,8 +8395,13 @@ for (const revisions of [1, 2])
         for (let index = 0; index < revisions; index++) {
           const previous = f.publications[index].published!,
             old = current
+          const layer = old.layers[0]()
+          layer.commands![1].run()
           f.state.onGrant = () => {
             expect(() => f.publications[index].owner.assertCurrent()).toThrow("Planning generation")
+            expect(layerEnabled(layer)).toBe(false)
+            for (const command of layer.commands!.slice(1)) command.run()
+            expect(old.buttons[1].backgroundColor).toBe("#404040")
             old.click(0)
             old.click(1)
             old.click(2)
@@ -8268,10 +8419,18 @@ for (const revisions of [1, 2])
           expect(revised.candidate.proposal.intent).toBe(`Revised Plan ${index + 1}`)
           expect(revised.publication.id).not.toBe(previous.publication.id)
           expect(current.buttons).toHaveLength(3)
+          expect(layerEnabled(current.layers[0]())).toBe(true)
+          expect(current.buttons[0].backgroundColor).toBe("blue")
+          expect(current.buttons[1].backgroundColor).toBe("#202020")
           expect(f.state.order.slice(index * 3, index * 3 + 3)).toEqual(["grant", "retire", "control"])
           await expect(Effect.runPromise(f.server.admission.revise(f.state.grants[index]))).rejects.toThrow()
         }
+        const layer = current.layers[0]()
+        layer.commands![2].run()
+        expect(layerEnabled(layer)).toBe(false)
+        for (const command of layer.commands!.slice(1)) command.run()
         current.click(0)
+        current.click(1)
         await settleUntil(() => f.calls.claims.length === 1)
         expect(f.calls.claims[0].publicationID).toBe(f.publications.at(-1)!.published!.publication.id)
         expect(f.calls.claims[0].candidate).toEqual(f.publications.at(-1)!.published!.candidate)

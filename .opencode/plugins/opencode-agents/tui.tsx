@@ -431,6 +431,10 @@ const plugin: Definition = {
       }
       function DecisionStrip(props: { published: PublishedAttempt }) {
         const captured = props.published
+        const theme = context.theme
+        const [selected, setSelected] = createSignal<"authorize" | "cancel">("authorize")
+        const authorizeState = () => (selected() === "authorize" ? "focused" : "base")
+        const cancelState = () => (selected() === "cancel" ? "focused" : "base")
         let surface: Renderable | undefined
         let authorizeButton: Renderable | undefined
         let cancelButton: Renderable | undefined
@@ -515,6 +519,34 @@ const plugin: Definition = {
           )
         }
         pendingSurfaceUsable = usable
+        const keyboardUsable = () =>
+          !generation.revoked &&
+          !generation.busy &&
+          pendingSurfaceUsable === usable &&
+          usable() &&
+          publishedPresentationMatches(context, captured)
+        const moveSelection = () => {
+          if (keyboardUsable()) setSelected((action) => (action === "authorize" ? "cancel" : "authorize"))
+        }
+        // DialogConfirm's two-option logical selection, scoped to this strip.
+        // Base mode leaves dialogs/composer modes with the host; no renderer
+        // focus changes. The accessor rechecks even nonreactive ownership/bounds.
+        context.keymap.layer(() => ({
+          mode: "base",
+          enabled: keyboardUsable,
+          priority: 1,
+          commands: [
+            { bind: "left", title: "Previous authorization option", run: moveSelection },
+            { bind: "right", title: "Next authorization option", run: moveSelection },
+            {
+              bind: "return",
+              title: "Activate authorization selection",
+              run: () => {
+                if (keyboardUsable()) decide(captured, selected())
+              },
+            },
+          ],
+        }))
         const checkLayout = () => {
           if (ownership.kind !== "pending" || ownership.published !== captured) return
           invalidate()
@@ -606,28 +638,34 @@ const plugin: Definition = {
                   authorizeButton = node
                 }}
                 paddingX={1}
+                flexShrink={0}
+                backgroundColor={theme.background.action.primary[authorizeState()]}
                 onMouseUp={(event) => {
                   if (ready()) mouseDecision(captured, "authorize", event)
                 }}
               >
-                <text fg={context.theme.text.feedback.info.base}>Authorize</text>
+                <text fg={theme.text.action.primary[authorizeState()]}>Authorize</text>
               </box>
               <box
                 ref={(node) => {
                   cancelButton = node
                 }}
                 paddingX={1}
+                flexShrink={0}
+                backgroundColor={theme.background.action.secondary[cancelState()]}
                 onMouseUp={(event) => {
                   if (ready()) mouseDecision(captured, "cancel", event)
                 }}
               >
-                <text>Cancel</text>
+                <text fg={theme.text.action.secondary[cancelState()]}>Cancel</text>
               </box>
               <box
                 ref={(node) => {
                   reviseButton = node
                 }}
                 paddingX={1}
+                flexShrink={0}
+                backgroundColor={theme.background.action.secondary.base}
                 onMouseUp={(event) => {
                   if (ready() && event.button === 0) {
                     event.stopPropagation()
@@ -635,7 +673,7 @@ const plugin: Definition = {
                   }
                 }}
               >
-                <text>Revise</text>
+                <text fg={theme.text.action.secondary.base}>Revise</text>
               </box>
             </box>
           </box>
