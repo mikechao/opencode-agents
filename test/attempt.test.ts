@@ -51,6 +51,15 @@ mock.module("@opentui/solid", () => ({
       visible: true,
       isDestroyed: false,
     }
+    if (type === "textarea") {
+      Object.assign(node, {
+        plainText: "",
+        focused: false,
+        focus() {
+          this.focused = true
+        },
+      })
+    }
     elements.push(node)
     return node
   },
@@ -428,7 +437,10 @@ function fake(root: string, options: FakeOptions = {}) {
         },
       },
     },
-    theme: { text: { feedback: { info: { base: "blue" } } } },
+    theme: {
+      text: { feedback: { info: { base: "blue" } } },
+      surface: () => ({ text: { base: "white", muted: "gray", formfield: { base: "white" } } }),
+    },
     ui: {
       router: { current: () => ({ type: "session", sessionID: "parent" }) },
       slot: (claim: any) => {
@@ -7841,8 +7853,51 @@ async function prepareRevisionFixture(root: string, observer: SnapshotObserver) 
     onPublication: undefined as (() => void) | undefined,
     afterControl: undefined as ((revision: Revision) => Promise<void>) | undefined,
     controlTextSuffix: "",
+    dialogs: [] as Array<{ nodes: any[]; layers: Array<() => any>; closed: boolean }>,
+    dialogOptions: [] as any[],
   }
-  ;(f.context.ui.dialog as any).prompt = () => (state.prompt ? state.prompt() : Promise.resolve(state.text))
+  let closeDialog: (() => void) | undefined
+  const dialogClose = () => {
+    const previous = closeDialog
+    closeDialog = undefined
+    previous?.()
+  }
+  ;(f.context as any).keymap = {
+    layer: (read: () => any) => state.dialogs.at(-1)!.layers.push(read),
+    shortcuts: (id: string) =>
+      id === "dialog.prompt.submit" ? ["enter"] : ["shift+enter", "ctrl+enter", "alt+enter", "ctrl+j"],
+  }
+  Object.assign(f.context.ui.dialog, {
+    show: (render: () => unknown, onClose: () => void) => {
+      dialogClose()
+      const start = elements.length
+      const record = { nodes: [] as any[], layers: [] as Array<() => any>, closed: false }
+      state.dialogs.push(record)
+      let dispose!: () => void
+      createRoot((cleanup) => {
+        dispose = cleanup
+        render()
+      })
+      record.nodes = elements.slice(start)
+      closeDialog = () => {
+        record.closed = true
+        onClose()
+        dispose()
+      }
+      const reply = state.prompt ? state.prompt() : Promise.resolve(state.text)
+      void reply.then((text) => {
+        if (record.closed) return
+        if (text === undefined) dialogClose()
+        else {
+          const editor = record.nodes.find((node) => node.type === "textarea")
+          editor.plainText = text
+          record.layers[0]().commands[0].run()
+        }
+      })
+    },
+    clear: dialogClose,
+    set: (options: any) => state.dialogOptions.push(options),
+  })
   const rpc = f.context.client.rpc
   ;(f.context.client as any).rpc = () => ({
     ...rpc(authorizeRpc),
@@ -7917,6 +7972,7 @@ async function prepareRevisionFixture(root: string, observer: SnapshotObserver) 
   await settleUntil(() => f.slots.length > 0 || f.calls.toasts.length > 0)
   const cleanup = () => {
     if (typeof teardown === "function") teardown()
+    dialogClose()
   }
   expect(f.calls.toasts).toEqual([])
   await settleUntil(() => !!publications[0]?.published)
@@ -7940,6 +7996,118 @@ async function prepareRevisionFixture(root: string, observer: SnapshotObserver) 
   }
   return { ...f, server, state, publications, originalAttempt, cleanup, views, view, revise }
 }
+
+snapshotTest(
+  "revision editor binds the Plan, wraps, focuses, and submits literal multiline text once",
+  async (observer) => {
+    await revisionFixture(observer, async (f) => {
+      const a = f.view(),
+        published = f.publications[0].published!
+      f.state.prompt = () => new Promise(() => {})
+      a.click(2)
+      const dialog = f.state.dialogs.at(-1)!,
+        editor = dialog.nodes.find((node) => node.type === "textarea"),
+        layer = dialog.layers[0]()
+      const labels = dialog.nodes
+        .filter((node) => node.type === "literal")
+        .map((node) => String(node.value))
+        .join(" ")
+      expect(labels).toContain(
+        `Plan ${published.candidate.digest.slice(0, 12)} · HEAD ${published.candidate.head.slice(0, 12)}`,
+      )
+      expect(labels).toContain("Submitting permanently supersedes it.")
+      expect(labels).toContain("enter submit · Esc cancel")
+      expect(labels).toContain("shift+enter / ctrl+enter / alt+enter / ctrl+j newline")
+      expect(f.state.dialogOptions).toEqual([{ size: "large", centered: true }])
+      expect(editor).toMatchObject({ width: "100%", minHeight: 4, maxHeight: 10, wrapMode: "word" })
+      expect(editor.keyBindings).toBeUndefined()
+      expect(editor.onKeyDown).toBeUndefined()
+      expect(layer).toMatchObject({ mode: "modal", priority: 1, enabled: true })
+      expect(layer.target()).toBe(editor)
+      expect(layer.commands[0].id).toBe("dialog.prompt.submit")
+      expect(f.state.grants).toEqual([])
+      expect(() => f.publications[0].owner.assertCurrent()).not.toThrow()
+      await Bun.sleep(5)
+      expect(editor.focused).toBe(true)
+      const text = ' \nFirst paragraph: "quotes", $literal, ☃.\n\n  Second paragraph.\n '
+      editor.plainText = text
+      const submit = dialog.nodes.filter((node) => node.onMouseUp)[0].onMouseUp
+      submit({ button: 1, stopPropagation() {} })
+      expect(dialog.closed).toBe(false)
+      submit({ button: 0, stopPropagation() {} })
+      editor.onSubmit()
+      layer.commands[0].run()
+      await settleUntil(() => f.state.grants.length === 1)
+      expect(f.state.grants[0].text).toBe(text)
+      expect(dialog.closed).toBe(true)
+      expect(dialog.layers[0]().enabled).toBe(false)
+      expect(f.calls.claims).toEqual([])
+    })
+  },
+)
+
+snapshotTest(
+  "populated revision cancellation preserves the Plan and obsolete editor callbacks leave the next dialog alone",
+  async (observer) => {
+    await revisionFixture(observer, async (f) => {
+      const a = f.view(),
+        owner = f.publications[0].owner,
+        plan = structuredClone(f.cache.ses_parent),
+        publication = structuredClone(f.inboxes.ses_parent)
+      f.state.prompt = () => new Promise(() => {})
+      a.click(2)
+      const old = f.state.dialogs.at(-1)!,
+        editor = old.nodes.find((node) => node.type === "textarea")
+      editor.plainText = "Populated text\nthat must be discarded"
+      old.nodes.filter((node) => node.onMouseUp)[1].onMouseUp({ button: 0, stopPropagation() {} })
+      await Promise.resolve()
+      expect(old.closed).toBe(true)
+      expect(() => owner.assertCurrent()).not.toThrow()
+      expect(f.cache.ses_parent).toEqual(plan)
+      expect(f.inboxes.ses_parent).toEqual(publication)
+      a.click(2)
+      const next = f.state.dialogs.at(-1)!
+      editor.onSubmit()
+      old.layers[0]().commands[0].run()
+      for (const node of old.nodes.filter((node) => node.onMouseUp)) node.onMouseUp({ button: 0, stopPropagation() {} })
+      await Promise.resolve()
+      expect(next.closed).toBe(false)
+      expect(f.state.grants).toEqual([])
+      expect(() => owner.assertCurrent()).not.toThrow()
+      next.nodes.find((node) => node.type === "textarea").plainText = "Populated host dismissal\n"
+      f.context.ui.dialog.clear()
+      await Promise.resolve()
+      expect(f.state.grants).toEqual([])
+      expect(f.calls.toasts).toEqual([])
+      expect(() => owner.assertCurrent()).not.toThrow()
+      expect(f.cache.ses_parent).toEqual(plan)
+      expect(f.inboxes.ses_parent).toEqual(publication)
+    })
+  },
+)
+
+snapshotTest(
+  "revision editor submission revalidates the exact current Plan projection before supersession",
+  async (observer) => {
+    await revisionFixture(observer, async (f) => {
+      const a = f.view()
+      f.state.prompt = () => new Promise(() => {})
+      a.click(2)
+      const dialog = f.state.dialogs.at(-1)!,
+        editor = dialog.nodes.find((node) => node.type === "textarea")
+      editor.plainText = "A literal instruction\nfor an altered Plan"
+      f.cache.ses_parent.find((message) => message.id === f.publications[0].published!.publication.id).description +=
+        " changed"
+      editor.onSubmit()
+      await settleUntil(() => f.calls.toasts.length > 0)
+      expect(f.calls.toasts[0]).toContain("Published Plan projection changed")
+      expect(f.state.grants).toEqual([])
+      expect(f.calls.claims).toEqual([])
+      expect(f.calls.synthetic).toHaveLength(1) // Only the original Plan publication.
+      expect(() => f.publications[0].owner.assertCurrent()).toThrow()
+    })
+  },
+)
 
 for (const revisions of [1, 2])
   snapshotTest(

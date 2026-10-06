@@ -6,6 +6,7 @@ import { createEffect, createRenderEffect, createRoot, createSignal, onCleanup, 
 import { displayPath } from "../../../src/proposal.ts"
 import type { Generation } from "../../../src/cap.ts"
 import { registerAgentModels } from "./agent-models-ui.ts"
+import { editRevision } from "./revision-editor.tsx"
 import { observeGit, requireFresh } from "../../../src/git.ts"
 import { authorizeRpc } from "../../../src/authorize-rpc.ts"
 import {
@@ -320,11 +321,7 @@ const plugin: Definition = {
         let failurePlanning = planning
         try {
           guard.assertCurrent()
-          const text = await context.ui.dialog.prompt({
-            title: `Revise ${binding(captured)}`,
-            description: "Describe the changes to this Plan. Submitting permanently supersedes it.",
-            placeholder: "Revision instruction",
-          })
+          const text = await editRevision(context, binding(captured))
           if (text === undefined) return
           if (!text.trim()) {
             if (currentPlanning(planning)) present("Revise", "Enter a nonempty revision instruction.")
