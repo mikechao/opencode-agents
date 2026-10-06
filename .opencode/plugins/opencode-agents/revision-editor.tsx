@@ -26,7 +26,6 @@ export function editRevision(context: Context, binding: string): Promise<string 
         const editor = target()
         if (editor && !editor.isDestroyed) close(editor.plainText)
       }
-      const shortcuts = (id: string) => context.keymap.shortcuts(id).join(" / ")
       const focus = () => {
         const editor = target()
         if (!settled && editor && !editor.isDestroyed) editor.focus()
@@ -103,35 +102,40 @@ export function editRevision(context: Context, binding: string): Promise<string 
             <text wrapMode="word" fg={theme.text.muted}>
               Submitting permanently supersedes this Plan.
             </text>
-            <text
-              wrapMode="word"
-              fg={theme.text.muted}
-            >{`${shortcuts("dialog.prompt.submit")} submit · Esc cancel`}</text>
-            <text wrapMode="word" fg={theme.text.muted}>{`${shortcuts("input.newline")} newline`}</text>
+            <text wrapMode="word" fg={theme.text.muted}>
+              enter submit · Esc cancel
+            </text>
+            <text wrapMode="word" fg={theme.text.muted}>
+              ctrl+j for new line
+            </text>
           </box>
-          <box flexDirection="row" gap={2} flexShrink={0}>
+          <box flexDirection="row" flexWrap="wrap" gap={1} flexShrink={0}>
             {/* biome-ignore lint/a11y/noStaticElementInteractions: OpenTUI mouse actions also have host keyboard bindings. */}
-            <text
-              fg={theme.text.base}
+            <box
+              paddingX={1}
+              flexShrink={0}
+              backgroundColor={theme.background.action.primary.focused}
               onMouseUp={(event) => {
                 if (event.button !== 0) return
                 event.stopPropagation()
                 submit()
               }}
             >
-              Submit revision
-            </text>
+              <text fg={theme.text.action.primary.focused}>Submit revision</text>
+            </box>
             {/* biome-ignore lint/a11y/noStaticElementInteractions: Escape/click cancellation uses the host dialog lifecycle. */}
-            <text
-              fg={theme.text.base}
+            <box
+              paddingX={1}
+              flexShrink={0}
+              backgroundColor={theme.background.action.secondary.base}
               onMouseUp={(event) => {
                 if (event.button !== 0) return
                 event.stopPropagation()
                 close(undefined)
               }}
             >
-              Cancel
-            </text>
+              <text fg={theme.text.action.secondary.base}>Cancel</text>
+            </box>
           </box>
         </box>
       )

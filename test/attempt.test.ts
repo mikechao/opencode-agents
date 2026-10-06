@@ -440,8 +440,16 @@ function fake(root: string, options: FakeOptions = {}) {
     theme: {
       text: { feedback: { info: { base: "blue" } } },
       surface: () => ({
-        text: { base: "white", muted: "gray", formfield: { base: "white" } },
-        background: { formfield: { base: "black" } },
+        text: {
+          base: "white",
+          muted: "gray",
+          formfield: { base: "white" },
+          action: { primary: { focused: "white" }, secondary: { base: "gray" } },
+        },
+        background: {
+          formfield: { base: "black" },
+          action: { primary: { focused: "blue" }, secondary: { base: "#202020" } },
+        },
         border: { base: "gray" },
       }),
     },
@@ -8021,7 +8029,10 @@ snapshotTest(
       )
       expect(labels).toContain("Submitting permanently supersedes this Plan.")
       expect(labels).toContain("enter submit · Esc cancel")
-      expect(labels).toContain("shift+enter / ctrl+enter / alt+enter / ctrl+j newline")
+      expect(labels).toContain("ctrl+j for new line")
+      expect(labels).not.toContain("shift+enter")
+      expect(labels).not.toContain("ctrl+enter")
+      expect(labels).not.toContain("alt+enter")
       expect(f.state.dialogOptions).toEqual([{ size: "large", centered: true }])
       expect(editor).toMatchObject({ width: "100%", minHeight: 4, maxHeight: 10, wrapMode: "word" })
       expect(editor.parent).toMatchObject({
@@ -8057,7 +8068,19 @@ snapshotTest(
       expect(f.state.grants).toEqual([])
       const text = ' \nFirst paragraph: "quotes", $literal, ☃.\n\n  Second paragraph.\n '
       editor.plainText = text
-      const submit = dialog.nodes.filter((node) => node.onMouseUp)[0].onMouseUp
+      const actions = dialog.nodes.filter((node) => node.onMouseUp)
+      expect(actions).toHaveLength(2)
+      expect(actions[0]).toMatchObject({ type: "box", paddingX: 1, backgroundColor: "blue" })
+      expect(actions[1]).toMatchObject({ type: "box", paddingX: 1, backgroundColor: "#202020" })
+      expect(actions[0].children.find((node: any) => node.type === "text").fg).toBe("white")
+      expect(actions[1].children.find((node: any) => node.type === "text").fg).toBe("gray")
+      for (const action of actions) {
+        expect(action.focusable).toBeUndefined()
+        expect(action.onKeyDown).toBeUndefined()
+        expect(action.onMouseOver).toBeUndefined()
+        expect(action.onMouseOut).toBeUndefined()
+      }
+      const submit = actions[0].onMouseUp
       submit({ button: 1, stopPropagation() {} })
       expect(dialog.closed).toBe(false)
       submit({ button: 0, stopPropagation() {} })
@@ -8088,7 +8111,10 @@ snapshotTest(
       const old = f.state.dialogs.at(-1)!,
         editor = old.nodes.find((node) => node.type === "textarea")
       editor.plainText = "Populated text\nthat must be discarded"
-      old.nodes.filter((node) => node.onMouseUp)[1].onMouseUp({ button: 0, stopPropagation() {} })
+      const cancel = old.nodes.filter((node) => node.onMouseUp)[1].onMouseUp
+      cancel({ button: 2, stopPropagation() {} })
+      expect(old.closed).toBe(false)
+      cancel({ button: 0, stopPropagation() {} })
       await Promise.resolve()
       expect(old.closed).toBe(true)
       expect(() => owner.assertCurrent()).not.toThrow()
