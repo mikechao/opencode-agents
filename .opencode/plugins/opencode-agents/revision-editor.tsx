@@ -27,6 +27,10 @@ export function editRevision(context: Context, binding: string): Promise<string 
         if (editor && !editor.isDestroyed) close(editor.plainText)
       }
       const shortcuts = (id: string) => context.keymap.shortcuts(id).join(" / ")
+      const focus = () => {
+        const editor = target()
+        if (!settled && editor && !editor.isDestroyed) editor.focus()
+      }
       context.ui.dialog.set({ size: "large", centered: true })
       onCleanup(() => settle(undefined))
       // Match DialogPrompt's focused modal command. All editing/newline keys
@@ -41,10 +45,7 @@ export function editRevision(context: Context, binding: string): Promise<string 
       onMount(() => {
         // The host blurs the previous focus when replacing a dialog. Focus
         // after that pass, like DialogPrompt; the host restores focus on close.
-        const timer = setTimeout(() => {
-          const editor = target()
-          if (!settled && editor && !editor.isDestroyed) editor.focus()
-        }, 1)
+        const timer = setTimeout(focus, 1)
         onCleanup(() => clearTimeout(timer))
       })
       return (
@@ -64,24 +65,44 @@ export function editRevision(context: Context, binding: string): Promise<string 
               {binding}
             </text>
           </box>
-          <text wrapMode="word" fg={theme.text.base} flexShrink={0}>
-            Describe the changes to this Plan. Submitting permanently supersedes it.
-          </text>
-          <textarea
-            ref={setTarget}
+          <box
+            title="Revision instructions"
+            titleColor={theme.text.base}
+            border
+            borderStyle="single"
+            borderColor={theme.border.base}
+            backgroundColor={theme.background.formfield.base}
+            paddingX={1}
             width="100%"
-            minHeight={4}
-            maxHeight={Math.max(4, Math.min(10, Math.floor(dimensions().height / 3)))}
+            minHeight={6}
             flexShrink={1}
-            wrapMode="word"
-            placeholder="Revision instruction"
-            placeholderColor={theme.text.muted}
-            textColor={theme.text.formfield.base}
-            focusedTextColor={theme.text.formfield.base}
-            cursorColor={theme.text.base}
-            onSubmit={submit}
-          />
+          >
+            <textarea
+              ref={setTarget}
+              width="100%"
+              minHeight={4}
+              maxHeight={Math.max(4, Math.min(10, Math.floor(dimensions().height / 3)))}
+              flexShrink={1}
+              wrapMode="word"
+              placeholder="Revision instruction"
+              placeholderColor={theme.text.muted}
+              backgroundColor={theme.background.formfield.base}
+              focusedBackgroundColor={theme.background.formfield.base}
+              textColor={theme.text.formfield.base}
+              focusedTextColor={theme.text.formfield.base}
+              cursorColor={theme.text.base}
+              onSubmit={submit}
+              onMouseDown={(event) => {
+                // OpenCode disables renderer autoFocus. Leave native mouse
+                // selection/caret placement and wheel scrolling untouched.
+                if (event.button === 0) focus()
+              }}
+            />
+          </box>
           <box flexDirection="column" flexShrink={0}>
+            <text wrapMode="word" fg={theme.text.muted}>
+              Submitting permanently supersedes this Plan.
+            </text>
             <text
               wrapMode="word"
               fg={theme.text.muted}

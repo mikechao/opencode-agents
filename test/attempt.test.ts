@@ -439,7 +439,11 @@ function fake(root: string, options: FakeOptions = {}) {
     },
     theme: {
       text: { feedback: { info: { base: "blue" } } },
-      surface: () => ({ text: { base: "white", muted: "gray", formfield: { base: "white" } } }),
+      surface: () => ({
+        text: { base: "white", muted: "gray", formfield: { base: "white" } },
+        background: { formfield: { base: "black" } },
+        border: { base: "gray" },
+      }),
     },
     ui: {
       router: { current: () => ({ type: "session", sessionID: "parent" }) },
@@ -8015,11 +8019,23 @@ snapshotTest(
       expect(labels).toContain(
         `Plan ${published.candidate.digest.slice(0, 12)} · HEAD ${published.candidate.head.slice(0, 12)}`,
       )
-      expect(labels).toContain("Submitting permanently supersedes it.")
+      expect(labels).toContain("Submitting permanently supersedes this Plan.")
       expect(labels).toContain("enter submit · Esc cancel")
       expect(labels).toContain("shift+enter / ctrl+enter / alt+enter / ctrl+j newline")
       expect(f.state.dialogOptions).toEqual([{ size: "large", centered: true }])
       expect(editor).toMatchObject({ width: "100%", minHeight: 4, maxHeight: 10, wrapMode: "word" })
+      expect(editor.parent).toMatchObject({
+        title: "Revision instructions",
+        border: true,
+        borderStyle: "single",
+        borderColor: "gray",
+        backgroundColor: "black",
+      })
+      expect(editor.backgroundColor).toBe("black")
+      expect(editor.focusedBackgroundColor).toBe("black")
+      const warning = dialog.nodes.find((node) => node.value === "Submitting permanently supersedes this Plan.")
+      expect(dialog.nodes.indexOf(warning)).toBeGreaterThan(dialog.nodes.indexOf(editor))
+      expect(warning.parent).not.toBe(editor.parent)
       expect(editor.keyBindings).toBeUndefined()
       expect(editor.onKeyDown).toBeUndefined()
       expect(layer).toMatchObject({ mode: "modal", priority: 1, enabled: true })
@@ -8029,6 +8045,16 @@ snapshotTest(
       expect(() => f.publications[0].owner.assertCurrent()).not.toThrow()
       await Bun.sleep(5)
       expect(editor.focused).toBe(true)
+      editor.focused = false
+      const preventDefault = mock(() => {}),
+        stopPropagation = mock(() => {})
+      editor.onMouseDown({ button: 2, preventDefault, stopPropagation })
+      expect(editor.focused).toBe(false)
+      editor.onMouseDown({ button: 0, preventDefault, stopPropagation })
+      expect(editor.focused).toBe(true)
+      expect(preventDefault).not.toHaveBeenCalled()
+      expect(stopPropagation).not.toHaveBeenCalled()
+      expect(f.state.grants).toEqual([])
       const text = ' \nFirst paragraph: "quotes", $literal, ☃.\n\n  Second paragraph.\n '
       editor.plainText = text
       const submit = dialog.nodes.filter((node) => node.onMouseUp)[0].onMouseUp
@@ -8041,6 +8067,9 @@ snapshotTest(
       expect(f.state.grants[0].text).toBe(text)
       expect(dialog.closed).toBe(true)
       expect(dialog.layers[0]().enabled).toBe(false)
+      editor.focused = false
+      editor.onMouseDown({ button: 0 })
+      expect(editor.focused).toBe(false)
       expect(f.calls.claims).toEqual([])
     })
   },
