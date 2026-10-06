@@ -11,8 +11,8 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@opencode/plugin": "2.0.23",
-    "@opencode/schema": "2.0.23",
+    "@opencode/plugin": "2.0.24",
+    "@opencode/schema": "2.0.24",
     "effect": "4.0.0-rc.112"
   },
   "devDependencies": {
