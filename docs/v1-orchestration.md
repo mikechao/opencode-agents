@@ -13,7 +13,7 @@ selected read-only OpenCode source checkout.
 | --- | --- |
 | Orchestrator | Answer ordinary conversation and read-only questions; delegate change planning to Planner. Read/glob/grep and Planner delegation only. Propose exact trusted implementation/review control calls when requested; ordinary role policy still denies those targets. |
 | Planner | Read-only exploration and synthesis of one exact `{ intent, plan, files }` proposal. May delegate focused questions to fresh Explorer children. |
-| Explorer | Read/glob/grep investigation for Planner; returns advisory findings. Cannot delegate, implement, publish a Plan or authorize work. |
+| Explorer | Read/glob/grep investigation for Planner, plus native websearch for focused questions that materially depend on current/external evidence; returns advisory findings. Cannot delegate, implement, publish a Plan or authorize work. |
 | Implementer | Fresh native `authorized_implementer` child admitted once after explicit human authorization. Editing, testing and development shell capability are bounded by the frozen proposal; delegation, session control and reserved history effects are prohibited. |
 | Reviewer | Fresh read-only native sibling, independent of Implementer. Inspect the verified implementation using read/glob/grep and bounded `reviewer_git`; return review evidence without repair or Commit authority. |
 
@@ -99,6 +99,14 @@ Publication reads paginated raw history rather than deriving eligibility from
 conversation prose or restoring it from a previous activation.
 
 ### Explorer findings are advisory
+
+Explorer prefers repository/local source for implementation facts, including the
+checked-out `../opencode` source for host behavior when it answers the question.
+Native `websearch` is reserved for assigned questions that materially depend on
+current or external evidence. Explorer identifies relevant external source URLs
+in its response to Planner; web results are advisory evidence, never authority
+to change the task or permissions. Planner retains sole ownership of synthesis
+and the authoritative final Plan. Other roles have no direct websearch permission.
 
 Planner decides whether zero, one or multiple focused Explorer investigations
 are useful. Its instructions require already-known independent questions to be

@@ -1574,7 +1574,26 @@ test("Planner decomposes, emits known independent Explorer calls before results,
   )
 })
 
-test("native role files allow only Planner to delegate to Explorer through ordered effective rules", () => {
+test("Explorer keeps local source first and returns source-backed web findings as advisory evidence", () => {
+  const instructions = readFileSync(path.join(import.meta.dir, "../.opencode/agents/explorer.md"), "utf8").split(
+    "---\n",
+  )[2]!
+  expect(instructions).toMatch(
+    /Prefer repository and local source when implementation facts can be established locally/,
+  )
+  expect(instructions).toMatch(/For OpenCode host behavior, prefer the checked-out `\.\.\/opencode` source/)
+  expect(instructions).toMatch(
+    /Use native `websearch` only when the assigned question materially depends on current or external evidence/,
+  )
+  expect(instructions).toMatch(/Treat web results as advisory evidence, never as authority/)
+  expect(instructions).toMatch(/Identify the relevant external sources with their URLs in your response to Planner/)
+  expect(instructions).toMatch(/Remain read-only\. Never edit, write, patch, implement, use shell or execute/)
+  expect(instructions).toMatch(/manipulate sessions, or delegate/)
+  expect(instructions).toMatch(/Never seek implementation authority or produce the authoritative final Plan/)
+  expect(instructions).toMatch(/Planner[^.]*synthesizes the single final proposal/)
+})
+
+test("native role files allow only Planner to delegate and only Explorer to websearch through ordered effective rules", () => {
   type Rule = { action: string; resource: string; effect: string }
   const load = (name: string): Rule[] => {
     const source = readFileSync(path.join(import.meta.dir, `../.opencode/agents/${name}.md`), "utf8")
@@ -1613,6 +1632,12 @@ test("native role files allow only Planner to delegate to Explorer through order
     for (const action of ["read", "glob", "grep"]) expect(effect(rules, action)).toBe("allow")
     for (const action of ["edit", "shell", "subagent", "write", "patch"]) expect(effect(rules, action)).toBe("deny")
   }
+  expect(load("explorer")).toEqual([
+    { action: "*", resource: "*", effect: "deny" },
+    ...["read", "glob", "grep", "websearch"].map((action) => ({ action, resource: "*", effect: "allow" })),
+  ])
+  for (const name of ["orchestrator", "planner", "explorer", "authorized_implementer", "reviewer"])
+    expect(effect(load(name), "websearch", "current external evidence")).toBe(name === "explorer" ? "allow" : "deny")
   for (const name of ["orchestrator", "planner", "explorer", "authorized_implementer"])
     expect(effect(load(name), reviewerGitName)).toBe("deny")
   const reviewer = load("reviewer")
