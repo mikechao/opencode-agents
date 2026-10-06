@@ -432,9 +432,9 @@ const plugin: Definition = {
       function DecisionStrip(props: { published: PublishedAttempt }) {
         const captured = props.published
         const theme = context.theme
-        const [selected, setSelected] = createSignal<"authorize" | "cancel">("authorize")
+        const actions = ["authorize", "cancel", "revise"] as const
+        const [selected, setSelected] = createSignal<(typeof actions)[number]>("authorize")
         const authorizeState = () => (selected() === "authorize" ? "focused" : "base")
-        const cancelState = () => (selected() === "cancel" ? "focused" : "base")
         let surface: Renderable | undefined
         let authorizeButton: Renderable | undefined
         let cancelButton: Renderable | undefined
@@ -520,15 +520,17 @@ const plugin: Definition = {
         }
         pendingSurfaceUsable = usable
         const keyboardUsable = () =>
+          context.keymap.mode.current() === "base" &&
           !generation.revoked &&
           !generation.busy &&
           pendingSurfaceUsable === usable &&
           usable() &&
           publishedPresentationMatches(context, captured)
-        const moveSelection = () => {
-          if (keyboardUsable()) setSelected((action) => (action === "authorize" ? "cancel" : "authorize"))
+        const moveSelection = (direction: -1 | 1) => {
+          if (keyboardUsable())
+            setSelected((action) => actions[(actions.indexOf(action) + direction + actions.length) % actions.length])
         }
-        // DialogConfirm's two-option logical selection, scoped to this strip.
+        // Local logical selection, scoped to this strip.
         // Base mode leaves dialogs/composer modes with the host; no renderer
         // focus changes. The accessor rechecks even nonreactive ownership/bounds.
         context.keymap.layer(() => ({
@@ -536,13 +538,16 @@ const plugin: Definition = {
           enabled: keyboardUsable,
           priority: 1,
           commands: [
-            { bind: "left", title: "Previous authorization option", run: moveSelection },
-            { bind: "right", title: "Next authorization option", run: moveSelection },
+            { bind: "left", title: "Previous authorization option", run: () => moveSelection(-1) },
+            { bind: "right", title: "Next authorization option", run: () => moveSelection(1) },
             {
               bind: "return",
               title: "Activate authorization selection",
               run: () => {
-                if (keyboardUsable()) decide(captured, selected())
+                if (!keyboardUsable()) return
+                const action = selected()
+                if (action === "revise") void revise(captured)
+                else decide(captured, action)
               },
             },
           ],
@@ -652,12 +657,20 @@ const plugin: Definition = {
                 }}
                 paddingX={1}
                 flexShrink={0}
-                backgroundColor={theme.background.action.secondary[cancelState()]}
+                backgroundColor={
+                  selected() === "cancel"
+                    ? theme.background.action.primary.focused
+                    : theme.background.action.secondary.base
+                }
                 onMouseUp={(event) => {
                   if (ready()) mouseDecision(captured, "cancel", event)
                 }}
               >
-                <text fg={theme.text.action.secondary[cancelState()]}>Cancel</text>
+                <text
+                  fg={selected() === "cancel" ? theme.text.action.primary.focused : theme.text.action.secondary.base}
+                >
+                  Cancel
+                </text>
               </box>
               <box
                 ref={(node) => {
@@ -665,7 +678,11 @@ const plugin: Definition = {
                 }}
                 paddingX={1}
                 flexShrink={0}
-                backgroundColor={theme.background.action.secondary.base}
+                backgroundColor={
+                  selected() === "revise"
+                    ? theme.background.action.primary.focused
+                    : theme.background.action.secondary.base
+                }
                 onMouseUp={(event) => {
                   if (ready() && event.button === 0) {
                     event.stopPropagation()
@@ -673,7 +690,11 @@ const plugin: Definition = {
                   }
                 }}
               >
-                <text fg={theme.text.action.secondary.base}>Revise</text>
+                <text
+                  fg={selected() === "revise" ? theme.text.action.primary.focused : theme.text.action.secondary.base}
+                >
+                  Revise
+                </text>
               </box>
             </box>
           </box>

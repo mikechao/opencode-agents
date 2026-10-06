@@ -345,6 +345,7 @@ function fake(root: string, options: FakeOptions = {}) {
     location: { directory: root },
     renderer,
     keymap: {
+      mode: { current: () => "base" },
       layer: (read: () => KeymapLayer) => {
         layers.push(read)
         onCleanup(() => layers.splice(layers.indexOf(read), 1))
@@ -3213,12 +3214,25 @@ snapshotTest("authorization keyboard selection changes only local action theme s
     ]
     const cancel = [
       ["cyan", "black"],
-      ["#404040", "yellow"],
+      ["blue", "white"],
       ["#202020", "gray"],
+    ]
+    const revise = [
+      ["cyan", "black"],
+      ["#202020", "gray"],
+      ["blue", "white"],
     ]
     expect(appearance()).toEqual(initial)
     expect(layerEnabled(layer)).toBe(true)
     right.run()
+    expect(appearance()).toEqual(cancel)
+    right.run()
+    expect(appearance()).toEqual(revise)
+    right.run()
+    expect(appearance()).toEqual(initial)
+    left.run()
+    expect(appearance()).toEqual(revise)
+    left.run()
     expect(appearance()).toEqual(cancel)
     left.run()
     expect(appearance()).toEqual(initial)
@@ -8003,6 +8017,8 @@ async function prepareRevisionFixture(root: string, observer: SnapshotObserver) 
   }
   const registerLayer = f.context.keymap.layer
   ;(f.context as any).keymap = {
+    // DialogProvider pushes modal mode while a dialog is open.
+    mode: { current: () => (state.dialogs.some((dialog) => !dialog.closed) ? "modal" : "base") },
     layer: (read: () => any) => {
       if (read().mode === "modal") state.dialogs.at(-1)!.layers.push(read)
       else registerLayer(read)
@@ -8313,13 +8329,28 @@ snapshotTest(
         publication = structuredClone(f.inboxes.ses_parent)
       const layer = a.layers[0]()
       layer.commands![1].run()
-      expect(a.buttons[1].backgroundColor).toBe("#404040")
+      expect(a.buttons[1].backgroundColor).toBe("blue")
+      layer.commands![1].run()
+      expect(a.buttons[2].backgroundColor).toBe("blue")
       f.state.prompt = () => new Promise(() => {})
       a.click(2, 1)
       expect(f.state.dialogs).toEqual([])
-      a.click(2)
+      layer.commands![2].run()
       const old = f.state.dialogs.at(-1)!,
         editor = old.nodes.find((node) => node.type === "textarea")
+      expect(f.context.keymap.mode.current()).toBe("modal")
+      expect(layerEnabled(layer)).toBe(false)
+      for (const command of layer.commands!) command.run()
+      expect(a.buttons[2].backgroundColor).toBe("blue")
+      expect(f.state.dialogs).toHaveLength(1)
+      expect(old.layers[0]()).toMatchObject({ mode: "modal", priority: 1, enabled: true })
+      expect(old.layers[0]().target()).toBe(editor)
+      expect(old.layers[0]().commands[0].id).toBe("dialog.prompt.submit")
+      expect(f.calls.claims).toEqual([])
+      expect(f.state.grants).toEqual([])
+      expect(() => owner.assertCurrent()).not.toThrow()
+      expect(f.cache.ses_parent).toEqual(plan)
+      expect(f.inboxes.ses_parent).toEqual(publication)
       editor.plainText = "Populated text\nthat must be discarded"
       const cancel = old.nodes.filter((node) => node.onMouseUp)[1].onMouseUp
       cancel({ button: 2, stopPropagation() {} })
@@ -8331,7 +8362,8 @@ snapshotTest(
       expect(f.cache.ses_parent).toEqual(plan)
       expect(f.inboxes.ses_parent).toEqual(publication)
       expect(layerEnabled(layer)).toBe(true)
-      expect(a.buttons[1].backgroundColor).toBe("#404040")
+      expect(f.context.keymap.mode.current()).toBe("base")
+      expect(a.buttons[2].backgroundColor).toBe("blue")
       a.click(2)
       const next = f.state.dialogs.at(-1)!
       editor.onSubmit()
@@ -8354,7 +8386,7 @@ snapshotTest(
         generation[flag] = true
         expect(layerEnabled(layer)).toBe(false)
         for (const command of layer.commands!.slice(1)) command.run()
-        expect(a.buttons[1].backgroundColor).toBe("#404040")
+        expect(a.buttons[2].backgroundColor).toBe("blue")
         expect(f.calls.claims).toEqual([])
         expect(f.calls.receipts).toEqual([])
         if (flag === "busy") generation.busy = false
@@ -8401,7 +8433,7 @@ for (const revisions of [1, 2])
             expect(() => f.publications[index].owner.assertCurrent()).toThrow("Planning generation")
             expect(layerEnabled(layer)).toBe(false)
             for (const command of layer.commands!.slice(1)) command.run()
-            expect(old.buttons[1].backgroundColor).toBe("#404040")
+            expect(old.buttons[1].backgroundColor).toBe("blue")
             old.click(0)
             old.click(1)
             old.click(2)
