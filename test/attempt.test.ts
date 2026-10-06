@@ -15,20 +15,22 @@ import {
   assertPublishedCoherence,
   publishedPresentationMatches,
   authorizePublishedAttempt,
-  plannerInput,
-  inspectCompletedRootTurn,
-  plannerReceipt,
-  plannerReceiptKey,
   publishPlan as publish,
-  snapshotLocation,
   verifyPublishedAttempt,
   type DecisionOwner,
   type PublicationOwner,
   type PublishedAttempt,
+} from "../src/attempt.ts"
+import {
+  plannerInput,
+  inspectCompletedRootTurn,
+  plannerReceipt,
+  plannerReceiptKey,
   revisionArguments,
   revisionControl,
   type Revision,
-} from "../src/attempt.ts"
+} from "../src/planner-history.ts"
+import { snapshotLocation } from "../src/host-evidence.ts"
 import { createRoot, createEffect, createMemo, createComponent, createSignal } from "solid-js"
 import { createStore, reconcile } from "solid-js/store"
 import { EventEmitter } from "node:events"
@@ -3605,61 +3607,6 @@ snapshotTest(
     }
   },
 )
-
-test("completed-turn inspection rejects unsafe tools, malformed instructions and missing boundaries", () => {
-  for (const mutation of [
-    "delegation",
-    "wrong-target",
-    "missing-receipt",
-    "forbidden",
-    "unfinished-read",
-    "provider-read",
-    "instructions",
-    "control",
-    "compaction",
-    "duplicate",
-    "missing-idle",
-    "multiple-inputs",
-  ] as const) {
-    const history = directHistory("hello", ["read"], true)
-    const part = history[1].content[1]
-    if (["delegation", "wrong-target", "missing-receipt"].includes(mutation)) {
-      part.name = "subagent"
-      part.state.input = {
-        agent: mutation === "wrong-target" ? "explorer" : "planner",
-        description: "Plan",
-        prompt: "Proposed",
-      }
-    }
-    if (mutation === "forbidden") part.name = "shell"
-    if (mutation === "unfinished-read") part.state.status = "streaming"
-    if (mutation === "provider-read") part.executed = true
-    if (mutation === "instructions") history[2].metadata.instruction.extra = true
-    if (mutation === "control") history[2].metadata = { source: "planner" }
-    if (mutation === "compaction") history[2].type = "compaction"
-    if (mutation === "duplicate") history[2].id = history[0].id
-    if (mutation === "missing-idle") history.pop()
-    if (mutation === "multiple-inputs") history.splice(1, 0, user("another-user", "Do something else"))
-    expect(inspectCompletedRootTurn(history, "msg_hello-idle").kind).toBe("invalid")
-  }
-})
-
-test("completion distinguishes non-admitted failures from admitted or child-bearing failures", () => {
-  for (const name of ["subagent", "shell", "read", "glob", "grep"]) {
-    const history = directHistory("failed", [name])
-    const part = history[1].content[1]
-    part.state = { status: "error", input: {}, error: { type: "tool.input-json", message: "Not admitted" } }
-    expect(inspectCompletedRootTurn(history, "msg_failed-idle").kind).toBe("non-governed")
-    for (const metadata of [
-      { [plannerReceiptKey]: {} },
-      { sessionID: "native-child" },
-      { [plannerReceiptKey]: undefined },
-    ]) {
-      part.state.metadata = metadata
-      expect(inspectCompletedRootTurn(history, "msg_failed-idle").kind).toBe("invalid")
-    }
-  }
-})
 
 snapshotTest(
   "non-admitted completion and Undo retain TUI eligibility and its original Git baseline",

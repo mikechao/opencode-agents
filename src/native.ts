@@ -9,22 +9,23 @@ import { Agent } from "@opencode/schema/agent"
 import { randomUUID } from "node:crypto"
 import { NativeCap, exactKeys, frozenCopy, type AuthorizeClaim, type Reservation } from "./cap.ts"
 import {
-  exactEvidence,
-  implementerPrompt,
-  snapshotLocation,
-  nativeBootstrap,
   plannerArguments,
   plannerTurnInput,
-  directRootTool,
   plannerReceiptKey,
-  nativeReadInstruction,
   checkedRevision,
   completedPlannerTurn,
   plannerInput,
   revisionArguments,
   type Revision,
   verifyChildHistory,
-} from "./attempt.ts"
+} from "./planner-history.ts"
+import {
+  exactEvidence,
+  snapshotLocation,
+  nativeBootstrap,
+  directRootTool,
+  nativeReadInstruction,
+} from "./host-evidence.ts"
 import { parseProposal, candidateIntact, displayPath, type IntentCandidate } from "./proposal.ts"
 import {
   observeGit,
@@ -58,6 +59,21 @@ const attempt = <T>(body: () => T) =>
     catch: (error) =>
       new Tool.Error({ message: `CAP admission: ${error instanceof Error ? error.message : String(error)}`, error }),
   })
+function implementerPrompt(candidate: IntentCandidate): string {
+  return [
+    "You are the Implementer for one authorized implementation attempt.",
+    "Implement the frozen proposal below. Modify only its exact authorized repository paths; do not add, edit, or delete any other repository path.",
+    "Do not intentionally perform Git commit or other history effects reserved for the trusted CAP path.",
+    "Do not intentionally manipulate Git configuration, index metadata, ignore rules, repository metadata, or other shell-accessible state to conceal changes or evade ordinary Git changed-path scope observation.",
+    "You may read, edit, test, and use ordinary development shell commands. Do not alter scope or seek another approval.",
+    "The worktree was clean when the intent was authorized. Leave HEAD unchanged.",
+    `Canonical worktree root: ${candidate.root}`,
+    `Bound HEAD: ${candidate.head}`,
+    "Frozen proposal:",
+    JSON.stringify(candidate.proposal),
+  ].join("\n")
+}
+
 export const nativeArguments = (candidate: IntentCandidate) =>
   Object.freeze({
     agent: target,

@@ -11,13 +11,11 @@ import { authorizeRpc } from "../../../src/authorize-rpc.ts"
 import {
   activationEvidence,
   authorizePublishedAttempt,
-  exactEvidence,
   initiallyAuthorizable,
   inspectRootCompletion,
   publishedPresentationMatches,
   publishPlan,
   publishTerminalReceipt,
-  snapshotLocation,
   verifyPublishedAttempt,
   type DecisionOwner,
   type Bound,
@@ -25,9 +23,9 @@ import {
   type PublicationOwner,
   type PublishedAttempt,
   revisionInput,
-  revisionControl,
-  type Revision,
 } from "../../../src/attempt.ts"
+import { exactEvidence, snapshotLocation } from "../../../src/host-evidence.ts"
+import { revisionControl, type Revision } from "../../../src/planner-history.ts"
 
 const dirtyStatus =
   "Planning only — worktree was dirty when this attempt started. Start a new attempt from a clean worktree to enable implementation."
