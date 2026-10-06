@@ -1,7 +1,7 @@
 import type { Context } from "@opencode/plugin/tui/context"
 import type { TextareaRenderable } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
-import { createSignal, onCleanup, onMount } from "solid-js"
+import { createMemo, createSignal, onCleanup, onMount, Show } from "solid-js"
 
 // Presentation only: the caller retains the exact Plan and owns all acceptance
 // checks. Closing/disposal settles once, so obsolete callbacks cannot close a
@@ -41,6 +41,17 @@ export function editRevision(context: Context, binding: string): Promise<string 
         priority: 1,
         commands: [{ id: "dialog.prompt.submit", title: "Submit Plan revision", run: submit }],
       }))
+      const hints = createMemo(() => {
+        const submit = context.keymap.shortcuts("dialog.prompt.submit").filter(Boolean)
+        const newline = context.keymap.shortcuts("input.newline").filter((key) => key && !submit.includes(key))
+        // The host formats these bindings. Prefer familiar configured keys,
+        // then the first ordinary binding before falling back to native aliases.
+        const pick = (keys: readonly string[], preferred: readonly string[]) =>
+          preferred.find((key) => keys.includes(key)) ??
+          keys.find((key) => !/\b(kpenter|linefeed)\b/.test(key)) ??
+          keys[0]
+        return { submit: pick(submit, ["enter"]), newline: pick(newline, ["ctrl+j", "shift+enter"]) }
+      })
       onMount(() => {
         // The host blurs the previous focus when replacing a dialog. Focus
         // after that pass, like DialogPrompt; the host restores focus on close.
@@ -103,11 +114,15 @@ export function editRevision(context: Context, binding: string): Promise<string 
               Submitting permanently supersedes this Plan.
             </text>
             <text wrapMode="word" fg={theme.text.muted}>
-              enter submit · Esc cancel
+              {`${hints().submit ? `${hints().submit} submit · ` : ""}Esc cancel`}
             </text>
-            <text wrapMode="word" fg={theme.text.muted}>
-              ctrl+j for new line
-            </text>
+            <Show when={hints().newline}>
+              {(key) => (
+                <text wrapMode="word" fg={theme.text.muted}>
+                  {`${key()} for new line`}
+                </text>
+              )}
+            </Show>
           </box>
           <box flexDirection="row" flexWrap="wrap" gap={1} flexShrink={0}>
             {/* biome-ignore lint/a11y/noStaticElementInteractions: OpenTUI mouse actions also have host keyboard bindings. */}

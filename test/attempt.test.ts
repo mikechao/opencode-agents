@@ -7865,6 +7865,8 @@ async function prepareRevisionFixture(root: string, observer: SnapshotObserver) 
     onPublication: undefined as (() => void) | undefined,
     afterControl: undefined as ((revision: Revision) => Promise<void>) | undefined,
     controlTextSuffix: "",
+    submitBindings: ["enter"],
+    newlineBindings: ["shift+enter", "ctrl+enter", "alt+enter", "ctrl+j"],
     dialogs: [] as Array<{ nodes: any[]; layers: Array<() => any>; closed: boolean }>,
     dialogOptions: [] as any[],
   }
@@ -7876,8 +7878,7 @@ async function prepareRevisionFixture(root: string, observer: SnapshotObserver) 
   }
   ;(f.context as any).keymap = {
     layer: (read: () => any) => state.dialogs.at(-1)!.layers.push(read),
-    shortcuts: (id: string) =>
-      id === "dialog.prompt.submit" ? ["enter"] : ["shift+enter", "ctrl+enter", "alt+enter", "ctrl+j"],
+    shortcuts: (id: string) => (id === "dialog.prompt.submit" ? state.submitBindings : state.newlineBindings),
   }
   Object.assign(f.context.ui.dialog, {
     show: (render: () => unknown, onClose: () => void) => {
@@ -8097,6 +8098,81 @@ snapshotTest(
     })
   },
 )
+
+for (const scenario of [
+  {
+    name: "default concise hints",
+    submit: ["enter"],
+    newline: ["shift+enter", "ctrl+enter", "alt+enter", "ctrl+j"],
+    hints: ["enter submit · Esc cancel", "ctrl+j for new line"],
+  },
+  {
+    name: "rebound submit excludes the preferred newline key",
+    submit: ["ctrl+j"],
+    newline: ["linefeed", "alt+enter", "ctrl+j", "shift+enter"],
+    hints: ["ctrl+j submit · Esc cancel", "shift+enter for new line"],
+  },
+  {
+    name: "all configured submit keys are excluded from newline hints",
+    submit: ["ctrl+j", "shift+enter"],
+    newline: ["ctrl+j", "shift+enter", "alt+enter"],
+    hints: ["ctrl+j submit · Esc cancel", "alt+enter for new line"],
+  },
+  {
+    name: "disabled submit omits its hint",
+    submit: [],
+    newline: ["ctrl+j"],
+    hints: ["Esc cancel", "ctrl+j for new line"],
+  },
+  {
+    name: "empty shortcut strings are not advertised",
+    submit: [""],
+    newline: [""],
+    hints: ["Esc cancel"],
+  },
+  {
+    name: "disabled newline omits its hint",
+    submit: ["enter"],
+    newline: [],
+    hints: ["enter submit · Esc cancel"],
+  },
+  {
+    name: "fully conflicting newline bindings omit the hint",
+    submit: ["ctrl+j", "shift+enter"],
+    newline: ["shift+enter", "ctrl+j"],
+    hints: ["ctrl+j submit · Esc cancel"],
+  },
+  {
+    name: "preferred configured keys take precedence over native aliases",
+    submit: ["kpenter", "linefeed", "enter"],
+    newline: ["linefeed", "ctrl+j"],
+    hints: ["enter submit · Esc cancel", "ctrl+j for new line"],
+  },
+  {
+    name: "ordinary fallback bindings take precedence over native aliases",
+    submit: ["kpenter", "linefeed", "ctrl+s"],
+    newline: ["linefeed", "alt+enter"],
+    hints: ["ctrl+s submit · Esc cancel", "alt+enter for new line"],
+  },
+])
+  snapshotTest(`revision editor hints: ${scenario.name}`, async (observer) => {
+    await revisionFixture(observer, async (f) => {
+      f.state.submitBindings = scenario.submit
+      f.state.newlineBindings = scenario.newline
+      f.state.prompt = () => new Promise(() => {})
+      f.view().click(2)
+      const dialog = f.state.dialogs.at(-1)!
+      const hints = dialog.nodes
+        .filter((node) => node.type === "literal")
+        .map((node) => String(node.value))
+        .filter((label) => label.includes("cancel") || label.includes("for new line"))
+      expect(hints).toEqual(scenario.hints)
+      expect(dialog.layers[0]().commands.map((command: any) => command.id)).toEqual(["dialog.prompt.submit"])
+      expect(f.state.grants).toEqual([])
+      expect(() => f.publications[0].owner.assertCurrent()).not.toThrow()
+      f.context.ui.dialog.clear()
+    })
+  })
 
 snapshotTest(
   "populated revision cancellation preserves the Plan and obsolete editor callbacks leave the next dialog alone",
