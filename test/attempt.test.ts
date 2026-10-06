@@ -823,14 +823,20 @@ snapshotTest(
           navigate(firstID)
           view = mountRootSlots(f, firstID)
           view.click(firstDecision === "authorize" ? 0 : 1)
-          await settleUntil(() => f.calls.toasts.length === 1)
+          await settleUntil(() => f.slots[firstID === "parent" ? 0 : 1].removed)
+          expect(f.calls.toasts).toEqual(
+            firstDecision === "authorize" ? [] : ["Cancelled — no implementation admitted"],
+          )
           const otherID = firstID === "parent" ? "root-b" : "parent"
           navigate(otherID)
           view.dispose()
           view = mountRootSlots(f, otherID)
           expect(view.buttons).toHaveLength(3)
           view.click(0)
-          await settleUntil(() => f.calls.toasts.length === 2)
+          await settleUntil(() => f.slots.every((slot) => slot.removed))
+          expect(f.calls.toasts).toEqual(
+            firstDecision === "authorize" ? [] : ["Cancelled — no implementation admitted"],
+          )
           expect(f.calls.claims.map((claim) => claim.rootSessionID)).toEqual(
             firstDecision === "authorize" ? [firstID, otherID] : [otherID],
           )
@@ -888,7 +894,8 @@ snapshotTest(
     await settleUntil(() => f.calls.receipts.length === 1)
     expect(f.calls.receipts[0].sessionID).toBe("root-b")
     release("Implementation gate complete")
-    await settleUntil(() => f.calls.toasts.length === 2)
+    await settleUntil(() => f.slots.every((slot) => slot.removed))
+    expect(f.calls.toasts).toEqual(["Cancelled — no implementation admitted"])
     expect(f.calls.claims.map((claim) => claim.rootSessionID)).toEqual(["parent"])
     cleanup()
     b.dispose()
@@ -1078,7 +1085,8 @@ snapshotTest(
         const view = mountRootSlots(f, id)
         expect(view.buttons).toHaveLength(3)
         view.click(0)
-        await settleUntil(() => f.calls.toasts.length === index + 1)
+        await settleUntil(() => f.slots[index].removed)
+        expect(f.calls.toasts).toEqual([])
         view.dispose()
       }
       expect(f.calls.claims.map((claim) => claim.rootSessionID)).toEqual(["root-y", "root-z"])
@@ -1161,7 +1169,8 @@ snapshotTest(
       const view = mountRootSlots(f, "parent")
       expect(view.buttons).toHaveLength(3)
       view.click(0)
-      await settleUntil(() => f.calls.toasts.length === 1)
+      await settleUntil(() => f.slots[0].removed)
+      expect(f.calls.toasts).toEqual([])
       expect(f.calls.claims.map((claim) => claim.rootSessionID)).toEqual(["parent"])
       view.dispose()
     } finally {
@@ -2619,8 +2628,8 @@ snapshotTest("TUI startup accepts non-cloneable synchronized location info and d
     const view = mount(f)
     expect(view.buttons).toHaveLength(3)
     view.click(0)
-    await settleUntil(() => f.calls.toasts.length > 0)
-    expect(f.calls.toasts.at(-1)).toContain("Implementation gate complete")
+    await settleUntil(() => f.slots.at(-1).removed)
+    expect(f.calls.toasts).toEqual([])
     if (typeof cleanup === "function") cleanup()
     view.dispose()
   }
@@ -3028,8 +3037,8 @@ snapshotTest(
           else current.commands![2].run()
           expect(layerEnabled(current)).toBe(false)
           for (const command of current.commands!.slice(1)) command.run()
-          await settleUntil(() => f.calls.toasts.length > 0)
-          expect(f.calls.toasts[0]).toContain(decision === "authorize" ? "Implementation gate complete" : "Cancelled")
+          await settleUntil(() => f.slots.at(-1).removed)
+          expect(f.calls.toasts).toEqual(decision === "authorize" ? [] : ["Cancelled — no implementation admitted"])
           expect(f.calls.claims).toHaveLength(decision === "authorize" ? 1 : 0)
           expect(f.calls.synthetic).toEqual([publication])
         } finally {
@@ -3317,11 +3326,14 @@ snapshotTest(
       try {
         f.emit({ type: event, id: "notification", location: { directory: root }, data: { sessionID: "parent" } })
         view.click(0)
-        await settleUntil(() => f.calls.toasts.length > 0)
+        await settleUntil(() => f.slots.at(-1).removed)
         if (["session.permissions", "session.agent.selected", "session.revert.staged"].includes(event)) {
           expectNoImplementation(f)
           expect(f.calls.toasts[0]).toContain("STOP")
-        } else expect(f.calls.claims).toHaveLength(1)
+        } else {
+          expect(f.calls.claims).toHaveLength(1)
+          expect(f.calls.toasts).toEqual([])
+        }
       } finally {
         cleanup()
         view.dispose()
@@ -3349,7 +3361,8 @@ snapshotTest("measured readable geometry permits a viewport below the former 80 
     view.mounted.filter((node) => node.type === "text" && node.wrapMode === "char")[0].height = rows
     f.renderer.emit("frame")
     view.click(0)
-    await settleUntil(() => f.calls.toasts.length > 0)
+    await settleUntil(() => f.slots.at(-1).removed)
+    expect(f.calls.toasts).toEqual([])
     expect(f.calls.claims).toHaveLength(1)
   } finally {
     cleanup()
@@ -3389,8 +3402,8 @@ snapshotTest(
     f.renderer.emit("frame")
     view.click(0)
     expect(view.text()).toContain("Authorization claimed")
-    await settleUntil(() => f.calls.toasts.length > 0)
-    expect(f.calls.toasts.at(-1)).toContain("Implementation gate complete")
+    await settleUntil(() => f.slots.at(-1).removed)
+    expect(f.calls.toasts).toEqual([])
     expect(f.calls.synthetic).toHaveLength(1)
     cleanup()
     view.dispose()
@@ -3464,8 +3477,8 @@ snapshotTest(
       expect(f.calls.toasts).toEqual([])
       f.renderer.emit("frame")
       view.click(0)
-      await settleUntil(() => f.calls.toasts.length > 0)
-      expect(f.calls.toasts.at(-1)).toContain("Implementation gate complete")
+      await settleUntil(() => f.slots.at(-1).removed)
+      expect(f.calls.toasts).toEqual([])
       expect(f.calls.synthetic).toHaveLength(1)
       cleanup()
       view.dispose()
@@ -3497,8 +3510,8 @@ snapshotTest("pending resize remeasures current wrapping and waits for the follo
   copy[0].height = rows
   f.renderer.emit("frame")
   view.click(0)
-  await settleUntil(() => f.calls.toasts.length > 0)
-  expect(f.calls.toasts.at(-1)).toContain("Implementation gate complete")
+  await settleUntil(() => f.slots.at(-1).removed)
+  expect(f.calls.toasts).toEqual([])
   cleanup()
   view.dispose()
 })
@@ -3868,12 +3881,21 @@ snapshotTest("governed closure after Cancel or any later failure cannot publish 
       },
     })
     if (outcome === "publication-failure") f.histories["planner-child"][1].content[0].text = "Not a Plan"
+    const toast = spyOn(f.context.ui.toast, "show")
     const cleanup = await activate(f)
     const view = mount(f)
     if (outcome !== "publication-failure") {
       view.click(outcome === "cancel" ? 1 : 0)
-      await settleUntil(() => f.calls.toasts.length > 0)
+      await settleUntil(() => f.slots.at(-1).removed)
     }
+    if (outcome === "success") expect(toast).not.toHaveBeenCalled()
+    if (outcome === "implementation-failure")
+      expect(toast).toHaveBeenCalledWith({
+        title: "STOP",
+        message: "Native implementation outcome was unverified",
+        sessionID: "parent",
+        variant: "error",
+      })
     const publications = f.calls.synthetic.length
     const claims = f.calls.claims.length
     const observations = observer.locations.get(root)!.calls.length
@@ -6915,7 +6937,7 @@ snapshotTest(
     view.click(0)
     view.click(0)
     view.click(1)
-    await settleUntil(() => f.calls.toasts.length > 0)
+    await settleUntil(() => f.slots.at(-1).removed)
     expect(f.calls.claims).toHaveLength(1)
     expect(f.calls.claims[0]).toEqual({
       purpose: "implement",
@@ -6925,7 +6947,7 @@ snapshotTest(
       publicationID: f.inboxes.parent[0].id,
     })
     expect(f.slots.at(-1).removed).toBe(true)
-    expect(f.calls.toasts[0]).toContain("Implementation gate complete")
+    expect(f.calls.toasts).toEqual([])
     expect(f.calls.synthetic).toHaveLength(1) // Plan publication only; server owns the wake.
     cleanup()
     view.dispose()

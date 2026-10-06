@@ -417,7 +417,7 @@ const plugin: Definition = {
             .then((message) => {
               if (generation.revoked) return
               closeAuthority()
-              present(message.includes("unverified") ? "STOP" : "Implementation and review", message)
+              if (message.includes("unverified")) present("STOP", message)
             })
             .catch(admissionFailed)
         } catch (error) {
