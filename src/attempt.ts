@@ -7,7 +7,7 @@ import { assertLive, exactKeys, frozenCopy, type Generation } from "./cap.ts"
 import { observeGit, requireFresh, type GitSnapshot } from "./git.ts"
 import { candidateIntact, makeCandidate, parseProposal, renderPlan } from "./proposal.ts"
 import type { IntentCandidate } from "./proposal.ts"
-import { authorizeRpc } from "./authorize-rpc.ts"
+import { authorizeRpc, checkedCycleOutcome, type CycleOutcome } from "./authorize-rpc.ts"
 import { receiptInput } from "./receipt.ts"
 import { exactEvidence, snapshotLocation } from "./host-evidence.ts"
 import {
@@ -518,7 +518,7 @@ export async function authorizePublishedAttempt(
   context: Context,
   published: PublishedAttempt,
   owner: DecisionOwner,
-): Promise<string> {
+): Promise<CycleOutcome> {
   const { activation } = published
   assertLive(activation.generation)
   owner.assertDecision(published)
@@ -542,8 +542,7 @@ export async function authorizePublishedAttempt(
       },
       { location: activation.location },
     )
-    if (typeof outcome !== "string") stop("Authorize RPC returned an invalid outcome")
-    return outcome
+    return checkedCycleOutcome(outcome)
   } finally {
     activation.generation.busy = false
   }

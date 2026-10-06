@@ -21,7 +21,7 @@ for (const value of valid)
     expect(result).toEqual(value)
     expect(Object.isFrozen(result)).toBe(true)
     expect(reviewReceipt(result)).toContain(`Review ${value.status}.`)
-    expect(reviewReceipt(result)).toContain("No repair, additional review, or Commit")
+    expect(reviewReceipt(result)).toContain("Review grants no mutation or Commit authority")
   })
 
 test("review rejects malformed, contradictory, ambiguous and unbounded results", () => {

@@ -14,7 +14,7 @@ selected read-only OpenCode source checkout.
 | Orchestrator | Answer ordinary conversation and read-only questions; delegate change planning to Planner. Read/glob/grep and Planner delegation only. Propose exact trusted implementation/review control calls when requested; ordinary role policy still denies those targets. |
 | Planner | Read-only exploration and synthesis of one exact `{ intent, plan, files }` proposal. May delegate focused questions to fresh Explorer children. |
 | Explorer | Read/glob/grep investigation for Planner, plus native websearch for focused questions that materially depend on current/external evidence; returns advisory findings. Cannot delegate, implement, publish a Plan or authorize work. |
-| Implementer | Fresh native `authorized_implementer` child admitted once after explicit human authorization. Editing, testing and development shell capability are bounded by the frozen proposal; delegation, session control and reserved history effects are prohibited. |
+| Implementer | Fresh native `authorized_implementer` child for each distinct one-shot human grant (initial Authorize or later Repair). Editing, testing and development shell capability are bounded by the frozen proposal; delegation, session control and reserved history effects are prohibited. |
 | Reviewer | Fresh read-only native sibling, independent of Implementer. Inspect the verified implementation using read/glob/grep and bounded `reviewer_git`; return review evidence without repair or Commit authority. |
 
 The [TUI entry](../.opencode/plugins/opencode-agents/tui.tsx) owns root creation
@@ -28,7 +28,7 @@ The [Effect server entry](../.opencode/plugins/opencode-agents/server.ts) instal
 native admission, permission hooks, model settings and Reviewer Git inspection.
 [native.ts](../src/native.ts) owns admission, native evidence capture, settlement,
 implementation/review verification and post-transfer receipts.
-[cap.ts](../src/cap.ts) owns the one-shot implementation claim and reservation.
+[cap.ts](../src/cap.ts) owns shared one-shot execution mechanics and the permanently occupied initial implementation slot. Repair evidence, decisions and claims stay with the trusted native runtime.
 [proposal.ts](../src/proposal.ts), [git.ts](../src/git.ts),
 [review.ts](../src/review.ts) and [receipt.ts](../src/receipt.ts) own their bounded
 artifacts and observations.
@@ -55,7 +55,13 @@ original Git baseline → fresh Orchestrator root
 → immutable verified implementation evidence and review target
 → implementation receipt → automatic fresh read-only Reviewer
 → trusted review provenance/result verification + post-settlement target revalidation
-→ review receipt → STOP before Commit
+→ factual review receipt → release exclusion
+   APPROVED / INCONCLUSIVE / unverified → STOP before Commit
+   verified CHANGES_REQUESTED → live trusted Repair / Stop decision
+     Stop → retire decision, no worker → end before Commit
+     Repair → spend decision → distinct one-shot claim → reacquire exclusion
+       → exact reviewed-target/original-authority freshness
+       → fresh Implementer → cumulative Git gate → fresh Reviewer (repeatable)
 ```
 
 Cancel sends no authorization claim and no execution wake. A stable dirty
@@ -269,8 +275,54 @@ target drift before accepting the strict JSON result:
 | `INCONCLUSIVE` | Reliable review unavailable; empty findings array |
 
 Every result requires a nonempty bounded summary. Malformed, extra, duplicate or
-contradictory fields and ambiguous execution are rejected. Findings are evidence
-only: there is no repair loop, automatic second review, new Implementer or Commit authority.
+contradictory fields and ambiguous execution are rejected. Findings are evidence only. Only verified `CHANGES_REQUESTED` may expose Repair / Stop;
+`INCONCLUSIVE` and unverified/ambiguous review remain terminal. Review grants no
+mutation or Commit authority.
+
+## Human-authorized repair and fresh review
+
+Successful verification freezes the exact parsed result, reviewed implementation
+and target, Reviewer parent message/tool/child/terminal-result identities, and
+reviewed root boundary. This immutable evidence lives only in the server
+activation. After factual publication and settled exclusion release, it can back
+one opaque pending Repair / Stop decision. Pending evidence grants nothing.
+
+The Authorize RPC and each Repair selection return a validated structured
+terminal outcome or a live decision presentation. The separate composer-top
+Repair surface retains pending ownership across navigation, requires new readable
+frames after remount/resize, and pages the original proposal/scope, exact target,
+Reviewer identity and findings. Repair is enabled only after every evidence page
+has a completed readable frame. Host keymap/dialog/focus behavior remains owned
+by OpenCode. Stale callbacks and lost responses never resend a selection.
+The client sends only the opaque decision ID and `Repair` or `Stop`.
+
+Stop retires that exact decision without a worker wake, mutation authority or
+cleanup. Repair spends it before any await, creates a distinct one-shot claim,
+and reacquires exclusion before observing Git. Busy exclusion fails closed without
+queue/retry/restoration. Any competing governed lease acquisition retires paused
+decisions and current approval evidence, even if the bytes later match again.
+
+Repair revalidates root/location/role/no-overrides, original proposal integrity,
+original HEAD and path ceiling, reviewed root history and exact previous target.
+It checks again after awaited preparation and the control interval, consuming
+only at the final synchronous native-entry barrier. Pending own receipt identities
+are tolerated as presentation input; unrelated input supersedes the decision.
+The original NativeCap stays permanently spent.
+
+Each Repair uses a fresh `authorized_implementer` child and a dirty-worktree prompt.
+Findings are tasks only insofar as they fit the original proposal and exact paths;
+necessary work outside that authority must stop and require a fresh governed Plan
+path. No automatic reset/stash/commit, dirty-worktree adoption or scope expansion
+is added. The trusted Git gate verifies the cumulative delta against original HEAD
+and paths, permitting changed subsets, removed deltas and byte-identical repairs.
+Each passing gate establishes a new target and receives a fresh Reviewer, including
+no-op repairs. Old control/call/child/result identities are inert. Another verified
+`CHANGES_REQUESTED` creates another decision; each cycle requires a new human grant.
+No persisted repair counter, workflow phase, queue or scheduler exists.
+
+Only the newest live exact trusted `APPROVED` target is current evidence for future
+separate Commit authorization. Drift or another governed lease retires it;
+historical receipts cannot revive it. Committer remains unimplemented.
 
 ## Receipts, exclusion and STOP
 
@@ -278,7 +330,7 @@ The server publishes an implementation receipt after the trusted gate, then a
 review receipt after verified review or a known unverified disposition. Review
 target drift rejects the result. Implementation failure publishes an unverified
 implementation disposition and does not launch Reviewer. The accepted RPC returns
-the combined outcome; the TUI reports lost transport as uncertainty.
+the combined factual receipts and structured disposition; the TUI reports lost transport as uncertainty.
 
 Before transfer, the TUI owns receipts for explicit cancellation, planning-only
 eligibility rejection and definitive local operation failures. Render, mount,
@@ -297,7 +349,11 @@ implementation, verification, review, revalidation and receipt publication. Root
 idle or closed CAP alone cannot release it: exact native child settlement must be
 proven. Failed/interrupted exact settlement can release exclusion without verified
 success; unknown or ambiguous child settlement holds it until server teardown.
-Other roots may retain pending Plans, but authorization still requires fresh Git evidence.
+Verified `CHANGES_REQUESTED` releases exclusion during the human pause, after
+factual publication. Repair reacquires it before freshness observation and holds
+it through the next implementation/review/publication. Unknown post-entry
+settlement retains exclusion. Other roots may retain pending Plans, but
+authorization still requires fresh Git evidence.
 
 Failure, refusal, wake ambiguity, invalid result, drift and teardown never reopen
 authority or issue a replacement. Plugin teardown revokes local slots and retained
@@ -333,8 +389,7 @@ Run `bun run check`, then `git diff --check`, for repository validation.
 
 ## Current limitations
 
-- One implementation authorization per root; no repair, automatic planning retry
-  or automatic repeat review. Plan revision requires an explicit pre-authorization Revise.
+- Initial Authorize and every later Repair are separately one-shot. No automatic repair or planning retry. Plan revision requires an explicit pre-authorization Revise.
 - Dirty or ambiguous initial baselines may plan but cannot authorize implementation.
   Earlier pre-Planner rejection is [deferred](investigations/issue-25-planner-admission.md).
 - Supported history is deliberately conservative. Planner/Explorer instruction

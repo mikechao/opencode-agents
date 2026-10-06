@@ -8,7 +8,12 @@ import type { Generation } from "../../../src/cap.ts"
 import { registerAgentModels } from "./agent-models-ui.ts"
 import { editRevision } from "./revision-editor.tsx"
 import { observeGit, requireFresh } from "../../../src/git.ts"
-import { authorizeRpc } from "../../../src/authorize-rpc.ts"
+import {
+  authorizeRpc,
+  checkedCycleOutcome,
+  type CycleOutcome,
+  type RepairDecision,
+} from "../../../src/authorize-rpc.ts"
 import {
   activationEvidence,
   authorizePublishedAttempt,
@@ -35,7 +40,10 @@ const authorizationQuestion = "Do you authorize this plan for implementation?"
 const columns = (text: string) => text.length
 const same = (a: unknown, b: unknown) => exactEvidence(a) === exactEvidence(b)
 
-type Presentation = { kind: "pending"; published: PublishedAttempt } | { kind: "status"; message: string }
+type Presentation =
+  | { kind: "pending"; published: PublishedAttempt }
+  | { kind: "repair"; decision: RepairDecision }
+  | { kind: "status"; message: string }
 
 const plugin: Definition = {
   id: "opencode-agents",
@@ -136,6 +144,9 @@ const plugin: Definition = {
               }
           ) & { planning: Planning })
         | { kind: "closed" }
+      let repairOwner: { kind: "pending" | "deciding" | "transferred"; decision: RepairDecision } | undefined
+      let repairUsable: ((action: "Repair" | "Stop") => boolean) | undefined
+      let repairInvalidate: (() => void) | undefined
       let ownership: Ownership = { kind: "waiting", creation, planning: {} }
       const retiredPublications = new Set<string>()
       const retiredPlanners = new Set<string>()
@@ -191,6 +202,123 @@ const plugin: Definition = {
         if (sessionID) {
           const reason = error instanceof Error ? error.message : String(error)
           publishReceipt(sessionID, `Implementation was not admitted.\nReason: ${reason}`)
+        }
+      }
+      const repairSelected = () => {
+        const route = context.ui.router.current()
+        return (
+          route.type === "session" &&
+          route.sessionID === rootSessionID &&
+          same(snapshotLocation(context.location ?? context.data.location.default()), location)
+        )
+      }
+      const loseRepair = (reason: string) => {
+        if (!repairOwner) return
+        repairOwner = undefined
+        setPresentation(undefined)
+        const remove = removePresentation
+        removePresentation = undefined
+        remove?.()
+        present("STOP", reason)
+      }
+      const acceptOutcome = (outcome: CycleOutcome) => {
+        if (generation.revoked) return
+        if (
+          outcome.kind === "repair" &&
+          (outcome.decision.rootSessionID !== rootSessionID ||
+            outcome.decision.candidate.root !== baseline.root ||
+            outcome.decision.candidate.head !== baseline.head)
+        )
+          throw new Error("Repair outcome belongs to another root or baseline")
+        repairOwner = undefined
+        setPresentation(undefined)
+        const remove = removePresentation
+        removePresentation = undefined
+        remove?.()
+        closeAuthority() // Initial Plan ownership never reopens.
+        if (outcome.kind === "terminal") {
+          if (outcome.receipt.includes("unverified")) present("STOP", outcome.receipt)
+          return
+        }
+        repairOwner = { kind: "pending", decision: outcome.decision }
+        ensurePresentation()
+        setPresentation({ kind: "repair", decision: outcome.decision })
+        setLayoutRevision((value) => value + 1)
+      }
+      const repairCurrent = (captured: RepairDecision) => {
+        if (
+          generation.revoked ||
+          !repairOwner ||
+          repairOwner.decision !== captured ||
+          (repairOwner.kind === "deciding" && !repairSelected()) ||
+          !same(snapshotLocation(context.location ?? context.data.location.default()), location)
+        )
+          throw new Error("Repair presentation was retired or moved")
+      }
+      const selectRepair = (captured: RepairDecision, action: "Repair" | "Stop") => {
+        if (repairOwner?.kind !== "pending" || repairOwner.decision !== captured || implementing || generation.busy)
+          return
+        try {
+          repairCurrent(captured)
+          if (!repairSelected() || !repairUsable?.(action)) return
+          repairOwner = { kind: "deciding", decision: captured }
+          repairInvalidate?.()
+          setPresentation({
+            kind: "status",
+            message:
+              action === "Repair" ? "Repair claimed — implementation and fresh review in progress…" : "Stopping…",
+          })
+          implementing = true
+          void (async () => {
+            const root = await context.client.session.get({ sessionID: rootSessionID })
+            repairCurrent(captured)
+            if (
+              !repairSelected() ||
+              root.id !== rootSessionID ||
+              root.agent !== "orchestrator" ||
+              root.parentID ||
+              root.fork ||
+              root.revert ||
+              root.time.archived ||
+              !root.time.idle ||
+              root.outcome !== "succeeded" ||
+              !same(snapshotLocation(root.location), location) ||
+              (root.permissions && root.permissions.length)
+            )
+              throw new Error("Repair root is unavailable or changed")
+            const active = await context.client.session.active()
+            repairCurrent(captured)
+            if (active[rootSessionID]) throw new Error("Repair root is active")
+            const inbox = await context.client.session.inbox.list({ sessionID: rootSessionID })
+            repairCurrent(captured)
+            if (
+              !repairSelected() ||
+              inbox.some(
+                (item) =>
+                  item.type !== "synthetic" ||
+                  item.delivery !== "steer" ||
+                  !captured.receipts.some((receipt) => receipt.id === item.id && receipt.text === item.payload.text),
+              )
+            )
+              throw new Error("Unexpected pending input before Repair selection")
+            repairOwner = { kind: "transferred", decision: captured }
+            return checkedCycleOutcome(
+              await context.client.rpc(authorizeRpc).decideRepair({ decisionID: captured.id, action }, { location }),
+            )
+          })()
+            .finally(() => {
+              implementing = false
+            })
+            .then((outcome) => {
+              if (repairOwner?.kind !== "transferred" || repairOwner.decision !== captured || generation.revoked) return
+              acceptOutcome(outcome)
+            })
+            .catch((error) => {
+              if (repairOwner?.decision !== captured) return
+              loseRepair(`STOP — Repair/Stop outcome unavailable; no selection will be resent. ${String(error)}`)
+            })
+        } catch (error) {
+          loseRepair(String(error))
         }
       }
       const rootSelected = () => {
@@ -277,6 +405,10 @@ const plugin: Definition = {
                   state.kind === "pending" ? (
                     <Show when={rootSelected()}>
                       <DecisionStrip published={state.published} />
+                    </Show>
+                  ) : state.kind === "repair" ? (
+                    <Show when={repairSelected()}>
+                      <RepairStrip decision={state.decision} />
                     </Show>
                   ) : (
                     <text wrapMode="char">{state.message}</text>
@@ -414,11 +546,7 @@ const plugin: Definition = {
             .finally(() => {
               implementing = false
             })
-            .then((message) => {
-              if (generation.revoked) return
-              closeAuthority()
-              if (message.includes("unverified")) present("STOP", message)
-            })
+            .then(acceptOutcome)
             .catch(admissionFailed)
         } catch (error) {
           admissionFailed(error)
@@ -428,6 +556,244 @@ const plugin: Definition = {
         if (event.button !== 0) return
         event.stopPropagation()
         decide(captured, decision)
+      }
+      function RepairStrip(props: { decision: RepairDecision }) {
+        const captured = props.decision
+        const theme = context.theme
+        const actions = ["Repair", "Stop", "Previous", "Next"] as const
+        const [selected, setSelected] = createSignal<(typeof actions)[number]>("Stop")
+        const [page, setPage] = createSignal(0)
+        const [width, setWidth] = createSignal(context.renderer.terminalWidth)
+        const [rows, setRows] = createSignal(Math.max(1, Math.min(10, context.renderer.terminalHeight - 10)))
+        const [ready, setReady] = createSignal(false)
+        const [readAll, setReadAll] = createSignal(false)
+        const viewed = new Set<number>()
+        let surface: Renderable | undefined
+        let evidence: Renderable | undefined
+        let question: Renderable | undefined
+        const buttons: Renderable[] = []
+        let proof: { width: number; height: number; frame: Renderable } | undefined
+        // ASCII escaping prevents finding/proposal text from changing terminal
+        // geometry. Every page must have a completed readable frame before Repair.
+        const content = [
+          `Verified CHANGES_REQUESTED: ${displayPath(captured.result.summary)}`,
+          `Worktree: ${displayPath(captured.candidate.root)}`,
+          `Original HEAD: ${captured.candidate.head}`,
+          "Original frozen proposal and exact path ceiling:",
+          `Intent: ${displayPath(captured.candidate.proposal.intent)}`,
+          `Plan: ${displayPath(captured.candidate.proposal.plan)}`,
+          `Authorized paths (${captured.candidate.proposal.files.length}):`,
+          ...captured.candidate.proposal.files.map((path) => displayPath(path)),
+          `Reviewed target SHA-256: ${captured.target.digest}`,
+          `Reviewed changed paths (${captured.target.paths.length}):`,
+          ...captured.target.paths.map((path) => displayPath(path)),
+          `Reviewer message: ${displayPath(captured.reviewer.messageID)}`,
+          `Reviewer tool: ${displayPath(captured.reviewer.toolID)}`,
+          `Reviewer child: ${displayPath(captured.reviewer.childID)}`,
+          `Reviewer terminal result: ${displayPath(captured.reviewer.resultID)}`,
+          ...captured.result.findings.flatMap((item, index) => [
+            `Finding ${index + 1} (${item.severity}):`,
+            `Scenario: ${displayPath(item.scenario)}`,
+            `Impact: ${displayPath(item.impact)}`,
+            `Remediation: ${displayPath(item.remediation)}`,
+            ...(item.path ? [`Diagnostic path: ${displayPath(item.path)}`] : []),
+            ...(item.location ? [`Location: ${displayPath(item.location)}`] : []),
+            ...(item.testGap ? [`Test gap: ${displayPath(item.testGap)}`] : []),
+          ]),
+          "Findings grant no scope. Repair is one new human grant within the original proposal/paths. No Commit authority.",
+        ]
+        const lines = () =>
+          content.flatMap((line) => {
+            const result: string[] = []
+            for (let offset = 0; offset < line.length; offset += Math.max(1, width()))
+              result.push(line.slice(offset, offset + Math.max(1, width())))
+            return result
+          })
+        const pages = () => Math.max(1, Math.ceil(lines().length / rows()))
+        const evidenceText = () =>
+          lines()
+            .slice(page() * rows(), (page() + 1) * rows())
+            .join("\n")
+        const evidenceHeight = () => Math.max(1, lines().slice(page() * rows(), (page() + 1) * rows()).length)
+        const questionText = () =>
+          `Review evidence ${page() + 1}/${pages()}. ${readAll() ? "Repair / Stop?" : "Read every page to enable Repair."}`
+        const invalidate = () => {
+          proof = undefined
+          setReady(false)
+        }
+        repairInvalidate = invalidate
+        const live = (node: Renderable | undefined): node is Renderable => {
+          if (!node) return false
+          for (let parent: Renderable | null = node; parent; parent = parent.parent)
+            if (!parent.visible || parent.isDestroyed) return false
+          return true
+        }
+        const inViewport = (node: Renderable | undefined, height: number) =>
+          live(node) &&
+          node.height === height &&
+          node.width > 0 &&
+          node.screenX >= 0 &&
+          node.screenY >= 0 &&
+          node.screenX + node.width <= context.renderer.terminalWidth &&
+          node.screenY + node.height <= context.renderer.terminalHeight
+        const valid = () =>
+          !context.renderer.isDestroyed &&
+          inViewport(surface, evidenceHeight() + 2) &&
+          inViewport(evidence, evidenceHeight()) &&
+          evidence!.width >= width() &&
+          inViewport(question, 1) &&
+          question!.width >= columns(questionText()) &&
+          buttons.length === 4 &&
+          buttons.every((button, index) => inViewport(button, 1) && button.width >= actions[index]!.length + 2)
+        const usable = (action: "Repair" | "Stop") => {
+          repairCurrent(captured)
+          if (!repairSelected()) return false
+          if (!live(surface)) {
+            loseRepair("Repair surface is unavailable")
+            return false
+          }
+          return (
+            ready() &&
+            (action === "Stop" || readAll()) &&
+            !!proof &&
+            proof.frame === (surface?.parent ?? surface) &&
+            proof.width === context.renderer.terminalWidth &&
+            proof.height === context.renderer.terminalHeight &&
+            valid()
+          )
+        }
+        repairUsable = usable
+        const keyboardUsable = () =>
+          repairOwner?.kind === "pending" &&
+          repairOwner.decision === captured &&
+          repairSelected() &&
+          context.keymap.mode.current() === "base" &&
+          ready() &&
+          !!proof &&
+          valid()
+        const activate = (action: (typeof actions)[number]) => {
+          if (!keyboardUsable()) return
+          if (action === "Previous" || action === "Next") {
+            invalidate()
+            setPage((value) => Math.max(0, Math.min(pages() - 1, value + (action === "Next" ? 1 : -1))))
+          } else selectRepair(captured, action)
+        }
+        context.keymap.layer(() => ({
+          mode: "base",
+          enabled: keyboardUsable,
+          priority: 1,
+          commands: [
+            {
+              bind: "left",
+              title: "Previous Repair option",
+              run: () => {
+                if (keyboardUsable()) setSelected((value) => actions[(actions.indexOf(value) + 3) % 4]!)
+              },
+            },
+            {
+              bind: "right",
+              title: "Next Repair option",
+              run: () => {
+                if (keyboardUsable()) setSelected((value) => actions[(actions.indexOf(value) + 1) % 4]!)
+              },
+            },
+            { bind: "return", title: "Select Repair option", run: () => activate(selected()) },
+          ],
+        }))
+        const completedFrame = () => {
+          if (repairOwner?.kind !== "pending" || repairOwner.decision !== captured) return
+          invalidate()
+          try {
+            repairCurrent(captured)
+            if (!repairSelected()) return
+            if (!live(surface)) {
+              loseRepair("Repair surface is unavailable")
+              return
+            }
+            const frame = surface.parent ?? surface
+            const nextRows = Math.max(1, Math.min(10, context.renderer.terminalHeight - 10))
+            if (width() !== frame.width || rows() !== nextRows) {
+              viewed.clear()
+              setReadAll(false)
+              setPage(0)
+              setWidth(frame.width)
+              setRows(nextRows)
+              return
+            }
+            if (!valid()) return
+            viewed.add(page())
+            setReadAll(viewed.size === pages())
+            proof = { width: context.renderer.terminalWidth, height: context.renderer.terminalHeight, frame }
+            setReady(true)
+          } catch (error) {
+            loseRepair(String(error))
+          }
+        }
+        context.renderer.on("frame", completedFrame)
+        onCleanup(() => {
+          context.renderer.off("frame", completedFrame)
+          invalidate()
+          if (repairUsable === usable) repairUsable = undefined
+          if (repairInvalidate === invalidate) repairInvalidate = undefined
+          if (repairOwner?.kind === "pending" && repairOwner.decision === captured && repairSelected())
+            loseRepair("Repair view was lost")
+        })
+        return (
+          <box
+            ref={(node) => {
+              surface = node
+            }}
+            flexDirection="column"
+            flexShrink={0}
+            height={evidenceHeight() + 2}
+          >
+            <text
+              ref={(node) => {
+                evidence = node
+              }}
+              height={evidenceHeight()}
+              wrapMode="char"
+            >
+              {evidenceText()}
+            </text>
+            <text
+              ref={(node) => {
+                question = node
+              }}
+              height={1}
+              wrapMode="char"
+            >
+              {questionText()}
+            </text>
+            <box flexDirection="row" height={1}>
+              {actions.map((action, index) => (
+                <box
+                  ref={(node) => {
+                    buttons[index] = node
+                  }}
+                  paddingX={1}
+                  flexShrink={0}
+                  backgroundColor={
+                    selected() === action
+                      ? theme.background.action.primary.focused
+                      : theme.background.action.secondary.base
+                  }
+                  onMouseUp={(event) => {
+                    if (event.button !== 0) return
+                    event.stopPropagation()
+                    activate(action)
+                  }}
+                >
+                  <text
+                    fg={selected() === action ? theme.text.action.primary.focused : theme.text.action.secondary.base}
+                  >
+                    {action}
+                  </text>
+                </box>
+              ))}
+            </box>
+          </box>
+        )
       }
       function DecisionStrip(props: { published: PublishedAttempt }) {
         const captured = props.published
@@ -758,6 +1124,33 @@ const plugin: Definition = {
       // Before transfer, notifications invalidate TUI evidence on receipt;
       // independent publication reads also catch delayed notifications.
       const eventReceived = (event: OpenCodeEvent) => {
+        if (repairOwner && repairOwner.kind !== "transferred") {
+          const captured = repairOwner.decision
+          if ("sessionID" in event.data && event.data.sessionID === rootSessionID) {
+            if (event.type === "session.inbox.enqueued" && event.data.item.type === "synthetic") {
+              const text = event.data.item.payload.text
+              if (captured.receipts.some((receipt) => receipt.id === event.data.inboxID && receipt.text === text))
+                return
+            }
+            if (
+              event.type === "session.inbox.delivered" &&
+              captured.receipts.some((receipt) => receipt.id === event.data.inboxID)
+            )
+              return
+            if (
+              event.type === "session.synthetic" &&
+              captured.receipts.some((receipt) => receipt.text === event.data.text)
+            )
+              return
+            if (event.type === "session.instructions.updated" && event.data.text === undefined) return
+            if (
+              /^session\.(inbox|message|synthetic|instructions|execution|permissions|agent\.selected|moved|deleted|forked|revert|compaction|shell|skill)/.test(
+                event.type,
+              )
+            )
+              loseRepair(`Repair decision lost after ${event.type}`)
+          }
+        }
         if (generation.revoked || ownership.kind === "closed" || ownership.kind === "transferred") return
         const creation = ownership.creation
         const sessionID = "sessionID" in event.data ? event.data.sessionID : undefined
@@ -894,9 +1287,11 @@ const plugin: Definition = {
         // Resize precedes descendant layout. A pending decision needs a fresh
         // completed frame; geometry is presentation-only after the exact claim.
         invalidateLayout?.()
+        repairInvalidate?.()
         setLayoutRevision((value) => value + 1)
       }
       const rendererLost = () => {
+        if (repairOwner) loseRepair("Repair renderer was lost")
         if (ownership.kind !== "transferred") terminate(new Error("TUI renderer was lost"))
       }
       const decidingFrame = () => {
@@ -915,6 +1310,25 @@ const plugin: Definition = {
       const disposeWatch = createRoot((dispose) => {
         createEffect(() => {
           layoutRevision()
+          if (repairOwner?.kind === "pending" || repairOwner?.kind === "deciding") {
+            const captured = repairOwner.decision
+            if (repairOwner.kind === "deciding" && !repairSelected())
+              loseRepair("Repair root view changed before transfer")
+            repairSelected()
+            context.data.session.get(rootSessionID)
+            const inbox = context.data.session.pending.list(rootSessionID)
+            if (
+              inbox.some(
+                (item) =>
+                  item.type !== "synthetic" ||
+                  item.delivery !== "steer" ||
+                  !captured.receipts.some((receipt) => receipt.id === item.id && receipt.text === item.payload.text),
+              )
+            )
+              loseRepair("Unexpected pending input after Review")
+            if (!same(snapshotLocation(context.location ?? context.data.location.default()), location))
+              loseRepair("Repair location changed")
+          }
           if (
             generation.revoked ||
             ownership.kind === "closed" ||
@@ -939,6 +1353,9 @@ const plugin: Definition = {
       })
       const dispose = () => {
         generation.revoked = true
+        repairOwner = undefined
+        repairUsable = undefined
+        repairInvalidate = undefined
         closeAuthority()
         setPresentation(undefined)
         const remove = removePresentation

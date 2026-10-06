@@ -6,8 +6,8 @@ import type { ToolHooks } from "@opencode/plugin/effect/tool"
 import type { PermissionEvaluation } from "@opencode/plugin/effect/permission"
 import { SessionMessage } from "@opencode/schema/session-message"
 import { Agent } from "@opencode/schema/agent"
-import { randomUUID } from "node:crypto"
-import { NativeCap, exactKeys, frozenCopy, type AuthorizeClaim, type Reservation } from "./cap.ts"
+import { createHash, randomUUID } from "node:crypto"
+import { NativeCap, NativeExecution, exactKeys, frozenCopy, type AuthorizeClaim, type Reservation } from "./cap.ts"
 import {
   plannerArguments,
   plannerTurnInput,
@@ -38,6 +38,7 @@ import {
 } from "./git.ts"
 import { receiptInput } from "./receipt.ts"
 import { reviewerArguments, parseReviewResult, reviewReceipt, type ReviewResult } from "./review.ts"
+import type { CycleOutcome, RepairDecision } from "./authorize-rpc.ts"
 import { reviewerGitName, reviewerGitArguments } from "./reviewer-git.ts"
 
 const reviewerTool = (name: string) => directRootTool(name) || name === reviewerGitName
@@ -86,10 +87,6 @@ export const controlText = (candidate: IntentCandidate) =>
     JSON.stringify(nativeArguments(candidate)),
     "Do not add keys, reuse a session, or change these values. After its result, finish with prose. Trusted runtime owns the automatic review transition. STOP before Commit.",
   ].join("\n")
-function exactArguments(value: unknown, candidate: IntentCandidate): void {
-  if (!exactKeys(value, ["agent", "description", "prompt"]) || !same(value, nativeArguments(candidate)))
-    throw new Error("Native arguments differ from frozen contract")
-}
 const emptyPermissions = (permissions: unknown) =>
   permissions === undefined || (Array.isArray(permissions) && permissions.length === 0)
 
@@ -143,7 +140,56 @@ type VerifiedImplementation = Readonly<{
 type ImplementationGate =
   | { kind: "verified"; implementation: VerifiedImplementation }
   | { kind: "unverified"; cause: Cause.Cause<unknown> }
-type ReviewOutcome = { kind: "verified"; result: ReviewResult } | { kind: "unverified"; cause: Cause.Cause<unknown> }
+type VerifiedReview = Readonly<{
+  implementation: VerifiedImplementation
+  result: ReviewResult
+  reviewer: RepairDecision["reviewer"]
+  boundary: Readonly<{ length: number; digest: string; created: Session.Info["time"]["created"] }>
+}>
+const historyDigest = (history: readonly SessionMessage.Info[]) =>
+  createHash("sha256").update(exactEvidence(history)).digest("hex")
+class RepairClaim extends NativeExecution<VerifiedImplementation["claim"]> {
+  readonly arguments: Readonly<{ agent: typeof target; description: string; prompt: string }>
+  constructor(
+    readonly decisionID: string,
+    readonly evidence: VerifiedReview,
+  ) {
+    super()
+    const { claim, target: reviewTarget } = evidence.implementation
+    this.arguments = frozenCopy({
+      agent: target,
+      description: "Repair the authorized implementation",
+      prompt: [
+        "You are a fresh Implementer for one human-authorized repair of the dirty reviewed worktree.",
+        "Address the verified findings only insofar as they fit the original frozen proposal and exact path ceiling. Preserve the reviewed implementation as your starting point.",
+        "If required work exceeds that authority, stop and report it. Finding paths are diagnostic and grant no scope.",
+        "Do not commit, change Git history, delegate, manipulate repository/index/ignore metadata to conceal changes, expand scope, or seek another approval. Leave original HEAD unchanged.",
+        `Canonical worktree root: ${claim.candidate.root}`,
+        `Original bound HEAD: ${claim.candidate.head}`,
+        `Original exact authorized paths: ${JSON.stringify(claim.candidate.proposal.files)}`,
+        `Frozen proposal: ${JSON.stringify(claim.candidate.proposal)}`,
+        `Exact reviewed target: ${JSON.stringify(reviewTarget)}`,
+        `Verified Reviewer identity: ${JSON.stringify(evidence.reviewer)}`,
+        `Exact verified review result: ${JSON.stringify(evidence.result)}`,
+      ].join("\n"),
+    })
+    this.install(
+      claim,
+      Object.freeze({
+        id: `msg_${randomUUID()}`,
+        text: [
+          "Propose exactly one foreground native subagent call with exactly these arguments:",
+          JSON.stringify(this.arguments),
+          "Do not add keys, reuse a session, change values, or retry. Finish after its result. Trusted runtime owns fresh review. STOP before Commit.",
+        ].join("\n"),
+      }),
+    )
+  }
+}
+type ExecutionOwner = NativeCap | RepairClaim
+type ReviewOutcome =
+  | { kind: "verified"; evidence: VerifiedReview }
+  | { kind: "unverified"; cause: Cause.Cause<unknown> }
 type ReviewAdmission =
   | { kind: "available" }
   | { kind: "reserved"; call: Readonly<Reservation> }
@@ -164,6 +210,36 @@ type ReviewAttempt = {
 export function nativeAdmission(context: Context) {
   const caps = new Map<string, NativeCap>()
   const reviews = new Map<string, ReviewAttempt>()
+  const workers = new Map<string, ExecutionOwner>()
+  const pending = new Map<string, Readonly<{ id: string; evidence: VerifiedReview }>>()
+  const currentReviews = new Map<string, VerifiedReview>()
+  const children = new Map<string, object>()
+  const contenders = new Map<string, object>()
+  const contenderKeys = (call: Reservation) => [
+    JSON.stringify([call.sessionID, "message", call.messageID]),
+    JSON.stringify([call.sessionID, "tool", call.id]),
+  ]
+  const currentContender = (call: Reservation, owner: object) => {
+    if (contenderKeys(call).some((key) => contenders.has(key) && contenders.get(key) !== owner))
+      throw new Error("Native message/tool identity belongs to an obsolete execution")
+  }
+  const recordContender = (call: Reservation, owner: object) => {
+    for (const key of contenderKeys(call)) contenders.set(key, owner)
+  }
+  const receipts = new Map<string, Readonly<{ rootSessionID: string; text: string }>>()
+  const knownReceipt = (message: SessionMessage.Info) =>
+    message.type === "synthetic" && receipts.get(message.id)?.text === message.text
+  const bindFreshChild = (execution: { child: ChildBinding }, id: unknown, root: string) => {
+    const previous = typeof id === "string" ? children.get(id) : undefined
+    bindChild(execution, id, root, previous && previous !== execution ? [String(id)] : [])
+    if (execution.child.kind === "exact") children.set(execution.child.childID, execution)
+  }
+  const acquire = (cap: ExecutionOwner) => {
+    if (executing) throw new Error("Another root owns worktree implementation exclusion")
+    pending.clear()
+    currentReviews.clear()
+    executing = { cap }
+  }
   // Only successful trusted admission spends eligibility. Failed syntax and
   // denied pre-admission calls create neither a slot nor CAP authority.
   const planners = new Map<
@@ -245,7 +321,7 @@ export function nativeAdmission(context: Context) {
   let revoked = false
   // The location-scoped host activation owns one worktree. Hold exclusion from
   // before the wake through settlement/verification, independently of the root slots.
-  let executing: { cap: NativeCap; native?: { call: Reservation; child: ChildBinding } } | undefined
+  let executing: { cap: ExecutionOwner; native?: { call: Reservation; child: ChildBinding } } | undefined
   const live = () => {
     if (revoked) throw new Error("Server CAP activation was revoked")
   }
@@ -273,9 +349,11 @@ export function nativeAdmission(context: Context) {
         event.effect = "deny"
       if (event.agent === "reviewer" && (!reviewerTool(event.action) || event.effect !== "allow")) event.effect = "deny"
     })
-  const local = (cap: NativeCap, claim: VerifiedImplementation["claim"] = cap.claim) => {
+  const local = (cap: ExecutionOwner, claim: VerifiedImplementation["claim"] = cap.claim) => {
     live()
     cap.live()
+    if (workers.get(claim.rootSessionID) !== cap) throw new Error("Execution owner was superseded")
+    if (!candidateIntact(claim.candidate)) throw new Error("Frozen proposal integrity changed")
     if (!same(snapshotLocation(context.location), claim.location)) throw new Error("Server location changed")
     parseProposal(JSON.stringify(claim.candidate.proposal), claim.candidate.root)
   }
@@ -314,7 +392,9 @@ export function nativeAdmission(context: Context) {
       start >= end ||
       history
         .slice(start + 1)
-        .some((item) => !["assistant", "idle", "compaction", "model-switched"].includes(item.type))
+        .some(
+          (item) => !["assistant", "idle", "compaction", "model-switched"].includes(item.type) && !knownReceipt(item),
+        )
     )
       throw new Error("Call does not follow its exact control input")
     const parts = message.content.filter((part) => part.type === "tool" && part.id === call.id)
@@ -336,12 +416,41 @@ export function nativeAdmission(context: Context) {
       throw new Error("Native arguments differ from frozen contract")
     return parts[0]
   }
+  const argumentsFor = (cap: ExecutionOwner) =>
+    cap instanceof RepairClaim ? cap.arguments : nativeArguments(cap.claim.candidate)
+  const requireArguments = (input: unknown, cap: ExecutionOwner) => {
+    if (!exactKeys(input, ["agent", "description", "prompt"]) || !same(input, argumentsFor(cap)))
+      throw new Error("Native arguments differ from frozen contract")
+  }
+  const repairFresh = (cap: RepairClaim) => {
+    local(cap)
+    if (executing?.cap !== cap) throw new Error("Repair claim lost exclusion")
+    const { claim, target } = cap.evidence.implementation
+    requireInScope(
+      observeGit(claim.location.directory!, baseline(claim)),
+      baseline(claim),
+      claim.candidate.proposal.files,
+    )
+    requireReviewTarget(observeReviewTarget(claim.location.directory!, target), target)
+  }
+  const reviewBoundary = (evidence: VerifiedReview, history: readonly SessionMessage.Info[], controlID?: string) => {
+    const { boundary } = evidence
+    const prefix = history.slice(0, boundary.length)
+    const tail = history.slice(boundary.length)
+    const control = tail.findIndex((message) => message.id === controlID)
+    if (
+      prefix.length !== boundary.length ||
+      historyDigest(prefix) !== boundary.digest ||
+      (control < 0 ? tail : tail.slice(0, control)).some((message) => !knownReceipt(message))
+    )
+      throw new Error("Reviewed root history was superseded")
+  }
   const actualCall = (
-    cap: NativeCap,
+    cap: ExecutionOwner,
     history: readonly SessionMessage.Info[],
     call: Reservation,
     status: "running" | "completed",
-  ) => observedCall(cap.control, nativeArguments(cap.claim.candidate), history, call, status)
+  ) => observedCall(cap.control, argumentsFor(cap), history, call, status)
   const before = (event: ToolHooks["execute.before"]) =>
     Effect.gen(function* () {
       yield* attempt(live)
@@ -357,8 +466,11 @@ export function nativeAdmission(context: Context) {
       const review = reviews.get(event.sessionID)
       if (review) {
         yield* attempt(() => {
+          const call = { sessionID: event.sessionID, agent: event.agent, messageID: event.messageID, id: event.id }
+          currentContender(call, review)
           if (review.admission.kind !== "available")
             throw new Error("Reviewer admission is reserved, consumed, or closed")
+          recordContender(call, review)
           review.admission = {
             kind: "reserved",
             call: frozenCopy({
@@ -383,7 +495,7 @@ export function nativeAdmission(context: Context) {
       }
       if (event.input && typeof event.input === "object" && "agent" in event.input && event.input.agent === "reviewer")
         return yield* Effect.fail(fail("No reserved Reviewer call"))
-      const cap = caps.get(event.sessionID)
+      const cap = workers.get(event.sessionID) ?? caps.get(event.sessionID)
       if (!cap || event.sessionID !== cap.rootSessionID) {
         if (event.agent !== "orchestrator" || directRootTool(event.tool)) {
           if (event.input && typeof event.input === "object" && "agent" in event.input && event.input.agent === target)
@@ -406,9 +518,12 @@ export function nativeAdmission(context: Context) {
         return
       }
       // Select the owner before any awaits. A losing contender cannot close it.
-      yield* attempt(() =>
-        cap.reserve({ sessionID: event.sessionID, agent: event.agent, messageID: event.messageID, id: event.id }),
-      )
+      yield* attempt(() => {
+        const call = { sessionID: event.sessionID, agent: event.agent, messageID: event.messageID, id: event.id }
+        currentContender(call, cap)
+        cap.reserve(call)
+        recordContender(call, cap)
+      })
       yield* attempt(() => {
         if (event.tool !== "subagent" || event.agent !== "orchestrator") throw new Error("Unexpected first contender")
       }).pipe(
@@ -423,10 +538,10 @@ export function nativeAdmission(context: Context) {
     input: unknown,
     invocation: Tool.Context,
     review: ReviewAttempt,
-    cap: NativeCap,
+    cap: ExecutionOwner,
   ) =>
     Effect.gen(function* () {
-      const { claim, identity, target } = review.implementation
+      const { claim, target } = review.implementation
       const call = frozenCopy({
         sessionID: invocation.sessionID,
         agent: invocation.agent,
@@ -435,6 +550,7 @@ export function nativeAdmission(context: Context) {
       })
       // Claim executor entry synchronously. Losers cannot close this owner.
       yield* attempt(() => {
+        currentContender(call, review)
         if (review.admission.kind !== "reserved" || !same(review.admission.call, call))
           throw new Error("Reviewer reservation mismatch")
         review.admission = { kind: "entered", call }
@@ -447,11 +563,15 @@ export function nativeAdmission(context: Context) {
             throw new Error("Reviewer arguments changed")
         })
         const effective = yield* prepare(input)
+        const latest = yield* context.session.context({ sessionID: invocation.sessionID })
         const root = yield* context.session.get({ sessionID: invocation.sessionID })
         const execution = yield* attempt(() => {
           local(cap, claim)
           rootIdentity(claim, root)
-          if (cap.phase !== "closed" || executing?.cap !== cap)
+          observedCall(review.control, review.arguments, latest, call, "running")
+          if (review.admission.kind !== "entered" || !same(review.admission.call, call))
+            throw new Error("Reviewer entry lost its exact owner")
+          if (reviews.get(claim.rootSessionID) !== review || cap.phase !== "closed" || executing?.cap !== cap)
             throw new Error("Reviewer does not own verified execution exclusion")
           requireReviewTarget(observeReviewTarget(claim.location.directory!, target), target)
           review.admission = { kind: "consumed", call }
@@ -463,13 +583,13 @@ export function nativeAdmission(context: Context) {
           ...invocation,
           agent: reviewerActor,
           progress: (update) =>
-            Effect.sync(() => bindChild(execution, update.sessionID, call.sessionID, [identity.childID])).pipe(
+            Effect.sync(() => bindFreshChild(execution, update.sessionID, call.sessionID)).pipe(
               Effect.andThen(() => invocation.progress(update)),
             ),
         })
         yield* attempt(() => {
           const output = result.output
-          bindChild(execution, output?.sessionID, call.sessionID, [identity.childID])
+          bindFreshChild(execution, output?.sessionID, call.sessionID)
           if (
             !exactKeys(output, ["sessionID", "status", "output"]) ||
             typeof output.sessionID !== "string" ||
@@ -625,13 +745,13 @@ export function nativeAdmission(context: Context) {
         yield* attempt(live)
         const review = reviews.get(invocation.sessionID)
         if (review) {
-          const owner = caps.get(invocation.sessionID)
+          const owner = workers.get(invocation.sessionID) ?? caps.get(invocation.sessionID)
           if (!owner) return yield* Effect.fail(fail("Reviewer has no implementation owner"))
           return yield* executeReview(original, prepare, input, invocation, review, owner)
         }
         if (input && typeof input === "object" && "agent" in input && input.agent === "reviewer")
           return yield* Effect.fail(fail("No reserved Reviewer call"))
-        const cap = caps.get(invocation.sessionID)
+        const cap = workers.get(invocation.sessionID) ?? caps.get(invocation.sessionID)
         const governed =
           (!!cap && invocation.sessionID === cap.rootSessionID) ||
           (!!input && typeof input === "object" && "agent" in input && input.agent === target)
@@ -654,26 +774,40 @@ export function nativeAdmission(context: Context) {
         }
         if (!cap) return yield* Effect.fail(fail("No reserved Implementer call"))
         // Executor losers also cannot change an in-flight owner's state.
-        yield* attempt(() => cap.enter(call))
+        yield* attempt(() => {
+          currentContender(call, cap)
+          cap.enter(call)
+        })
         return yield* Effect.gen(function* () {
           const history = yield* context.session.context({ sessionID: invocation.sessionID })
           yield* attempt(() => {
+            if (cap instanceof RepairClaim) reviewBoundary(cap.evidence, history, cap.control.id)
             actualCall(cap, history, call, "running")
-            exactArguments(input, cap.claim.candidate)
+            requireArguments(input, cap)
           })
           // Decode/validate settings before consuming CAP or claiming an unknown
           // child. On failure the existing pre-admission close/settlement releases
           // exclusion, without changing this root's accepted-claim contract.
           const effectiveInput = yield* prepare(input)
+          const latest =
+            cap instanceof RepairClaim ? yield* context.session.context({ sessionID: invocation.sessionID }) : undefined
           const root = yield* context.session.get({ sessionID: invocation.sessionID })
           // All awaited reads precede the final synchronous freshness/consume barrier.
           const lease = yield* attempt(() => {
             rootIdentity(cap.claim, root)
             local(cap)
-            exactArguments(input, cap.claim.candidate)
+            requireArguments(input, cap)
             if (!candidateIntact(cap.claim.candidate)) throw new Error("Frozen claim integrity changed")
             if (executing?.cap !== cap) throw new Error("Root does not own worktree implementation exclusion")
-            requireFresh(observeGit(cap.claim.location.directory!, baseline(cap.claim)), baseline(cap.claim))
+            if (cap instanceof RepairClaim) {
+              if (!same(root.time.created, cap.evidence.boundary.created))
+                throw new Error("Repair root creation changed")
+              if (latest) {
+                reviewBoundary(cap.evidence, latest, cap.control.id)
+                actualCall(cap, latest, call, "running")
+              }
+              repairFresh(cap)
+            } else requireFresh(observeGit(cap.claim.location.directory!, baseline(cap.claim)), baseline(cap.claim))
             cap.consume(call)
             return executing
           })
@@ -685,13 +819,13 @@ export function nativeAdmission(context: Context) {
             ...invocation,
             agent: actor,
             progress: (update) =>
-              Effect.sync(() => bindChild(execution, update.sessionID, call.sessionID)).pipe(
+              Effect.sync(() => bindFreshChild(execution, update.sessionID, call.sessionID)).pipe(
                 Effect.andThen(() => invocation.progress(update)),
               ),
           })
           yield* attempt(() => {
             cap.receipt(result)
-            bindChild(execution, cap.childID, call.sessionID)
+            bindFreshChild(execution, cap.childID, call.sessionID)
           })
           return result // Native output normalization, after hooks and publication remain native.
         }).pipe(
@@ -699,7 +833,7 @@ export function nativeAdmission(context: Context) {
           Effect.onInterrupt(() => Effect.sync(() => cap.close())),
         )
       }).pipe(Effect.mapError((error) => (error instanceof Tool.Error ? error : fail(String(error)))))
-  const verifyImplementation = (cap: NativeCap) =>
+  const verifyImplementation = (cap: ExecutionOwner) =>
     Effect.gen(function* () {
       yield* attempt(() => local(cap))
       if (cap.phase !== "consumed" || !cap.childID || !cap.result)
@@ -735,7 +869,7 @@ export function nativeAdmission(context: Context) {
           users.length !== 1 ||
           childHistory[0] !== users[0] ||
           childHistory.some((message) => !["user", "assistant", "idle", "model-switched"].includes(message.type)) ||
-          users[0]?.text !== nativeBootstrap(implementerPrompt(claim.candidate)) ||
+          users[0]?.text !== nativeBootstrap(argumentsFor(cap).prompt) ||
           [users[0]?.files, users[0]?.agents, users[0]?.skills].some((items) => items && items.length) ||
           !final ||
           final.finish !== "stop" ||
@@ -775,7 +909,7 @@ export function nativeAdmission(context: Context) {
         return implementation
       })
     })
-  const verifyReview = (cap: NativeCap, review: ReviewAttempt) =>
+  const verifyReview = (cap: ExecutionOwner, review: ReviewAttempt) =>
     Effect.gen(function* () {
       const { claim, target } = review.implementation
       const execution = yield* attempt(() => {
@@ -870,16 +1004,27 @@ export function nativeAdmission(context: Context) {
         requireReviewTarget(current, target)
         const parsed = parseReviewResult(text)
         local(cap, claim)
-        return parsed
+        if (reviews.get(claim.rootSessionID) !== review) throw new Error("Reviewer owner was superseded")
+        return frozenCopy({
+          implementation: review.implementation,
+          result: parsed,
+          reviewer: { messageID: execution.call.messageID, toolID: execution.call.id, childID, resultID: final.id },
+          boundary: { length: history.length, digest: historyDigest(history), created: root.time.created },
+        })
       })
     })
-  const runReview = (cap: NativeCap, implementation: VerifiedImplementation, settlement: (proven: boolean) => void) =>
+  const runReview = (
+    cap: ExecutionOwner,
+    implementation: VerifiedImplementation,
+    settlement: (proven: boolean) => void,
+  ) =>
     Effect.gen(function* () {
       const { claim, identity, target } = implementation
       const rootID = Session.ID.make(claim.rootSessionID)
       const review = yield* attempt(() => {
         local(cap, claim)
-        if (reviews.has(rootID) || executing?.cap !== cap) throw new Error("Reviewer attempt is unavailable")
+        if (reviews.get(rootID)?.implementation === implementation || executing?.cap !== cap)
+          throw new Error("Reviewer attempt is unavailable")
         const args = reviewerArguments(claim.candidate, target, identity)
         const review: ReviewAttempt = {
           implementation,
@@ -962,15 +1107,20 @@ export function nativeAdmission(context: Context) {
           : review.failure
             ? { kind: "unverified", cause: review.failure }
             : yield* verifyReview(cap, review).pipe(
-                Effect.map((result): ReviewOutcome => ({ kind: "verified", result })),
+                Effect.map((evidence): ReviewOutcome => ({ kind: "verified", evidence })),
                 Effect.catchCause((cause) => Effect.succeed<ReviewOutcome>({ kind: "unverified", cause })),
               )
       return { outcome, publish: true }
     })
   const publishReceipt = (rootSessionID: string, receipt: string) =>
-    Effect.suspend(() => context.session.synthetic(receiptInput(Session.ID.make(rootSessionID), receipt))).pipe(
-      Effect.catchCause((cause) => Effect.logWarning("Terminal receipt publication failed", Cause.pretty(cause))),
-    )
+    Effect.suspend(() => {
+      const id = `msg_${randomUUID()}`
+      receipts.set(id, Object.freeze({ rootSessionID, text: receipt }))
+      return context.session.synthetic({
+        ...receiptInput(Session.ID.make(rootSessionID), receipt),
+        id: SessionMessage.ID.make(id),
+      })
+    }).pipe(Effect.catchCause((cause) => Effect.logWarning("Terminal receipt publication failed", Cause.pretty(cause))))
   const authorize = (input: unknown) =>
     Effect.gen(function* () {
       const cap = yield* attempt(() => {
@@ -996,6 +1146,12 @@ export function nativeAdmission(context: Context) {
         }
         return slot
       })
+      workers.set(cap.claim.rootSessionID, cap)
+      return yield* runCycle(cap)
+    }).pipe(Effect.catchCause((cause) => Effect.succeed(terminal(unverified(cause)))))
+  const terminal = (receipt: string): CycleOutcome => ({ kind: "terminal", receipt })
+  const runCycle = (cap: ExecutionOwner) =>
+    Effect.gen(function* () {
       const rootSessionID = cap.claim.rootSessionID
       let settlementProven = false
       return yield* Effect.gen(function* () {
@@ -1007,10 +1163,34 @@ export function nativeAdmission(context: Context) {
           yield* attempt(() => {
             rootIdentity(cap.claim, root)
             local(cap)
-            if (executing) throw new Error("Another root owns worktree implementation exclusion")
-            executing = { cap }
-            requireFresh(observeGit(cap.claim.location.directory!, baseline(cap.claim)), baseline(cap.claim))
+            if (cap instanceof RepairClaim) {
+              if (
+                root.outcome !== "succeeded" ||
+                !root.time.idle ||
+                !same(root.time.created, cap.evidence.boundary.created)
+              )
+                throw new Error("Repair root is not the reviewed settled root")
+              repairFresh(cap)
+            } else {
+              acquire(cap)
+              requireFresh(observeGit(cap.claim.location.directory!, baseline(cap.claim)), baseline(cap.claim))
+            }
           })
+          if (cap instanceof RepairClaim) {
+            const history = yield* context.session.context({ sessionID: Session.ID.make(rootSessionID) })
+            const latestRoot = yield* context.session.get({ sessionID: Session.ID.make(rootSessionID) })
+            yield* attempt(() => {
+              rootIdentity(cap.claim, latestRoot)
+              if (
+                latestRoot.outcome !== "succeeded" ||
+                !latestRoot.time.idle ||
+                !same(latestRoot.time.created, cap.evidence.boundary.created)
+              )
+                throw new Error("Repair root changed during preparation")
+              reviewBoundary(cap.evidence, history, cap.control.id)
+              repairFresh(cap)
+            })
+          }
           const { id, text } = cap.control
           const wake = yield* context.session.synthetic({
             sessionID: Session.ID.make(cap.claim.rootSessionID),
@@ -1035,7 +1215,7 @@ export function nativeAdmission(context: Context) {
         // Even ambiguous wake/admission failures must finish their native busy
         // period before a new steer can safely be presentation-only.
         const settled = yield* context.session.wait({ sessionID: Session.ID.make(rootSessionID) }).pipe(Effect.exit)
-        if (Exit.isFailure(settled)) return unverified(settled.cause)
+        if (Exit.isFailure(settled)) return terminal(unverified(settled.cause))
         const lease = executing?.cap === cap ? executing : undefined
         let settlementFailure: Cause.Cause<unknown> | undefined
         if (lease?.native) {
@@ -1088,7 +1268,7 @@ export function nativeAdmission(context: Context) {
         if (gate.kind === "unverified") {
           const receipt = unverified(gate.cause)
           yield* publishReceipt(rootSessionID, receipt)
-          return receipt
+          return terminal(receipt)
         }
         const implementation = gate.implementation
         const { target: reviewTarget } = implementation
@@ -1107,31 +1287,213 @@ export function nativeAdmission(context: Context) {
         )
         const receipt =
           review.outcome.kind === "verified"
-            ? reviewReceipt(review.outcome.result)
+            ? reviewReceipt(review.outcome.evidence.result)
             : reviewUnverified(review.outcome.cause)
         if (review.publish) yield* publishReceipt(rootSessionID, receipt)
-        return [implementationReceipt, receipt].join("\n")
+        const combined = [implementationReceipt, receipt].join("\n")
+        if (review.outcome.kind !== "verified" || !settlementProven || executing?.cap !== cap) return terminal(combined)
+        const finalHistory = yield* context.session.context({ sessionID: Session.ID.make(rootSessionID) })
+        const finalRoot = yield* context.session.get({ sessionID: Session.ID.make(rootSessionID) })
+        return yield* attempt((): CycleOutcome => {
+          if (review.outcome.kind !== "verified" || !settlementProven || executing?.cap !== cap)
+            return terminal(combined)
+          local(cap, implementation.claim)
+          const evidence = review.outcome.evidence
+          rootIdentity(implementation.claim, finalRoot)
+          if (
+            finalRoot.outcome !== "succeeded" ||
+            !finalRoot.time.idle ||
+            !same(finalRoot.time.created, evidence.boundary.created)
+          )
+            throw new Error("Reviewed root changed during publication")
+          reviewBoundary(evidence, finalHistory)
+          // Publication may await external activity. Keep exclusion until its
+          // completion and reject any drift before making a decision selectable.
+          requireInScope(
+            observeGit(implementation.claim.location.directory!, baseline(implementation.claim)),
+            baseline(implementation.claim),
+            implementation.claim.candidate.proposal.files,
+          )
+          requireReviewTarget(
+            observeReviewTarget(implementation.claim.location.directory!, evidence.implementation.target),
+            evidence.implementation.target,
+          )
+          executing = undefined
+          if (evidence.result.status === "APPROVED") currentReviews.set(rootSessionID, evidence)
+          if (evidence.result.status !== "CHANGES_REQUESTED") return terminal(combined)
+          const decision = Object.freeze({ id: randomUUID(), evidence })
+          pending.set(decision.id, decision)
+          return {
+            kind: "repair",
+            receipt: combined,
+            decision: frozenCopy({
+              id: decision.id,
+              rootSessionID,
+              candidate: implementation.claim.candidate,
+              target: evidence.implementation.target,
+              result: evidence.result,
+              reviewer: evidence.reviewer,
+              receipts: [...receipts]
+                .filter(([, receipt]) => receipt.rootSessionID === rootSessionID)
+                .map(([id, receipt]) => ({ id, text: receipt.text })),
+            }),
+          }
+        })
       }).pipe(
         Effect.ensuring(
           Effect.sync(() => {
             cap.close()
-            const review = reviews.get(rootSessionID)
+            const review = workers.get(rootSessionID) === cap ? reviews.get(rootSessionID) : undefined
             if (review) review.admission = { kind: "closed" }
             // Unknown settlement retains exclusion until activation teardown.
             if (settlementProven && executing?.cap === cap) executing = undefined
           }),
         ),
       )
-    }).pipe(Effect.catchCause((cause) => Effect.succeed(unverified(cause))))
+    }).pipe(Effect.catchCause((cause) => Effect.succeed(terminal(unverified(cause)))))
+  const decideRepair = (input: unknown) =>
+    Effect.gen(function* () {
+      const selected = yield* attempt(() => {
+        live()
+        if (
+          !exactKeys(input, ["decisionID", "action"]) ||
+          typeof input.decisionID !== "string" ||
+          (input.action !== "Repair" && input.action !== "Stop")
+        )
+          throw new Error("Malformed Repair selection")
+        const decision = pending.get(input.decisionID)
+        if (!decision) throw new Error("Repair decision is stale, spent, or unavailable")
+        pending.delete(decision.id) // Exact selection is spent before any await.
+        return { decision, action: input.action }
+      })
+      const { decision, action } = selected
+      const rootID = decision.evidence.implementation.claim.rootSessionID
+      currentReviews.delete(rootID)
+      if (action === "Stop") {
+        const receipt =
+          "Stopped by human decision. This attempt ended before Commit. No Repair worker or mutation authority was granted."
+        yield* publishReceipt(rootID, receipt)
+        return terminal(receipt)
+      }
+      const cap = new RepairClaim(decision.id, decision.evidence)
+      return yield* Effect.gen(function* () {
+        yield* attempt(() => {
+          acquire(cap) // No queue/retry, and observations must follow acquisition.
+          workers.set(rootID, cap)
+          reviews.delete(rootID)
+          repairFresh(cap)
+        })
+        return yield* runCycle(cap)
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            cap.close()
+            // A failure before wake/native entry can safely release its lease.
+            if (executing?.cap === cap && !executing.native) executing = undefined
+          }),
+        ),
+      )
+    }).pipe(Effect.catchCause((cause) => Effect.succeed(terminal(unverified(cause)))))
+  const eventReceived = (event: { type: string; data: Record<string, unknown> }) => {
+    if (!("sessionID" in event.data)) return
+    const id = event.data.sessionID
+    if (typeof id !== "string") return
+    if (event.type === "session.inbox.enqueued" && typeof event.data.inboxID === "string") {
+      const item = event.data.item as { type?: unknown; payload?: { text?: unknown } } | undefined
+      const receipt = receipts.get(event.data.inboxID)
+      if (receipt?.rootSessionID === id && item?.type === "synthetic" && receipt.text === item.payload?.text) return
+    }
+    if (
+      event.type === "session.inbox.delivered" &&
+      typeof event.data.inboxID === "string" &&
+      receipts.get(event.data.inboxID)?.rootSessionID === id
+    )
+      return
+    if (
+      event.type === "session.synthetic" &&
+      [...receipts.values()].some((receipt) => receipt.rootSessionID === id && receipt.text === event.data.text)
+    )
+      return
+    if (event.type === "session.instructions.updated" && event.data.text === undefined) return
+    if (
+      !/^session\.(inbox|message|synthetic|instructions|execution|permissions|agent\.selected|moved|deleted|forked|revert|compaction|shell|skill)/.test(
+        event.type,
+      )
+    )
+      return
+    const owner = workers.get(id)
+    if (owner instanceof RepairClaim && (owner.phase === "available" || owner.phase === "reserved")) {
+      const control = owner.control
+      const item = event.data.item as { type?: unknown; payload?: { text?: unknown } } | undefined
+      const ownControl =
+        (event.type === "session.inbox.enqueued" &&
+          event.data.inboxID === control.id &&
+          item?.type === "synthetic" &&
+          item.payload?.text === control.text) ||
+        (event.type === "session.inbox.delivered" && event.data.inboxID === control.id) ||
+        (event.type === "session.synthetic" && event.data.text === control.text)
+      if (
+        !ownControl &&
+        /^session\.(inbox|synthetic|instructions|permissions|agent\.selected|moved|deleted|forked|revert)/.test(
+          event.type,
+        )
+      )
+        owner.close()
+    }
+    for (const [key, decision] of pending)
+      if (decision.evidence.implementation.claim.rootSessionID === id) pending.delete(key)
+    currentReviews.delete(id)
+  }
+  const currentApproval = (rootID: string) => {
+    const evidence = currentReviews.get(rootID)
+    if (!evidence || evidence.result.status !== "APPROVED") return undefined
+    try {
+      live()
+      const { claim, target } = evidence.implementation
+      const owner = workers.get(rootID)
+      if (!owner) throw new Error("No current review owner")
+      local(owner, claim)
+      requireInScope(
+        observeGit(claim.location.directory!, baseline(claim)),
+        baseline(claim),
+        claim.candidate.proposal.files,
+      )
+      requireReviewTarget(observeReviewTarget(claim.location.directory!, target), target)
+      return evidence
+    } catch {
+      currentReviews.delete(rootID)
+      return undefined
+    }
+  }
   const teardown = () => {
     revoked = true
     for (const cap of caps.values()) cap.teardown()
+    for (const cap of workers.values()) cap.teardown()
+    workers.clear()
+    pending.clear()
+    currentReviews.clear()
+    receipts.clear()
+    children.clear()
+    contenders.clear()
     planners.clear()
     for (const review of reviews.values()) review.admission = { kind: "closed" }
     reviews.clear()
     executing = undefined
   }
-  return { before, execute, authorize, revise, teardown, sponsorPermission, actor, reviewerActor, caps }
+  return {
+    before,
+    execute,
+    authorize,
+    decideRepair,
+    revise,
+    teardown,
+    eventReceived,
+    currentApproval,
+    sponsorPermission,
+    actor,
+    reviewerActor,
+    caps,
+  }
 }
 
 function reviewUnverified(cause: Cause.Cause<unknown>): string {

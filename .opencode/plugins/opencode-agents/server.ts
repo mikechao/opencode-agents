@@ -1,5 +1,5 @@
 import { Plugin } from "@opencode/plugin/effect"
-import { Effect } from "effect"
+import { Effect, Stream } from "effect"
 import { nativeAdmission, sponsorRules, reviewerSponsorRules } from "../../../src/native.ts"
 import { authorizeRpc } from "../../../src/authorize-rpc.ts"
 import { agentModels } from "../../../src/agent-models.ts"
@@ -12,6 +12,10 @@ export default Plugin.define({
     Effect.gen(function* () {
       const admission = nativeAdmission(context)
       const models = agentModels(context)
+      yield* context.event.subscribe().pipe(
+        Stream.runForEach((event) => Effect.sync(() => admission.eventReceived(event))),
+        Effect.forkScoped,
+      )
       yield* Effect.addFinalizer(() => Effect.sync(admission.teardown))
       yield* context.agent.transform((editor) => {
         editor.update(admission.actor, (agent) => {
@@ -38,6 +42,7 @@ export default Plugin.define({
       yield* context.rpc
         .register(authorizeRpc, {
           authorize: (claim) => admission.authorize(claim),
+          decideRepair: (input) => admission.decideRepair(input),
           revise: (input) => admission.revise(input).pipe(Effect.orDie),
         })
         .pipe(Effect.orDie)

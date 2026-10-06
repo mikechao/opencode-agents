@@ -12,11 +12,13 @@ Authorize decision. It transfers the frozen claim to a local server RPC for
 one native Implementer admission. Trusted native result binding and independent
 unchanged-HEAD/exact-path verification must pass before automatic read-only
 Reviewer admission. Trusted review result and exact-target revalidation precede
-STOP before Commit. Commit remains a future separately authorized obligation.
+terminal completion or a separate trusted human Repair / Stop decision for
+verified CHANGES_REQUESTED. Commit remains a future separately authorized obligation.
 
-Each eligible root has its own one-shot governed attempt within the plugin
-activation, with shared-worktree execution exclusion spanning implementation,
-review and receipt publication. Repeated authorization of the same root is rejected.
+Each eligible root has one permanently one-shot initial implementation CAP.
+Each later Repair requires a distinct explicit human grant and one-shot claim.
+Shared-worktree exclusion spans execution, verification and receipt publication,
+and is released during the human pause. Repeated initial Authorize is rejected.
 
 ## Authority and trust
 
@@ -290,7 +292,7 @@ from Implementer. Trusted runtime MUST construct its exact task from the frozen
 proposal, canonical root, unchanged authorized HEAD, exact accepted changed paths,
 completed implementation identity, review-target digest and strict result schema.
 Ordinary Orchestrator/Implementer prose MUST NOT initiate or authorize review.
-Implementation authority MUST be closed before the sole Reviewer steer. A separate
+Implementation authority MUST be closed before the sole Reviewer steer for that verified implementation cycle. A separate
 one-shot admission and Reviewer-only sponsor MUST preserve original three-key
 arguments, actual source IDs, fresh native execution, child identity, effective
 host policy and absence of session-level overrides. No second human authorization
@@ -324,9 +326,70 @@ Worktree exclusion MUST remain held through Reviewer settlement, target
 revalidation and terminal receipt publication. Previously proven Implementer
 settlement MUST NOT release an unknown/running Reviewer. Unknown child settlement
 MUST retain exclusion until activation teardown. Exactly one Reviewer attempt is
-allowed; failure MUST NOT launch a replacement, retry, repair or another Implementer.
+allowed per verified implementation cycle; failure MUST NOT launch a replacement,
+retry, repair or another Implementer.
 All terminal outcomes MUST stop before Commit. No persisted review/workflow state
 or transcript recovery grants authority.
+
+## Human-authorized Repair / Stop
+
+Only independently verified CHANGES_REQUESTED MAY create a live pending decision.
+The server MUST freeze the exact result, reviewed implementation/target and
+Reviewer parent message/tool, fresh child and verified terminal result identities.
+Original root/location, frozen proposal, exact path ceiling and original HEAD
+MUST remain transitively bound. Mutable attempts, receipt text and transcript
+prose MUST NOT supply Repair authority.
+
+After exact Reviewer settlement, target verification and factual publication,
+exclusion MUST be released before the pending human decision becomes selectable.
+The local Authorize transport MUST return a validated terminal-or-live-decision
+outcome. The TUI MUST use a distinct post-review owner, readable exact evidence,
+composer-top placement, fresh frame proof after navigation/remount/resize, and
+stale-callback/surface-loss/lost-response rejection. Initial Plan ownership MUST
+NOT reopen. A selection MUST carry only exact opaque decision ID plus Repair/Stop;
+the client MUST NOT supply authoritative proposal, target, paths or findings.
+
+Stop MUST retire the decision without a wake, mutation authority or filesystem
+cleanup. Repair MUST spend the exact decision once before any await and create
+a distinct one-shot claim. The initial NativeCap MUST remain permanently spent.
+Stale, duplicate and losing selections MUST NOT close or replace a newer owner.
+
+Repair MUST reacquire shared-worktree exclusion before its admission observations.
+Busy exclusion MUST close the claim without queue, retry or restored eligibility.
+Any competing governed acquisition MUST retire paused decisions and previous
+current approval evidence, even when the eventual worktree is byte-identical.
+Before wake and again immediately before native entry, trusted code MUST check
+canonical root/location, original HEAD, exact previous target paths and digest,
+original scope/integrity, root identity/role/no-overrides, exact claim/lease owner,
+and supported root/control binding after awaited preparation. Existing Git scope
+and ReviewTarget observations MUST be reused; names or HEAD alone are insufficient.
+Unrelated pending input or root continuation MUST supersede the decision; exact
+owned receipts remain non-authoritative presentation input.
+
+The Repair claim MUST consume only at the final synchronous native-entry barrier.
+Any pre-entry failure MUST launch no Implementer and restore no authority.
+Unknown post-entry settlement MUST retain exclusion until safe teardown.
+Each Repair MUST use a fresh authorized_implementer with the native three-key
+contract, never a continuation session. Its trusted dirty-worktree prompt MUST
+carry the original proposal/paths/root/HEAD and exact verified target/result/
+provenance. Findings MUST NOT generate scope. Necessary unauthorized work MUST
+stop and require a fresh governed Plan path, without same-root replanning,
+automatic reset/stash/commit, adoption or scope expansion.
+
+Repair verification MUST use cumulative changes from original HEAD within the
+original exact path set. Changed subsets MAY differ, including new authorized
+paths, removed deltas or no-op outcomes. Every verified repair MUST receive a
+fresh Reviewer and new control/call/child/result identities. Prior reviews MUST
+remain inert, even if target bytes match. Further CHANGES_REQUESTED MAY create
+another decision, always requiring another explicit human Repair grant.
+INCONCLUSIVE and unverified/ambiguous review MUST remain terminal with no Repair.
+
+Review receipts MUST state factual target stability at verification and grant
+no mutation/Commit authority. Pending decisions, unconsumed claims and retained
+executors MUST be invalidated on teardown; restart MUST NOT reconstruct them from
+history. Worker recovery of an already admitted child retains its existing
+semantics and MUST NOT restore admission. No persisted repair count, workflow
+phase, generalized retry machinery or automatic repair is introduced.
 
 ## Future separate Commit contract
 
@@ -334,7 +397,8 @@ Commit authorization, Reviewer-owned executable validation, and commit effects
 are not implemented. The following obligations apply only to future Commit work.
 
 Reviewed-target commit authority MUST be distinct from intent authority. Its
-candidate MUST bind passing review, exact reviewed target or unambiguous digest,
+candidate MUST bind only the newest live exact trusted APPROVED review,
+its implementation and Reviewer provenance, exact reviewed target or unambiguous digest,
 Reviewer-owned validation, exact prepared paths, relevant Git baseline and
 readable commit intent. It authorizes neither edits nor a substitute target.
 The candidate MUST be frozen and digested, and the fresh trusted human decision
@@ -347,4 +411,7 @@ Ambiguous commit completion permits only read-only reconciliation while the
 trusted process remains alive; the consumed capability MUST NOT be replayed.
 Process death ends the run. Later work starts with zero authority, inspects
 current Git reality and requires fresh authorization for any further effect.
-Subsystem design and host sequencing remain future work in orchestration.
+Repair admission, competing governed execution or observed drift MUST retire
+previous current approval eligibility. Historical APPROVED receipts MUST remain
+inert, including when bytes later return to the same fingerprint. Subsystem
+design and host sequencing remain future work in orchestration.

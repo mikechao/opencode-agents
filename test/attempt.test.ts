@@ -3,6 +3,8 @@ import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync, symlink
 import { tmpdir } from "node:os"
 import path from "node:path"
 import type { Context, KeymapLayer } from "@opencode/plugin/tui/context"
+import type { CycleOutcome } from "../src/authorize-rpc.ts"
+import { checkedCycleOutcome } from "../src/authorize-rpc.ts"
 import { NativeCap, type Generation } from "../src/cap.ts"
 import * as attemptModule from "../src/attempt.ts"
 import * as gitModule from "../src/git.ts"
@@ -246,7 +248,8 @@ type FakeOptions = {
   rootActive?: boolean
   wakeOnSynthetic?: boolean
   decision?: boolean | undefined
-  onAuthorize?: (claim: any) => Promise<string>
+  onAuthorize?: (claim: any) => Promise<string | CycleOutcome>
+  onRepair?: (input: any) => Promise<CycleOutcome>
   onDecision?: () => void
   onWait?: (sessionID: string) => void | Promise<void>
   onGet?: (sessionID: string) => void
@@ -308,6 +311,7 @@ function fake(root: string, options: FakeOptions = {}) {
   const renderer = Object.assign(new EventEmitter(), { terminalWidth: 120, terminalHeight: 60, isDestroyed: false })
   const calls = {
     claims: [] as any[],
+    repairs: [] as any[],
     decided: [] as string[],
     synthetic: [] as any[],
     receipts: [] as any[],
@@ -447,8 +451,18 @@ function fake(root: string, options: FakeOptions = {}) {
       rpc: () => ({
         authorize: async (input: any) => {
           calls.claims.push(structuredClone(input))
-          if (options.onAuthorize) return await options.onAuthorize(input)
-          return `Implementation gate complete: HEAD ${input.candidate.head} unchanged. Resulting paths (0): (none). STOP before Reviewer / Commit.`
+          if (options.onAuthorize) {
+            const result = await options.onAuthorize(input)
+            return typeof result === "string" ? { kind: "terminal", receipt: result } : result
+          }
+          return {
+            kind: "terminal",
+            receipt: `Implementation gate complete: HEAD ${input.candidate.head} unchanged. Resulting paths (0): (none). STOP before Reviewer / Commit.`,
+          }
+        },
+        decideRepair: async (input: any) => {
+          calls.repairs.push(structuredClone(input))
+          return options.onRepair ? await options.onRepair(input) : { kind: "terminal", receipt: "Stopped" }
         },
       }),
       message: {
@@ -633,7 +647,7 @@ async function implement(
   f.calls.decided.push(renderPlan(published.candidate))
   f.options.onDecision?.()
   if (f.options.decision !== true) throw new Error("Implementation authorization was cancelled")
-  return authorizePublishedAttempt(context, published, f.guard)
+  return (await authorizePublishedAttempt(context, published, f.guard)).receipt
 }
 
 async function settleUntil(done: () => boolean) {
@@ -4302,7 +4316,7 @@ snapshotTest(
 
 // Native admission uses host doubles and the same test-scoped Git observer.
 // No real repositories, native child imports, or production injection seams.
-import { Cause, Effect, Exit, Schema } from "effect"
+import { Cause, Effect, Exit, Schema, Stream } from "effect"
 import { Tool as NativeTool } from "@opencode/schema/tool"
 import { Model as NativeModel } from "@opencode/schema/model"
 import { agentModels, preferenceKey, parseSelection, type Role } from "../src/agent-models.ts"
@@ -4520,7 +4534,10 @@ function serverFake(root: string, _observer: SnapshotObserver, workspaceID?: str
             await f.onChildWait?.(sessionID)
             return
           }
-          if (f.reviewWakes.some((wake) => wake.sessionID === sessionID)) {
+          const latestControl = [...histories[sessionID]]
+            .reverse()
+            .find((message) => message.type === "synthetic" && message.text.startsWith("Propose exactly one"))
+          if (latestControl && JSON.parse(latestControl.text.split("\n")[1]).agent === "reviewer") {
             if (f.reviewRun) await f.reviewRun(sessionID)
             else await dispatchReview(sessionID)
             if (f.reviewWaitError) throw new Error("lost Reviewer root settlement")
@@ -4580,9 +4597,6 @@ function serverFake(root: string, _observer: SnapshotObserver, workspaceID?: str
         return yield* Effect.fail(new NativeTool.Error({ message: `Native permission ${effect}` }))
       ;(reviewing ? f.reviewOriginals : originals).push({ input: structuredClone(input), context: invocation })
       const output = reviewing ? f.reviewOutput : input.agent === "planner" ? (f.plannerOutput ?? proposal) : "Done"
-      const plannerNumber = originals.filter(
-        (entry) => entry.input.agent === "planner" && entry.context.sessionID === invocation.sessionID,
-      ).length
       const baseChildID =
         invocation.sessionID === "ses_parent"
           ? input.agent === "planner"
@@ -4591,7 +4605,10 @@ function serverFake(root: string, _observer: SnapshotObserver, workspaceID?: str
               ? "ses_review"
               : "ses_child"
           : `${invocation.sessionID}-${input.agent}`
-      const childID = input.agent === "planner" && plannerNumber > 1 ? `${baseChildID}-${plannerNumber}` : baseChildID
+      const roleNumber = (reviewing ? f.reviewOriginals : originals).filter(
+        (entry) => entry.input.agent === input.agent && entry.context.sessionID === invocation.sessionID,
+      ).length
+      const childID = roleNumber > 1 ? `${baseChildID}-${roleNumber}` : baseChildID
       sessions[childID] = {
         id: childID,
         parentID: invocation.sessionID,
@@ -4645,8 +4662,8 @@ function serverFake(root: string, _observer: SnapshotObserver, workspaceID?: str
     } = {},
   ) => {
     const sessionID = opts.sessionID ?? "ses_parent",
-      id = opts.id ?? "native-call",
-      messageID = opts.messageID ?? "native-message",
+      id = opts.id ?? (wakes.length > 1 ? `native-call-${wakes.at(-1).id}` : "native-call"),
+      messageID = opts.messageID ?? (wakes.length > 1 ? `native-message-${wakes.at(-1).id}` : "native-message"),
       tool = opts.tool ?? "subagent",
       agent = opts.agent ?? "orchestrator"
     const part: any = {
@@ -4717,8 +4734,15 @@ function serverFake(root: string, _observer: SnapshotObserver, workspaceID?: str
     sessionID = "ses_parent",
     raw = reviewArguments(sessionID),
     opts: Parameters<typeof dispatch>[1] = {},
-  ) => dispatch(raw, { sessionID, id: "review-call", messageID: "review-message", ...opts })
-  const authorize = (input: unknown = claim) => Effect.runPromise(admission.authorize(input))
+  ) =>
+    dispatch(raw, {
+      sessionID,
+      id: f.reviewWakes.length > 1 ? `review-call-${f.reviewWakes.at(-1).id}` : "review-call",
+      messageID: f.reviewWakes.length > 1 ? `review-message-${f.reviewWakes.at(-1).id}` : "review-message",
+      ...opts,
+    })
+  const authorizeOutcome = (input: unknown = claim) => Effect.runPromise(admission.authorize(input))
+  const authorize = async (input: unknown = claim) => (await authorizeOutcome(input)).receipt
   return {
     ...f,
     state: f,
@@ -4731,6 +4755,7 @@ function serverFake(root: string, _observer: SnapshotObserver, workspaceID?: str
     dispatchReview,
     reviewArguments,
     authorize,
+    authorizeOutcome,
     modelPreferences,
   }
 }
@@ -6784,13 +6809,14 @@ snapshotTest(
       }
       const outcome = await f.authorize()
       expect(outcome).toBe(
-        `Implementation gate completed successfully.\nHEAD ${HEAD} remained unchanged.\nResulting paths (1): "old.txt".\nReview APPROVED.\nImplementation satisfies the proposal.\nReview target remained unchanged. This attempt ended before Commit. No repair, additional review, or Commit authority was granted.`,
+        `Implementation gate completed successfully.\nHEAD ${HEAD} remained unchanged.\nResulting paths (1): "old.txt".\nReview APPROVED.\nImplementation satisfies the proposal.\nReview target remained unchanged at verification. Review grants no mutation or Commit authority.\nThis attempt ended before Commit.`,
       )
       expect(f.receipts).toHaveLength(2)
       expect(outcome).toBe(f.receipts.map((receipt) => receipt.text).join("\n"))
       for (const receipt of f.receipts)
         expect(receipt).toEqual({
           sessionID: "ses_parent",
+          id: receipt.id,
           delivery: "steer",
           resume: false,
           text: receipt.text,
@@ -7060,6 +7086,7 @@ test("Effect server keeps Authorize and model settings RPCs separate with two na
           }),
         ),
     },
+    event: { subscribe: () => Stream.empty },
     rpc: { register: (definition: any, handlers: any) => Effect.sync(() => rpcs.push({ definition, handlers })) },
   } as any
   await Effect.runPromise(
@@ -7075,7 +7102,7 @@ test("Effect server keeps Authorize and model settings RPCs separate with two na
         expect(added[0].input).toBe(reviewerGitInput)
         expect(rpcs).toHaveLength(2)
         expect(rpcs[0].definition).toBe(authorizeRpc)
-        expect(Object.keys(rpcs[0].handlers)).toEqual(["authorize", "revise"])
+        expect(Object.keys(rpcs[0].handlers)).toEqual(["authorize", "decideRepair", "revise"])
         expect(rpcs[1].definition.id).toBe("opencode-agents.models")
         expect(Object.keys(rpcs[1].handlers)).toEqual(["list", "set", "reset"])
         expect(hooks.map((item) => item.name)).toEqual(["execute.before"])
@@ -7192,7 +7219,7 @@ snapshotTest(
       "review-receipt",
     ])
     expect(outcome).toContain("Review APPROVED.")
-    expect(outcome).toContain("No repair, additional review, or Commit")
+    expect(outcome).toContain("Review grants no mutation or Commit authority")
     expect(f.reviewOriginals).toHaveLength(1)
     expect(f.reviewWakes).toHaveLength(1)
     expect(f.originals).toHaveLength(1)
@@ -7234,9 +7261,9 @@ snapshotTest(
     )
     expect(implementation.text).not.toContain("Review APPROVED")
     expect(implementation.text).not.toContain("Implementation satisfies the proposal.")
-    expect(implementation.text).not.toContain("No repair, additional review, or Commit")
+    expect(implementation.text).not.toContain("Review grants no mutation or Commit authority")
     expect(review.text).toBe(
-      "Review APPROVED.\nImplementation satisfies the proposal.\nReview target remained unchanged. This attempt ended before Commit. No repair, additional review, or Commit authority was granted.",
+      "Review APPROVED.\nImplementation satisfies the proposal.\nReview target remained unchanged at verification. Review grants no mutation or Commit authority.\nThis attempt ended before Commit.",
     )
     expect(review.text).not.toContain(HEAD)
     expect(review.text).not.toContain("Resulting paths")
@@ -7528,7 +7555,7 @@ snapshotTest(
       expect(outcome).toContain(`Review ${result.status}.`)
       expect(outcome).toContain(result.summary)
       if (result.status === "CHANGES_REQUESTED") expect(outcome).toContain('"remediation":"Handle empty input"')
-      expect(outcome).toContain("No repair, additional review, or Commit")
+      expect(outcome).toContain("Review grants no mutation or Commit authority")
       expect(f.originals).toHaveLength(1)
       expect(f.reviewOriginals).toHaveLength(1)
       expect(f.receipts).toHaveLength(2)
@@ -7538,7 +7565,7 @@ snapshotTest(
       )
       expect(review.resume).toBe(false)
       expect(review.text).toStartWith(`Review ${result.status}.\n${result.summary}\n`)
-      expect(review.text).toContain("Review target remained unchanged. This attempt ended before Commit.")
+      expect(review.text).toContain("Review target remained unchanged at verification.")
       expect(review.text).not.toContain(HEAD)
       expect(review.text).not.toContain("Resulting paths")
       if (result.status === "CHANGES_REQUESTED") expect(review.text).toContain('"remediation":"Handle empty input"')
@@ -7749,7 +7776,7 @@ snapshotTest(
         if (drift) observer.targetDigests.set(root, "b".repeat(64))
       }
       const outcome = await f.authorize()
-      expect(outcome).toContain(drift ? "Review target changed." : "Review target remained unchanged.")
+      expect(outcome).toContain(drift ? "Review target changed." : "Review target remained unchanged at verification.")
       if (drift) expect(outcome).not.toContain("Review APPROVED.")
       expect(f.reviewOriginals).toHaveLength(1)
       expect(f.originals).toHaveLength(1)
@@ -8921,3 +8948,886 @@ snapshotTest(
     })
   },
 )
+
+const repairFindings = {
+  status: "CHANGES_REQUESTED" as const,
+  summary: "The implementation needs a bounded fix.",
+  findings: [
+    {
+      severity: "high" as const,
+      scenario: "A caller fails",
+      impact: "Incorrect output",
+      remediation: "Fix within the original authority",
+      path: "outside.txt",
+    },
+  ],
+}
+async function pendingRepair(f: ReturnType<typeof serverFake>, observer: SnapshotObserver) {
+  f.state.reviewOutput = JSON.stringify(repairFindings)
+  f.state.run = async () => {
+    const raw = JSON.parse(f.wakes.at(-1).text.split("\n")[1])
+    await f.dispatch(raw)
+    observer.configure(f.candidate.root, HEAD, ["old.txt"])
+  }
+  const outcome = await f.authorizeOutcome()
+  expect(outcome.kind).toBe("repair")
+  if (outcome.kind !== "repair") throw new Error(outcome.receipt)
+  return outcome
+}
+const chooseRepair = (f: ReturnType<typeof serverFake>, decisionID: string, action: "Repair" | "Stop" = "Repair") =>
+  Effect.runPromise(f.admission.decideRepair({ decisionID, action }))
+
+snapshotTest(
+  "verified findings create immutable pending evidence, release exclusion, and Stop admits no worker",
+  async (observer) => {
+    const root = snapshotFixture(observer),
+      f = serverFake(root, observer)
+    const outcome = await pendingRepair(f, observer)
+    expect(checkedCycleOutcome(outcome)).toEqual(outcome)
+    expect(Object.isFrozen(outcome.decision.result.findings[0])).toBe(true)
+    expect(outcome.decision.target.paths).toEqual(["old.txt"])
+    expect(outcome.decision.candidate.proposal.files).not.toContain("outside.txt")
+    expect(f.originals).toHaveLength(1)
+    expect(f.reviewOriginals).toHaveLength(1)
+    expect(f.cap.phase).toBe("closed")
+    expect(f.admission.currentApproval("ses_parent")).toBeUndefined()
+    await expect(f.dispatch()).rejects.toThrow()
+    for (const input of [
+      { decisionID: "wrong", action: "Repair" },
+      { decisionID: outcome.decision.id, action: "Repair", findings: repairFindings },
+      { decisionID: outcome.decision.id, action: "invalid" },
+    ]) {
+      expect((await Effect.runPromise(f.admission.decideRepair(input))).receipt).toContain("unverified")
+    }
+    expect((await chooseRepair(f, outcome.decision.id, "Stop")).receipt).toContain("Stopped by human")
+    expect((await chooseRepair(f, outcome.decision.id)).receipt).toContain("stale, spent")
+    expect(f.originals).toHaveLength(1)
+    expect(f.wakes).toHaveLength(1)
+    expect(f.reviewOriginals).toHaveLength(1)
+    expect(await f.authorize()).toContain("One governed")
+  },
+)
+
+snapshotTest(
+  "two explicit Repair cycles use fresh children and cumulative original authority, including byte-identical repair",
+  async (observer) => {
+    const root = snapshotFixture(observer),
+      f = serverFake(root, observer)
+    const first = await pendingRepair(f, observer)
+    const initialReservation = f.cap.reservation
+    const initialChild = f.cap.childID
+    // Cumulative paths can remove the previous delta and add another authorized path.
+    f.state.run = async () => {
+      await f.dispatch(JSON.parse(f.wakes.at(-1).text.split("\n")[1]))
+      observer.configure(root, HEAD, ["new.txt"])
+      observer.targetDigests.set(root, "b".repeat(64))
+    }
+    const second = await chooseRepair(f, first.decision.id)
+    expect(second.kind).toBe("repair")
+    if (second.kind !== "repair") throw new Error(second.receipt)
+    expect(second.decision.id).not.toBe(first.decision.id)
+    expect(second.decision.target.paths).toEqual(["new.txt"])
+    expect(second.decision.reviewer.childID).toBe("ses_review-2")
+    expect(second.decision.reviewer.resultID).not.toBe(first.decision.reviewer.resultID)
+    expect((await chooseRepair(f, first.decision.id, "Stop")).receipt).toContain("stale, spent")
+    f.state.reviewOutput = JSON.stringify({ status: "APPROVED", summary: "Fixed", findings: [] })
+    // The next repair is byte-identical; it must still get a new review.
+    const approved = await chooseRepair(f, second.decision.id)
+    expect(approved.kind).toBe("terminal")
+    expect(approved.receipt).toContain("Review APPROVED")
+    expect(f.originals.map((entry) => entry.context.messageID)).toHaveLength(3)
+    expect(new Set(f.originals.map((entry) => entry.context.messageID)).size).toBe(3)
+    expect(f.reviewOriginals).toHaveLength(3)
+    expect(f.admission.currentApproval("ses_parent")?.reviewer.childID).toBe("ses_review-3")
+    expect(f.admission.currentApproval("ses_parent")?.implementation.identity.childID).toBe("ses_child-3")
+    expect(f.admission.currentApproval("ses_parent")?.implementation.target.paths).toEqual(["new.txt"])
+    for (const entry of f.originals.slice(1)) {
+      expect(Object.keys(entry.input)).toEqual(["agent", "description", "prompt"])
+      expect(entry.input.prompt).toContain("dirty reviewed worktree")
+      expect(entry.input.prompt).toContain(JSON.stringify(first.decision.result))
+      expect(entry.input.prompt).toContain(JSON.stringify(f.candidate.proposal.files))
+      expect(entry.input.prompt).not.toContain("worktree was clean")
+      expect(entry.input.prompt).toContain(HEAD)
+    }
+    expect(f.cap.reservation).toEqual(initialReservation)
+    expect(f.cap.childID).toBe(initialChild)
+    expect(f.cap.phase).toBe("closed")
+    expect(await f.authorize()).toContain("One governed")
+    await expect(f.dispatch()).rejects.toThrow()
+    await expect(f.dispatchReview()).rejects.toThrow()
+    expect(
+      observer
+        .calls(root)
+        .filter((call) => call.baseline)
+        .every((call) => call.baseline!.head === HEAD && call.baseline!.paths.length === 0),
+    ).toBe(true)
+    observer.targetDigests.set(root, "c".repeat(64))
+    expect(f.admission.currentApproval("ses_parent")).toBeUndefined()
+    observer.targetDigests.set(root, "b".repeat(64))
+    expect(f.admission.currentApproval("ses_parent")).toBeUndefined()
+  },
+)
+
+snapshotTest(
+  "Repair and Stop race once; duplicate and stale callbacks cannot close the winner or its new decision",
+  async (observer) => {
+    for (const winner of ["Repair", "Stop"] as const) {
+      const f = serverFake(snapshotFixture(observer), observer)
+      const initial = await pendingRepair(f, observer)
+      const [won, lost] = await Promise.all([
+        chooseRepair(f, initial.decision.id, winner),
+        chooseRepair(f, initial.decision.id, winner === "Repair" ? "Stop" : "Repair"),
+      ])
+      expect(lost.kind).toBe("terminal")
+      expect(lost.receipt).toContain("stale, spent")
+      expect(f.originals).toHaveLength(winner === "Repair" ? 2 : 1)
+      if (won.kind === "repair") {
+        expect(winner).toBe("Repair")
+        expect((await chooseRepair(f, initial.decision.id)).receipt).toContain("stale, spent")
+        expect((await chooseRepair(f, won.decision.id, "Stop")).receipt).toContain("Stopped")
+      } else expect(won.receipt).toContain("Stopped")
+    }
+  },
+)
+
+for (const drift of [
+  "digest",
+  "head",
+  "scope",
+  "location",
+  "role",
+  "permissions",
+  "created",
+  "history",
+  "wake",
+  "model",
+] as const) {
+  snapshotTest(
+    `Repair ${drift} drift fails before native entry and never restores decision or initial CAP`,
+    async (observer) => {
+      const root = snapshotFixture(observer),
+        f = serverFake(root, observer)
+      const first = await pendingRepair(f, observer)
+      if (drift === "digest") observer.targetDigests.set(root, "b".repeat(64))
+      if (drift === "head") observer.configure(root, "2".repeat(40), ["old.txt"])
+      if (drift === "scope") observer.configure(root, HEAD, ["outside.txt"])
+      if (drift === "location") f.context.location.workspaceID = "other"
+      if (drift === "role") f.sessions.ses_parent.agent = "planner"
+      if (drift === "permissions") f.sessions.ses_parent.permissions = [{ action: "*", resource: "*", effect: "allow" }]
+      if (drift === "created") f.sessions.ses_parent.time.created = 9
+      if (drift === "history") f.histories.ses_parent.push(user("continued", "Another task"))
+      if (drift === "wake")
+        f.state.onWake = () => {
+          observer.targetDigests.set(root, "b".repeat(64))
+        }
+      if (drift === "model") {
+        f.modelPreferences.set(
+          preferenceKey(f.context.location, "authorized_implementer"),
+          parseSelection({ providerID: "test", id: "chosen", variant: "high" }),
+        )
+        f.state.onRead = (kind, id) => {
+          if (kind === "get" && id === "ses_parent") observer.targetDigests.set(root, "b".repeat(64))
+        }
+      }
+      f.state.run = async () => {
+        await expect(f.dispatch(JSON.parse(f.wakes.at(-1).text.split("\n")[1]))).rejects.toThrow()
+      }
+      const rejected = await chooseRepair(f, first.decision.id)
+      expect(rejected.kind).toBe("terminal")
+      expect(rejected.receipt).toContain("unverified")
+      expect(f.originals).toHaveLength(1)
+      expect(f.reviewOriginals).toHaveLength(1)
+      expect(f.cap.phase).toBe("closed")
+      expect((await chooseRepair(f, first.decision.id)).receipt).toContain("stale, spent")
+    },
+  )
+}
+
+snapshotTest(
+  "Repair settings preparation drift reaches the final synchronous barrier and starts no native child",
+  async (observer) => {
+    const root = snapshotFixture(observer),
+      f = serverFake(root, observer)
+    const first = await pendingRepair(f, observer)
+    const wrapped = f.admission.execute(f.original, (input) =>
+      Effect.promise(async () => {
+        await Promise.resolve()
+        observer.targetDigests.set(root, "d".repeat(64))
+        return input
+      }),
+    )
+    f.state.run = async () => {
+      const raw = JSON.parse(f.wakes.at(-1).text.split("\n")[1])
+      const invocation: any = {
+        sessionID: "ses_parent",
+        agent: "orchestrator",
+        messageID: "repair-prep",
+        id: "repair-prep-call",
+        progress: () => Effect.void,
+      }
+      f.histories.ses_parent.push({
+        ...answer(invocation.messageID, "orchestrator", ""),
+        content: [{ type: "tool", id: invocation.id, name: "subagent", state: { status: "running", input: raw } }],
+      })
+      await Effect.runPromise(f.admission.before({ ...invocation, tool: "subagent", input: raw }))
+      await expect(Effect.runPromise(wrapped(raw, invocation))).rejects.toThrow()
+    }
+    expect((await chooseRepair(f, first.decision.id)).receipt).toContain("unverified")
+    expect(f.originals).toHaveLength(1)
+    expect(f.reviewOriginals).toHaveLength(1)
+  },
+)
+
+snapshotTest(
+  "repair reacquires exclusion before its first observation; competing acquisition supersedes paused decisions",
+  async (observer) => {
+    const root = snapshotFixture(observer),
+      f = serverFake(root, observer)
+    const first = await pendingRepair(f, observer)
+    f.state.run = async (sessionID) => {
+      if (sessionID !== "ses_parent") return
+      await f.dispatch(JSON.parse(f.wakes.at(-1).text.split("\n")[1]))
+    }
+    f.state.onWake = async () => {
+      if (competitor) await competitor
+    }
+    const originalObserve = observer.observe
+    let observed = false,
+      competitor: Promise<CycleOutcome> | undefined
+    const secondClaim = { ...f.claim, rootSessionID: "ses_other" }
+    f.sessions.ses_other = { ...f.sessions.ses_parent, id: "ses_other" }
+    f.histories.ses_other = []
+    mock.module(gitModulePath, () => ({
+      ...realGit,
+      observeReviewTarget: observer.reviewTarget,
+      observeGit: (directory: string, baseline?: GitSnapshot) => {
+        if (!observed) {
+          observed = true
+          competitor = f.authorizeOutcome(secondClaim)
+        }
+        return originalObserve(directory, baseline)
+      },
+    }))
+    const repaired = await chooseRepair(f, first.decision.id)
+    expect(observed).toBe(true)
+    expect((await competitor!).receipt).toContain("exclusion")
+    expect(f.originals).toHaveLength(2)
+    expect(repaired.kind).toBe("repair")
+    if (repaired.kind !== "repair") throw new Error(repaired.receipt)
+    // Another admitted root after the human pause is allowed to own exclusion.
+    // Even a byte-identical failed attempt permanently supersedes old eligibility.
+    const thirdClaim = { ...f.claim, rootSessionID: "ses_third" }
+    f.sessions.ses_third = { ...f.sessions.ses_parent, id: "ses_third" }
+    f.histories.ses_third = []
+    observer.configure(root)
+    f.state.run = async () => {}
+    await f.authorizeOutcome(thirdClaim)
+    observer.configure(root, HEAD, ["old.txt"])
+    expect((await chooseRepair(f, repaired.decision.id)).receipt).toContain("stale, spent")
+    expect(f.originals).toHaveLength(2)
+  },
+)
+
+snapshotTest(
+  "out-of-scope diagnostic findings grant no paths and an unauthorized repair delta fails the cumulative gate",
+  async (observer) => {
+    const root = snapshotFixture(observer),
+      f = serverFake(root, observer)
+    const first = await pendingRepair(f, observer)
+    f.state.run = async () => {
+      await f.dispatch(JSON.parse(f.wakes.at(-1).text.split("\n")[1]))
+      observer.configure(root, HEAD, ["old.txt", "outside.txt"])
+    }
+    const rejected = await chooseRepair(f, first.decision.id)
+    expect(rejected.kind).toBe("terminal")
+    expect(rejected.receipt).toContain("Out-of-scope Git delta: outside.txt")
+    expect(f.reviewOriginals).toHaveLength(1)
+    expect(f.cap.claim.candidate.proposal.files).not.toContain("outside.txt")
+    expect(f.admission.currentApproval("ses_parent")).toBeUndefined()
+  },
+)
+
+snapshotTest("fresh repair Implementer and Reviewer identities reject host reuse across cycles", async (observer) => {
+  for (const role of ["authorized_implementer", "reviewer"] as const) {
+    const root = snapshotFixture(observer),
+      f = serverFake(root, observer)
+    const first = await pendingRepair(f, observer)
+    if (role === "authorized_implementer")
+      f.state.nativeProgress = [
+        { sessionID: "ses_child", status: "running" },
+        { sessionID: "ses_review", status: "running" },
+      ]
+    else f.state.reviewProgressUpdates = [{ sessionID: "ses_review", status: "running" }]
+    const rejected = await chooseRepair(f, first.decision.id)
+    expect(rejected.kind).toBe("terminal")
+    expect(rejected.receipt).toContain("unverified")
+    expect(f.admission.currentApproval("ses_parent")).toBeUndefined()
+    expect((await chooseRepair(f, first.decision.id)).receipt).toContain("stale, spent")
+  }
+})
+
+snapshotTest("INCONCLUSIVE, unverified review, and post-publication drift expose no Repair", async (observer) => {
+  for (const status of ["INCONCLUSIVE", "unverified", "receipt-drift"] as const) {
+    const root = snapshotFixture(observer),
+      f = serverFake(root, observer)
+    f.state.run = async () => {
+      await f.dispatch()
+    }
+    if (status === "INCONCLUSIVE")
+      f.state.reviewOutput = JSON.stringify({ status, summary: "Insufficient evidence", findings: [] })
+    if (status === "unverified") f.state.reviewOutput = "not JSON"
+    if (status === "receipt-drift") {
+      f.state.reviewOutput = JSON.stringify(repairFindings)
+      f.state.onReceipt = () => {
+        if (f.receipts.length === 2) observer.targetDigests.set(root, "d".repeat(64))
+      }
+    }
+    expect((await f.authorizeOutcome()).kind).toBe("terminal")
+    expect((await chooseRepair(f, "unknown")).receipt).toContain("stale, spent")
+    expect(f.originals).toHaveLength(1)
+  }
+})
+
+snapshotTest(
+  "teardown loses pending decisions and accepted unconsumed repair claims, including retained executor closures",
+  async (observer) => {
+    for (const phase of ["pending", "wake", "preparation"] as const) {
+      const root = snapshotFixture(observer),
+        f = serverFake(root, observer)
+      const first = await pendingRepair(f, observer)
+      if (phase === "pending") f.admission.teardown()
+      if (phase === "wake") f.state.onWake = () => f.admission.teardown()
+      if (phase === "preparation")
+        f.state.onRead = (kind, id) => {
+          if (kind === "context" && id === "ses_parent" && f.wakes.length === 2) f.admission.teardown()
+        }
+      f.state.run = async () => {
+        await expect(f.dispatch(JSON.parse(f.wakes.at(-1).text.split("\n")[1]))).rejects.toThrow()
+      }
+      expect((await chooseRepair(f, first.decision.id)).receipt).toContain("revoked")
+      expect(f.originals).toHaveLength(1)
+      const restarted = nativeAdmission(f.context)
+      expect(
+        (await Effect.runPromise(restarted.decideRepair({ decisionID: first.decision.id, action: "Repair" }))).receipt,
+      ).toContain("stale, spent")
+      await expect(
+        Effect.runPromise(
+          f.wrapped({}, {
+            sessionID: "ses_parent",
+            agent: "orchestrator",
+            messageID: "old",
+            id: "old",
+            progress: () => Effect.void,
+          } as any),
+        ),
+      ).rejects.toThrow("revoked")
+    }
+  },
+)
+
+function tuiRepairOutcome(root: string, id = "live-repair"): CycleOutcome & { kind: "repair" } {
+  const candidate = makeCandidate(parseProposal(proposal, root), root, HEAD)
+  return {
+    kind: "repair",
+    receipt: "Verified CHANGES_REQUESTED",
+    decision: {
+      id,
+      rootSessionID: "parent",
+      candidate,
+      target: { root, head: HEAD, paths: ["old.txt"], digest: "a".repeat(64) },
+      result: repairFindings,
+      reviewer: { messageID: `review-${id}`, toolID: `call-${id}`, childID: `child-${id}`, resultID: `result-${id}` },
+      receipts: [],
+    },
+  }
+}
+function readRepairPages(f: ReturnType<typeof fake>, view: ReturnType<typeof mount>) {
+  for (let i = 0; i < 30; i++) {
+    f.renderer.emit("frame")
+    view.click(3)
+  }
+  f.renderer.emit("frame")
+}
+
+snapshotTest(
+  "TUI Repair requires all readable evidence pages, sends only selector/action, and retires stale callbacks through another cycle",
+  async (observer) => {
+    const root = snapshotFixture(observer),
+      f = fake(root)
+    const first = tuiRepairOutcome(root)
+    f.options.onAuthorize = async () => {
+      f.inboxes.parent.splice(0)
+      return first
+    }
+    f.options.onRepair = async () => tuiRepairOutcome(root, "second-repair")
+    const cleanup = await activate(f),
+      initial = mount(f)
+    initial.click(0)
+    await settleUntil(() => f.slots.length === 2)
+    const review = mount(f, "parent", false)
+    expect(review.buttons).toHaveLength(4)
+    review.click(0)
+    expect(f.calls.repairs).toEqual([])
+    f.renderer.emit("frame")
+    review.click(0) // The first page alone cannot grant Repair.
+    expect(f.calls.repairs).toEqual([])
+    readRepairPages(f, review)
+    expect(review.text()).toContain("outside.txt")
+    expect(review.text()).toContain("Original frozen proposal and exact path ceiling")
+    review.click(0, 2)
+    expect(f.calls.repairs).toEqual([])
+    review.click(0)
+    review.click(1)
+    await settleUntil(() => f.slots.length === 3)
+    expect(f.calls.repairs).toEqual([{ decisionID: first.decision.id, action: "Repair" }])
+    initial.click(0)
+    review.click(0)
+    review.click(1)
+    expect(f.calls.repairs).toHaveLength(1)
+    const next = mount(f)
+    readRepairPages(f, next)
+    f.options.onRepair = async () => ({ kind: "terminal", receipt: "Stopped by human" })
+    next.click(1)
+    await settleUntil(() => f.slots.at(-1).removed)
+    expect(f.calls.repairs[1]).toEqual({ decisionID: "second-repair", action: "Stop" })
+    expect(f.calls.claims).toHaveLength(1)
+    expect(f.calls.receipts).toEqual([])
+    cleanup()
+    initial.dispose()
+    review.dispose()
+    next.dispose()
+  },
+)
+
+snapshotTest(
+  "TUI Repair survives navigation/remount but loses readable proof and respects host keyboard modes",
+  async (observer) => {
+    const root = snapshotFixture(observer),
+      f = fake(root)
+    f.options.onAuthorize = async () => {
+      f.inboxes.parent.splice(0)
+      return tuiRepairOutcome(root)
+    }
+    const [route, setRoute] = createSignal({ type: "session", sessionID: "parent" })
+    ;(f.context.ui.router as any).current = route
+    const cleanup = await activate(f),
+      initial = mount(f)
+    initial.click(0)
+    await settleUntil(() => f.slots.length === 2)
+    const review = mount(f)
+    readRepairPages(f, review)
+    setRoute({ type: "session", sessionID: "planner-child" })
+    review.dispose()
+    review.click(0)
+    expect(f.calls.repairs).toEqual([])
+    setRoute({ type: "session", sessionID: "parent" })
+    const returned = mount(f, "parent", false)
+    returned.click(0)
+    expect(f.calls.repairs).toEqual([])
+    readRepairPages(f, returned)
+    const keyboard = returned.layers[0]()
+    ;(f.context.keymap.mode as any).current = () => "dialog"
+    expect(layerEnabled(keyboard)).toBe(false)
+    keyboard.commands!.find((command) => command.bind === "return")!.run!()
+    expect(f.calls.repairs).toEqual([])
+    ;(f.context.keymap.mode as any).current = () => "base"
+    expect(layerEnabled(keyboard)).toBe(true)
+    // Default Stop remains a deliberate safe action; navigation alone selected nothing.
+    keyboard.commands!.find((command) => command.bind === "return")!.run!()
+    await settleUntil(() => f.calls.repairs.length === 1)
+    expect(f.calls.repairs[0].action).toBe("Stop")
+    cleanup()
+    initial.dispose()
+    returned.dispose()
+  },
+)
+
+for (const failure of [
+  "surface",
+  "resize",
+  "location",
+  "continuation",
+  "pending",
+  "lost-response",
+  "cleanup",
+] as const) {
+  snapshotTest(`TUI Repair ${failure} fails closed without resubmission or receipt authority`, async (observer) => {
+    const root = snapshotFixture(observer),
+      f = fake(root)
+    f.options.onAuthorize = async () => {
+      f.inboxes.parent.splice(0)
+      return tuiRepairOutcome(root)
+    }
+    const cleanup = await activate(f),
+      initial = mount(f)
+    initial.click(0)
+    await settleUntil(() => f.slots.length === 2)
+    const review = mount(f)
+    readRepairPages(f, review)
+    if (failure === "surface") review.dispose()
+    if (failure === "resize") {
+      f.renderer.emit("resize")
+      f.renderer.terminalWidth = 25
+    }
+    if (failure === "location") (f.context.location as any).workspaceID = "different"
+    if (failure === "continuation")
+      f.emit({ type: "session.execution.started", id: "continued", data: { sessionID: "parent" } })
+    if (failure === "pending")
+      f.inboxes.parent.push({ type: "user", id: "later", delivery: "steer", payload: { text: "another task" } })
+    if (failure === "lost-response")
+      f.options.onRepair = async () => {
+        throw new Error("lost response")
+      }
+    if (failure === "cleanup") cleanup()
+    review.click(0)
+    for (let i = 0; i < 100; i++) await Promise.resolve()
+    review.click(0)
+    review.click(1)
+    expect(f.calls.repairs).toHaveLength(failure === "lost-response" ? 1 : 0)
+    expect(f.calls.receipts).toEqual([])
+    expect(f.calls.claims).toHaveLength(1)
+    cleanup()
+    initial.dispose()
+    review.dispose()
+  })
+}
+
+snapshotTest(
+  "TUI lost initial decision response and restart never derive Repair controls from historical findings",
+  async (observer) => {
+    const root = snapshotFixture(observer),
+      f = fake(root)
+    f.options.onAuthorize = async () => {
+      throw new Error("lost verified review response")
+    }
+    const cleanup = await activate(f),
+      initial = mount(f)
+    initial.click(0)
+    await settleUntil(() => f.calls.toasts.length > 0)
+    f.cache.parent.push({
+      type: "synthetic",
+      id: "old-review",
+      text: JSON.stringify(repairFindings),
+      description: "Repair / Stop",
+      metadata: { source: "opencode-agents" },
+    })
+    const reopened = mount(f)
+    expect(reopened.buttons).toEqual([])
+    cleanup()
+    let restart!: () => void
+    createRoot((dispose) => {
+      const result = plugin.setup(f.context)
+      restart = () => {
+        if (typeof result === "function") result()
+        dispose()
+      }
+    })
+    f.emit(f.created())
+    f.emit({ type: "session.execution.succeeded", id: "old-completion", data: { sessionID: "parent" } })
+    for (let i = 0; i < 100; i++) await Promise.resolve()
+    expect(f.calls.repairs).toEqual([])
+    expect(mount(f).buttons).toEqual([])
+    restart()
+    initial.dispose()
+    reopened.dispose()
+  },
+)
+
+snapshotTest(
+  "pending receipt identities are tolerated across Repair while unrelated root input never is",
+  async (observer) => {
+    const root = snapshotFixture(observer),
+      f = serverFake(root, observer)
+    const first = await pendingRepair(f, observer)
+    for (const receipt of f.receipts)
+      f.histories.ses_parent.push({ id: receipt.id, type: "synthetic", text: receipt.text })
+    for (const receipt of f.receipts)
+      f.admission.eventReceived({
+        type: "session.inbox.enqueued",
+        data: {
+          sessionID: "ses_parent",
+          inboxID: receipt.id,
+          item: { type: "synthetic", delivery: "steer", payload: { text: receipt.text } },
+        },
+      })
+    const second = await chooseRepair(f, first.decision.id)
+    expect(second.kind).toBe("repair")
+    if (second.kind !== "repair") throw new Error(second.receipt)
+    expect(f.originals).toHaveLength(2)
+    f.admission.eventReceived({
+      type: "session.inbox.enqueued",
+      data: { sessionID: "ses_parent", inboxID: "unrelated", item: { type: "user", payload: { text: "new task" } } },
+    })
+    expect((await chooseRepair(f, second.decision.id)).receipt).toContain("stale, spent")
+    expect(f.originals).toHaveLength(2)
+  },
+)
+
+snapshotTest(
+  "pending decisions and unconsumed repair claims are revoked by supported policy/input events",
+  async (observer) => {
+    for (const stage of ["pending", "claim"] as const) {
+      for (const type of [
+        "session.permissions",
+        "session.agent.selected",
+        "session.moved",
+        "session.inbox.enqueued",
+      ] as const) {
+        const root = snapshotFixture(observer),
+          f = serverFake(root, observer)
+        const first = await pendingRepair(f, observer)
+        const event = {
+          type,
+          data: {
+            sessionID: "ses_parent",
+            inboxID: "unexpected",
+            item: { type: "user", payload: { text: "another task" } },
+          },
+        }
+        if (stage === "pending") f.admission.eventReceived(event)
+        else {
+          f.state.onWake = () => f.admission.eventReceived(event)
+          f.state.run = async () => {
+            await expect(f.dispatch(JSON.parse(f.wakes.at(-1).text.split("\n")[1]))).rejects.toThrow()
+          }
+        }
+        expect((await chooseRepair(f, first.decision.id)).receipt).toContain("unverified")
+        expect(f.originals).toHaveLength(1)
+        expect(f.reviewOriginals).toHaveLength(1)
+        expect((await chooseRepair(f, first.decision.id, "Stop")).receipt).toContain("stale, spent")
+      }
+    }
+  },
+)
+
+snapshotTest(
+  "an old Reviewer call cannot bind the next verified repair cycle even with the same bytes",
+  async (observer) => {
+    const f = serverFake(snapshotFixture(observer), observer)
+    const first = await pendingRepair(f, observer)
+    const oldArguments = f.reviewArguments()
+    f.state.reviewRun = async () => {
+      await expect(
+        f.dispatchReview(undefined, oldArguments, { id: "review-call", messageID: "review-message" }),
+      ).rejects.toThrow()
+    }
+    const rejected = await chooseRepair(f, first.decision.id)
+    expect(rejected.receipt).toContain("Reviewer outcome was unverified")
+    expect(f.originals).toHaveLength(2)
+    expect(f.reviewWakes).toHaveLength(2)
+    expect(f.reviewOriginals).toHaveLength(1)
+    expect(f.admission.currentApproval("ses_parent")).toBeUndefined()
+  },
+)
+
+snapshotTest("unknown repair settlement retains exclusion and never reopens a spent decision", async (observer) => {
+  const root = snapshotFixture(observer),
+    f = serverFake(root, observer)
+  const first = await pendingRepair(f, observer)
+  f.state.onChildWait = async (id) => {
+    if (id === "ses_child-2") throw new Error("unknown repair settlement")
+  }
+  const rejected = await chooseRepair(f, first.decision.id)
+  expect(rejected.receipt).toContain("unknown repair settlement")
+  expect(f.reviewOriginals).toHaveLength(1)
+  f.sessions.ses_other = { ...f.sessions.ses_parent, id: "ses_other" }
+  f.histories.ses_other = []
+  f.state.run = async () => {}
+  expect((await f.authorizeOutcome({ ...f.claim, rootSessionID: "ses_other" })).receipt).toContain("exclusion")
+  expect((await chooseRepair(f, first.decision.id)).receipt).toContain("stale, spent")
+  f.admission.teardown()
+})
+
+snapshotTest(
+  "root continuation across factual publication grants neither Repair nor current approval",
+  async (observer) => {
+    for (const status of ["APPROVED", "CHANGES_REQUESTED"] as const) {
+      const root = snapshotFixture(observer),
+        f = serverFake(root, observer)
+      f.state.reviewOutput = status === "CHANGES_REQUESTED" ? JSON.stringify(repairFindings) : f.state.reviewOutput
+      f.state.run = async () => {
+        await f.dispatch()
+      }
+      f.state.onReceipt = () => {
+        if (f.receipts.length === 2) f.histories.ses_parent.push(user("later-input", "another task"))
+      }
+      const rejected = await f.authorizeOutcome()
+      expect(rejected.kind).toBe("terminal")
+      expect(rejected.receipt).toContain("history was superseded")
+      expect(f.admission.currentApproval("ses_parent")).toBeUndefined()
+    }
+  },
+)
+
+snapshotTest(
+  "current APPROVED evidence is retired by competing execution and can never revive from historical receipts",
+  async (observer) => {
+    const root = snapshotFixture(observer),
+      f = serverFake(root, observer)
+    f.state.run = async () => {
+      await f.dispatch()
+    }
+    const approved = await f.authorizeOutcome()
+    expect(approved.receipt).toContain("Review APPROVED")
+    const historical = f.admission.currentApproval("ses_parent")!
+    expect(historical.result.status).toBe("APPROVED")
+    f.sessions.ses_other = { ...f.sessions.ses_parent, id: "ses_other" }
+    f.histories.ses_other = []
+    f.state.run = async () => {}
+    await f.authorizeOutcome({ ...f.claim, rootSessionID: "ses_other" })
+    expect(f.admission.currentApproval("ses_parent")).toBeUndefined()
+    expect(historical.result.status).toBe("APPROVED")
+    expect(f.receipts.some((receipt) => receipt.text.includes("Review APPROVED"))).toBe(true)
+    expect((await chooseRepair(f, historical.reviewer.resultID)).receipt).toContain("stale, spent")
+  },
+)
+
+snapshotTest(
+  "Repair claim reserve/entry is one-shot and executor losers cannot consume or close its owner",
+  async (observer) => {
+    const root = snapshotFixture(observer),
+      f = serverFake(root, observer)
+    const first = await pendingRepair(f, observer)
+    let entries = 0
+    const wrapped = f.admission.execute((input, invocation) => {
+      entries++
+      return f.original(input, invocation)
+    })
+    f.state.run = async () => {
+      const raw = JSON.parse(f.wakes.at(-1).text.split("\n")[1])
+      const invocation: any = {
+        sessionID: "ses_parent",
+        agent: "orchestrator",
+        messageID: "repair-owner",
+        id: "repair-owner-call",
+        progress: () => Effect.void,
+      }
+      const part: any = { type: "tool", id: invocation.id, name: "subagent", state: { status: "running", input: raw } }
+      f.histories.ses_parent.push({ ...answer(invocation.messageID, "orchestrator", ""), content: [part] })
+      await Effect.runPromise(f.admission.before({ ...invocation, tool: "subagent", input: raw }))
+      await expect(
+        Effect.runPromise(f.admission.before({ ...invocation, id: "loser", tool: "subagent", input: raw })),
+      ).rejects.toThrow()
+      const [owner, loser] = await Promise.allSettled([
+        Effect.runPromise(wrapped(raw, invocation)),
+        Effect.runPromise(wrapped(raw, invocation)),
+      ])
+      expect(owner.status).toBe("fulfilled")
+      expect(loser.status).toBe("rejected")
+      if (owner.status === "fulfilled") part.state = { status: "completed", input: raw, metadata: owner.value.metadata }
+    }
+    expect((await chooseRepair(f, first.decision.id)).kind).toBe("repair")
+    expect(entries).toBe(1)
+    expect(f.originals).toHaveLength(2)
+    expect(f.cap.phase).toBe("closed")
+  },
+)
+
+snapshotTest(
+  "structured RPC validates terminal/live union and rejects authority-bearing selection additions",
+  async (observer) => {
+    const root = snapshotFixture(observer)
+    const valid = tuiRepairOutcome(root)
+    const schema = authorizeRpc.methods.authorize.output as any
+    expect(schema["~standard"].validate(valid).value).toEqual(valid)
+    for (const bad of [
+      "old string response",
+      { kind: "terminal", receipt: "done", decision: valid.decision },
+      {
+        ...valid,
+        decision: { ...valid.decision, result: { status: "INCONCLUSIVE", summary: "unavailable", findings: [] } },
+      },
+      { ...valid, decision: { ...valid.decision, target: { ...valid.decision.target, paths: ["outside.txt"] } } },
+      { ...valid, decision: { ...valid.decision, reviewer: { ...valid.decision.reviewer, resultID: "" } } },
+      { ...valid, decision: { ...valid.decision, receipts: [{ id: "receipt", text: 1 }] } },
+      { ...valid, decision: { ...valid.decision, id: "" } },
+    ]) {
+      expect(() => checkedCycleOutcome(bad)).toThrow()
+      expect(schema["~standard"].validate(bad).issues).toHaveLength(1)
+    }
+  },
+)
+
+snapshotTest("a late Repair RPC result after surface loss cannot install new decisions", async (observer) => {
+  const root = snapshotFixture(observer),
+    f = fake(root)
+  f.options.onAuthorize = async () => {
+    f.inboxes.parent.splice(0)
+    return tuiRepairOutcome(root)
+  }
+  let release!: (outcome: CycleOutcome) => void
+  const pending = new Promise<CycleOutcome>((resolve) => {
+    release = resolve
+  })
+  f.options.onRepair = async () => pending
+  const cleanup = await activate(f),
+    initial = mount(f)
+  initial.click(0)
+  await settleUntil(() => f.slots.length === 2)
+  const review = mount(f)
+  readRepairPages(f, review)
+  review.click(0)
+  await settleUntil(() => f.calls.repairs.length === 1)
+  f.renderer.emit("destroy")
+  release(tuiRepairOutcome(root, "late-decision"))
+  for (let i = 0; i < 100; i++) await Promise.resolve()
+  expect(f.slots.at(-1).removed).toBe(true)
+  expect(mount(f).buttons).toEqual([])
+  expect(f.calls.repairs).toHaveLength(1)
+  cleanup()
+  initial.dispose()
+  review.dispose()
+})
+
+snapshotTest("stale Reviewer hooks and executors are inert during the next cycle's admission", async (observer) => {
+  const f = serverFake(snapshotFixture(observer), observer)
+  const first = await pendingRepair(f, observer)
+  const old = f.reviewArguments()
+  f.state.reviewRun = async () => {
+    const invocation: any = {
+      sessionID: "ses_parent",
+      agent: "orchestrator",
+      messageID: "review-message",
+      id: "review-call",
+      progress: () => Effect.void,
+    }
+    await expect(
+      Effect.runPromise(f.admission.before({ ...invocation, tool: "subagent", input: old })),
+    ).rejects.toThrow("obsolete")
+    await expect(Effect.runPromise(f.wrapped(old, invocation))).rejects.toThrow("obsolete")
+    await f.dispatchReview()
+  }
+  const second = await chooseRepair(f, first.decision.id)
+  expect(second.kind).toBe("repair")
+  expect(f.reviewOriginals).toHaveLength(2)
+  expect(f.originals).toHaveLength(2)
+})
+
+snapshotTest("Repair navigation during decision reads retires the callback before RPC transfer", async (observer) => {
+  const root = snapshotFixture(observer),
+    f = fake(root)
+  f.options.onAuthorize = async () => {
+    f.inboxes.parent.splice(0)
+    return tuiRepairOutcome(root)
+  }
+  const [route, setRoute] = createSignal({ type: "session", sessionID: "parent" })
+  ;(f.context.ui.router as any).current = route
+  const cleanup = await activate(f),
+    initial = mount(f)
+  initial.click(0)
+  await settleUntil(() => f.slots.length === 2)
+  const review = mount(f)
+  readRepairPages(f, review)
+  f.options.onGet = () => {
+    setRoute({ type: "session", sessionID: "planner-child" })
+  }
+  review.click(0)
+  for (let i = 0; i < 100; i++) await Promise.resolve()
+  setRoute({ type: "session", sessionID: "parent" })
+  expect(f.calls.repairs).toEqual([])
+  expect(mount(f).buttons).toEqual([])
+  expect(f.calls.receipts).toEqual([])
+  cleanup()
+  initial.dispose()
+  review.dispose()
+})

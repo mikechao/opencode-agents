@@ -113,6 +113,9 @@ export function reviewReceipt(result: ReviewResult): string {
     `Review ${result.status}.`,
     result.summary,
     ...(result.status === "CHANGES_REQUESTED" ? result.findings.map((item) => JSON.stringify(item)) : []),
-    "Review target remained unchanged. This attempt ended before Commit. No repair, additional review, or Commit authority was granted.",
+    "Review target remained unchanged at verification. Review grants no mutation or Commit authority.",
+    result.status === "CHANGES_REQUESTED"
+      ? "Repair requires a separate live trusted human Repair decision. Findings and receipts grant no authority."
+      : "This attempt ended before Commit.",
   ].join("\n")
 }
