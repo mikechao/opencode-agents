@@ -38,7 +38,13 @@ import {
 } from "./git.ts"
 import { receiptInput } from "./receipt.ts"
 import { reviewerArguments, parseReviewResult, reviewReceipt, type ReviewResult } from "./review.ts"
-import { historicalReviewEvent, sessionEventSeq, type CycleOutcome, type RepairDecision } from "./authorize-rpc.ts"
+import {
+  historicalReviewEvent,
+  ownedReceiptEvent,
+  sessionEventSeq,
+  type CycleOutcome,
+  type RepairDecision,
+} from "./authorize-rpc.ts"
 import { reviewerGitName, reviewerGitArguments } from "./reviewer-git.ts"
 
 const reviewerTool = (name: string) => directRootTool(name) || name === reviewerGitName
@@ -144,8 +150,20 @@ type VerifiedReview = Readonly<{
   implementation: VerifiedImplementation
   result: ReviewResult
   reviewer: RepairDecision["reviewer"]
-  boundary: Readonly<{ length: number; digest: string; created: number; rootIdleID: string; rootEventSeq: number }>
+  boundary: Readonly<{
+    length: number
+    digest: string
+    created: number
+    idle: number
+    rootIdleID: string
+    rootEventSeq: number
+  }>
 }>
+const sameSettlement = (root: Session.Info, boundary: Pick<VerifiedReview["boundary"], "created" | "idle">) =>
+  root.outcome === "succeeded" &&
+  !!root.time.idle &&
+  DateTime.toEpochMillis(root.time.created) === boundary.created &&
+  DateTime.toEpochMillis(root.time.idle) === boundary.idle
 const historyDigest = (history: readonly SessionMessage.Info[]) =>
   createHash("sha256").update(exactEvidence(history)).digest("hex")
 class RepairClaim extends NativeExecution<VerifiedImplementation["claim"]> {
@@ -820,8 +838,7 @@ export function nativeAdmission(context: Context) {
             if (!candidateIntact(cap.claim.candidate)) throw new Error("Frozen claim integrity changed")
             if (executing?.cap !== cap) throw new Error("Root does not own worktree implementation exclusion")
             if (cap instanceof RepairClaim) {
-              if (DateTime.toEpochMillis(root.time.created) !== cap.evidence.boundary.created)
-                throw new Error("Repair root creation changed")
+              if (!sameSettlement(root, cap.evidence.boundary)) throw new Error("Repair root settlement changed")
               if (latest) {
                 reviewBoundary(cap.evidence, latest, cap.control.id)
                 actualCall(cap, latest, call, "running")
@@ -1041,9 +1058,10 @@ export function nativeAdmission(context: Context) {
           boundary: {
             length: history.length,
             digest: historyDigest(history),
-            // structuredClone strips the host DateTime prototype. Bind its
-            // exact primitive value before freezing evidence for later checks.
+            // structuredClone strips host DateTime prototypes. Bind the exact
+            // creation and settlement epochs before freezing later evidence.
             created: DateTime.toEpochMillis(root.time.created),
+            idle: DateTime.toEpochMillis(root.time.idle),
             rootIdleID: rootIdle.id,
           },
         })
@@ -1207,11 +1225,7 @@ export function nativeAdmission(context: Context) {
             rootIdentity(cap.claim, root)
             local(cap)
             if (cap instanceof RepairClaim) {
-              if (
-                root.outcome !== "succeeded" ||
-                !root.time.idle ||
-                DateTime.toEpochMillis(root.time.created) !== cap.evidence.boundary.created
-              )
+              if (!sameSettlement(root, cap.evidence.boundary))
                 throw new Error("Repair root is not the reviewed settled root")
               repairFresh(cap)
             } else {
@@ -1224,11 +1238,7 @@ export function nativeAdmission(context: Context) {
             const latestRoot = yield* context.session.get({ sessionID: Session.ID.make(rootSessionID) })
             yield* attempt(() => {
               rootIdentity(cap.claim, latestRoot)
-              if (
-                latestRoot.outcome !== "succeeded" ||
-                !latestRoot.time.idle ||
-                DateTime.toEpochMillis(latestRoot.time.created) !== cap.evidence.boundary.created
-              )
+              if (!sameSettlement(latestRoot, cap.evidence.boundary))
                 throw new Error("Repair root changed during preparation")
               reviewBoundary(cap.evidence, history, cap.control.id)
               repairFresh(cap)
@@ -1343,12 +1353,7 @@ export function nativeAdmission(context: Context) {
           local(cap, implementation.claim)
           const evidence = review.outcome.evidence
           rootIdentity(implementation.claim, finalRoot)
-          if (
-            finalRoot.outcome !== "succeeded" ||
-            !finalRoot.time.idle ||
-            DateTime.toEpochMillis(finalRoot.time.created) !== evidence.boundary.created
-          )
-            throw new Error("Reviewed root changed during publication")
+          if (!sameSettlement(finalRoot, evidence.boundary)) throw new Error("Reviewed root changed during publication")
           reviewBoundary(evidence, finalHistory)
           settledRoots.set(evidence.boundary.rootIdleID, rootSessionID)
           // Publication may await external activity. Keep exclusion until its
@@ -1468,25 +1473,15 @@ export function nativeAdmission(context: Context) {
       event.type === "session.execution.succeeded" &&
       typeof event.id === "string" &&
       event.id.startsWith("evt_") &&
+      event.durable === undefined &&
       settledRoots.get(event.id.replace(/^evt_/, "msg_")) === id
     )
       return
-    if (event.type === "session.inbox.enqueued" && typeof event.data.inboxID === "string") {
-      const item = event.data.item as { type?: unknown; payload?: { text?: unknown } } | undefined
+    if (typeof event.data.inboxID === "string") {
       const receipt = receipts.get(event.data.inboxID)
-      if (receipt?.rootSessionID === id && item?.type === "synthetic" && receipt.text === item.payload?.text) return
+      if (receipt?.rootSessionID === id && ownedReceiptEvent(event, id, { id: event.data.inboxID, text: receipt.text }))
+        return
     }
-    if (
-      event.type === "session.inbox.delivered" &&
-      typeof event.data.inboxID === "string" &&
-      receipts.get(event.data.inboxID)?.rootSessionID === id
-    )
-      return
-    if (
-      event.type === "session.synthetic" &&
-      [...receipts.values()].some((receipt) => receipt.rootSessionID === id && receipt.text === event.data.text)
-    )
-      return
     if (event.type === "session.instructions.updated" && event.data.text === undefined) return
     if (
       !/^session\.(inbox|message|synthetic|instructions|execution|permissions|agent\.selected|moved|deleted|forked|revert|compaction|shell|skill)/.test(
@@ -1507,8 +1502,7 @@ export function nativeAdmission(context: Context) {
           event.data.inboxID === control.id &&
           item?.type === "synthetic" &&
           item.payload?.text === control.text) ||
-        (event.type === "session.inbox.delivered" && event.data.inboxID === control.id) ||
-        (event.type === "session.synthetic" && event.data.text === control.text)
+        (event.type === "session.inbox.delivered" && event.data.inboxID === control.id)
       if (
         !ownControl &&
         /^session\.(inbox|synthetic|instructions|permissions|agent\.selected|moved|deleted|forked|revert)/.test(

@@ -109,6 +109,20 @@ export function historicalReviewEvent(
   return seq !== undefined && seq <= boundary.rootEventSeq
 }
 
+// Session.synthetic publishes through the inbox. Its notifications carry the
+// owned inboxID; the separate session.synthetic event grants no text exemption.
+export function ownedReceiptEvent(
+  event: { type: string; data: Record<string, unknown> },
+  rootSessionID: string,
+  receipt: RepairDecision["receipts"][number],
+): boolean {
+  if (event.data.sessionID !== rootSessionID || event.data.inboxID !== receipt.id) return false
+  if (event.type === "session.inbox.delivered") return true
+  if (event.type !== "session.inbox.enqueued") return false
+  const item = event.data.item as { type?: unknown; payload?: { text?: unknown } } | undefined
+  return item?.type === "synthetic" && item.payload?.text === receipt.text
+}
+
 // Portable Standard Schema: avoid passing an Effect AST to the host's separate
 // Effect runtime. Both host transport and the receiving TUI validate the union.
 const cycleSchema = {

@@ -4,7 +4,7 @@ import type { Data } from "@opencode/client/solid"
 import type { Renderable, MouseEvent } from "@opentui/core"
 import { createEffect, createRenderEffect, createRoot, createSignal, onCleanup, untrack, Show } from "solid-js"
 import { displayPath } from "../../../src/proposal.ts"
-import type { Generation } from "../../../src/cap.ts"
+import { frozenCopy, type Generation } from "../../../src/cap.ts"
 import { registerAgentModels } from "./agent-models-ui.ts"
 import { editRevision } from "./revision-editor.tsx"
 import { observeGit, requireFresh } from "../../../src/git.ts"
@@ -12,6 +12,8 @@ import {
   authorizeRpc,
   checkedCycleOutcome,
   historicalReviewEvent,
+  ownedReceiptEvent,
+  sessionEventSeq,
   type CycleOutcome,
   type RepairDecision,
 } from "../../../src/authorize-rpc.ts"
@@ -154,6 +156,23 @@ const plugin: Definition = {
       const retiredCalls = new Set<string>()
       const settledRoots = new Set<string>()
       const rootSessionID = creation.data.sessionID
+      // One outstanding RPC only. Most activity reduces to a maximum log seq;
+      // receipt/terminal notifications need exact returned identities as well.
+      let transferActivity: { latest: number; identities: OpenCodeEvent[] } | undefined
+      const relevantRepairActivity = (event: OpenCodeEvent) =>
+        /^session\.(inbox|message|synthetic|instructions|execution|permissions|agent\.selected|moved|deleted|forked|revert|compaction|shell|skill)/.test(
+          event.type,
+        ) && !(event.type === "session.instructions.updated" && event.data.text === undefined)
+      const inertReviewEvent = (event: OpenCodeEvent, decision: RepairDecision) =>
+        historicalReviewEvent(event, decision) ||
+        (event.type === "session.execution.succeeded" &&
+          event.durable === undefined &&
+          event.data.sessionID === rootSessionID &&
+          typeof event.id === "string" &&
+          event.id.startsWith("evt_") &&
+          (event.id.replace(/^evt_/, "msg_") === decision.rootIdleID ||
+            settledRoots.has(event.id.replace(/^evt_/, "msg_")))) ||
+        decision.receipts.some((receipt) => ownedReceiptEvent(event, rootSessionID, receipt))
       let pendingSurfaceUsable: (() => boolean) | undefined
       let invalidateLayout: (() => void) | undefined
       let removePresentation: (() => void) | undefined
@@ -216,6 +235,7 @@ const plugin: Definition = {
       }
       const loseRepair = (reason: string) => {
         if (!repairOwner) return
+        transferActivity = undefined
         repairOwner = undefined
         setPresentation(undefined)
         const remove = removePresentation
@@ -224,6 +244,8 @@ const plugin: Definition = {
         present("STOP", reason)
       }
       const acceptOutcome = (outcome: CycleOutcome) => {
+        const activity = transferActivity
+        transferActivity = undefined
         if (generation.revoked) return
         if (
           outcome.kind === "repair" &&
@@ -240,6 +262,14 @@ const plugin: Definition = {
         closeAuthority() // Initial Plan ownership never reopens.
         if (outcome.kind === "terminal") {
           if (outcome.receipt.includes("unverified")) present("STOP", outcome.receipt)
+          return
+        }
+        if (
+          activity &&
+          (activity.latest > outcome.decision.rootEventSeq ||
+            activity.identities.some((event) => !inertReviewEvent(event, outcome.decision)))
+        ) {
+          present("STOP", "Repair decision was superseded by activity received during RPC transfer")
           return
         }
         repairOwner = { kind: "pending", decision: outcome.decision }
@@ -305,6 +335,7 @@ const plugin: Definition = {
             )
               throw new Error("Unexpected pending input before Repair selection")
             repairOwner = { kind: "transferred", decision: captured }
+            transferActivity = { latest: -1, identities: [] }
             return checkedCycleOutcome(
               await context.client.rpc(authorizeRpc).decideRepair({ decisionID: captured.id, action }, { location }),
             )
@@ -356,6 +387,7 @@ const plugin: Definition = {
           if (ownership.kind !== "deciding" && ownership.kind !== "transferred")
             throw new Error("Local decision no longer owns the exact published attempt")
           ownership = { ...ownership, kind: "transferred" }
+          transferActivity ??= { latest: -1, identities: [] }
         },
         assertDecision(captured) {
           if ((ownership.kind !== "deciding" && ownership.kind !== "transferred") || ownership.published !== captured)
@@ -550,7 +582,10 @@ const plugin: Definition = {
               implementing = false
             })
             .then(acceptOutcome)
-            .catch(admissionFailed)
+            .catch((error) => {
+              transferActivity = undefined
+              admissionFailed(error)
+            })
         } catch (error) {
           admissionFailed(error)
         }
@@ -1134,41 +1169,35 @@ const plugin: Definition = {
       // Before transfer, notifications invalidate TUI evidence on receipt;
       // independent publication reads also catch delayed notifications.
       const eventReceived = (event: OpenCodeEvent) => {
+        if (generation.revoked) return
+        if (
+          transferActivity &&
+          "sessionID" in event.data &&
+          event.data.sessionID === rootSessionID &&
+          relevantRepairActivity(event)
+        ) {
+          if (
+            event.type === "session.execution.succeeded" ||
+            event.type === "session.inbox.delivered" ||
+            (event.type === "session.inbox.enqueued" && event.data.item.type === "synthetic")
+          ) {
+            try {
+              transferActivity.identities.push(frozenCopy(event))
+            } catch {
+              transferActivity.latest = Infinity
+            }
+          } else {
+            transferActivity.latest = Math.max(
+              transferActivity.latest,
+              sessionEventSeq(event, rootSessionID) ?? Infinity,
+            )
+          }
+        }
         if (repairOwner && repairOwner.kind !== "transferred") {
           const captured = repairOwner.decision
           if ("sessionID" in event.data && event.data.sessionID === rootSessionID) {
-            if (historicalReviewEvent(event, captured)) return
-            // The SSE stream is batched independently of the RPC response.
-            // An echo of an already verified idle cannot supersede that review.
-            if (
-              event.type === "session.execution.succeeded" &&
-              typeof event.id === "string" &&
-              event.id.startsWith("evt_") &&
-              settledRoots.has(event.id.replace(/^evt_/, "msg_"))
-            )
-              return
-            if (event.type === "session.inbox.enqueued" && event.data.item.type === "synthetic") {
-              const text = event.data.item.payload.text
-              if (captured.receipts.some((receipt) => receipt.id === event.data.inboxID && receipt.text === text))
-                return
-            }
-            if (
-              event.type === "session.inbox.delivered" &&
-              captured.receipts.some((receipt) => receipt.id === event.data.inboxID)
-            )
-              return
-            if (
-              event.type === "session.synthetic" &&
-              captured.receipts.some((receipt) => receipt.text === event.data.text)
-            )
-              return
-            if (event.type === "session.instructions.updated" && event.data.text === undefined) return
-            if (
-              /^session\.(inbox|message|synthetic|instructions|execution|permissions|agent\.selected|moved|deleted|forked|revert|compaction|shell|skill)/.test(
-                event.type,
-              )
-            )
-              loseRepair(`Repair decision lost after ${event.type}`)
+            if (inertReviewEvent(event, captured)) return
+            if (relevantRepairActivity(event)) loseRepair(`Repair decision lost after ${event.type}`)
           }
         }
         if (generation.revoked || ownership.kind === "closed" || ownership.kind === "transferred") return
@@ -1374,6 +1403,7 @@ const plugin: Definition = {
       const dispose = () => {
         generation.revoked = true
         settledRoots.clear()
+        transferActivity = undefined
         repairOwner = undefined
         repairUsable = undefined
         repairInvalidate = undefined

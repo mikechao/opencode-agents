@@ -40,8 +40,13 @@ const decision = {
     ],
   },
   reviewer: { messageID: "review-message", toolID: "review-tool", childID: "review-child", resultID: "review-result" },
-  receipts: [],
+  receipts: [{ id: "msg_review-receipt", text: "Verified factual review receipt." }],
 }
+let currentDecision = decision
+let authorizeReply = Promise.resolve()
+let repairReply = Promise.resolve()
+let authorizing = false
+let repairing = false
 const published = {
   candidate,
   bound: { parentID: "root", planner: { childID: "planner" } },
@@ -65,8 +70,10 @@ mock.module("../../src/attempt.ts", () => ({
   authorizePublishedAttempt: async (_c: any, _p: any, guard: any) => {
     guard.transfer()
     setPadding(2)
+    authorizing = true
+    await authorizeReply
     return checkedCycleOutcome(
-      JSON.parse(JSON.stringify({ kind: "repair", receipt: "verified CHANGES_REQUESTED", decision })),
+      JSON.parse(JSON.stringify({ kind: "repair", receipt: "verified CHANGES_REQUESTED", decision: currentDecision })),
     )
   },
   publishTerminalReceipt: async () => {},
@@ -131,6 +138,15 @@ const context: any = {
     rpc: () => ({
       decideRepair: async (input: any) => {
         selections.push(input)
+        if (input.action === "Repair") {
+          repairing = true
+          await repairReply
+          return checkedCycleOutcome({
+            kind: "repair",
+            receipt: "verified CHANGES_REQUESTED",
+            decision: currentDecision,
+          })
+        }
         return { kind: "terminal", receipt: "Stopped by human" }
       },
     }),
@@ -175,65 +191,167 @@ await render(() => {
     </box>
   )
 }, t.renderer)
-try {
-  setSessions([{ id: "root", agent: "orchestrator", location: { directory } }])
-  await Promise.resolve()
-  handlers.get("session.created")({
-    data: { sessionID: "root", agent: "orchestrator", location: { directory } },
-    created: Date.now() + 10,
-  })
-  setRoute({ type: "session", sessionID: "root" })
-  handlers.get("session.execution.succeeded")({ id: "evt_complete", data: { sessionID: "root" } })
+const drain = async () => {
   for (let i = 0; i < 100; i++) await Promise.resolve()
-  for (let i = 0; i < 3; i++) {
+}
+const frames = async (count = 3) => {
+  for (let i = 0; i < count; i++) {
     await t.renderOnce()
     t.renderer.emit("frame")
   }
-  expect(toasts).toEqual([])
-  expect(layers.at(-1)().enabled()).toBe(true)
+}
+const key = (bind: string) =>
   layers
     .at(-1)()
-    .commands.find((c: any) => c.bind === "return")
+    .commands.find((c: any) => c.bind === bind)
     .run()
-  for (let i = 0; i < 100; i++) await Promise.resolve()
-  // RPC may beat the separately batched SSE terminal event, before any Repair frame.
-  for (const f of listeners)
-    f({ details: { id: "evt_review-idle", type: "session.execution.succeeded", data: { sessionID: "root" } } })
-  // Earlier durable events can lag the same RPC too; their verified log
-  // positions prove they are historical even though no terminal ID matches.
-  for (const [type, seq] of [
-    ["session.execution.started", 48],
-    ["session.inbox.delivered", 49],
-  ] as const)
-    for (const f of listeners)
-      f({
-        details: {
-          id: `evt_review-${seq}`,
-          type,
-          data: { sessionID: "root", inboxID: "review-control" },
-          durable: { aggregateID: "root", seq, version: 1 },
+const emit = (event: any) => {
+  for (const f of listeners) f({ details: event })
+}
+const activity = (seq: number, ordered = true) => ({
+  id: `evt_activity-${seq}`,
+  type: "session.execution.started",
+  data: { sessionID: "root" },
+  ...(ordered ? { durable: { aggregateID: "root", seq, version: 1 } } : {}),
+})
+try {
+  for (const scenario of [
+    "normal",
+    "authorize-newer",
+    "authorize-unproven",
+    "repair-newer",
+    "repair-unproven",
+    "repair-historical",
+    "synthetic-copy",
+  ]) {
+    cleanup?.()
+    setRoute({ type: "home" })
+    setSessions([])
+    setPadding(0)
+    layers.splice(0)
+    selections.splice(0)
+    toasts.splice(0)
+    currentDecision = decision
+    authorizing = false
+    repairing = false
+    let releaseAuthorize!: () => void
+    let releaseRepair!: () => void
+    authorizeReply = new Promise<void>((resolve) => {
+      releaseAuthorize = resolve
+    })
+    repairReply = new Promise<void>((resolve) => {
+      releaseRepair = resolve
+    })
+    cleanup = plugin.setup(context)
+    setSessions([{ id: "root", agent: "orchestrator", location: { directory } }])
+    await drain()
+    handlers.get("session.created")({
+      data: { sessionID: "root", agent: "orchestrator", location: { directory } },
+      created: Date.now() + 10,
+    })
+    setRoute({ type: "session", sessionID: "root" })
+    handlers.get("session.execution.succeeded")({ id: "evt_complete", data: { sessionID: "root" } })
+    await drain()
+    await frames()
+    expect(toasts).toEqual([])
+    expect(layers.at(-1)().enabled()).toBe(true)
+    key("return")
+    await drain()
+    expect(authorizing).toBe(true)
+    // Events arrive while the RPC is outstanding, before any Repair owner exists.
+    if (scenario.startsWith("authorize-")) emit(activity(51, scenario !== "authorize-unproven"))
+    else {
+      emit(activity(48))
+      emit({ id: "evt_review-idle", type: "session.execution.succeeded", data: { sessionID: "root" } })
+      // The response supplies this owned publication identity after the event.
+      emit({
+        id: "evt_receipt",
+        type: "session.inbox.enqueued",
+        data: {
+          sessionID: "root",
+          inboxID: "msg_review-receipt",
+          item: { type: "synthetic", payload: { text: decision.receipts[0].text } },
         },
+        durable: { aggregateID: "root", seq: 51, version: 1 },
       })
-  for (let i = 0; i < 5; i++) {
-    await t.renderOnce()
-    t.renderer.emit("frame")
+    }
+    releaseAuthorize()
+    await drain()
+    await frames(5)
+    if (scenario.startsWith("authorize-")) {
+      expect(claims()).toHaveLength(0)
+      expect(t.captureCharFrame()).not.toContain("Repair  Stop  Previous  Next")
+      expect(toasts.at(-1)).toContain("superseded")
+      expect(selections).toEqual([])
+      continue
+    }
+    // Exact owned inbox events and delayed historical events remain inert.
+    emit({
+      id: "evt_delivery",
+      type: "session.inbox.delivered",
+      data: { sessionID: "root", inboxID: "msg_review-receipt" },
+    })
+    emit({
+      id: "evt_review-control-delivered",
+      type: "session.inbox.delivered",
+      data: { sessionID: "root", inboxID: "review-control" },
+      durable: { aggregateID: "root", seq: 49, version: 1 },
+    })
+    expect(toasts).toEqual([])
+    expect(claims()).toHaveLength(1)
+    expect(t.captureCharFrame()).toContain("Repair  Stop  Previous  Next")
+    expect(layers.at(-1)().enabled()).toBe(true)
+    key("left") // Repair still requires every evidence page.
+    key("return")
+    await drain()
+    expect(selections).toEqual([])
+    key("right") // Stop
+    if (scenario === "synthetic-copy") {
+      emit({
+        id: "evt_unowned-copy",
+        type: "session.synthetic",
+        data: { sessionID: "root", text: decision.receipts[0].text },
+        durable: { aggregateID: "root", seq: 51, version: 1 },
+      })
+      await frames()
+      expect(claims()).toHaveLength(0)
+      expect(t.captureCharFrame()).not.toContain("Repair  Stop  Previous  Next")
+      expect(selections).toEqual([])
+      continue
+    }
+    if (scenario.startsWith("repair-")) {
+      key("right") // Previous
+      key("right") // Next
+      for (let i = 0; i < 12; i++) {
+        key("return")
+        await frames(1)
+      }
+      key("right") // Repair
+      currentDecision = { ...decision, id: "repair-next", rootIdleID: "msg_next-review-idle", rootEventSeq: 100 }
+      key("return")
+      await drain()
+      expect(repairing).toBe(true)
+      expect(selections).toEqual([{ decisionID: "repair-decision", action: "Repair" }])
+      emit(activity(scenario === "repair-historical" ? 99 : 101, scenario !== "repair-unproven"))
+      releaseRepair()
+      await drain()
+      await frames(5)
+      if (scenario !== "repair-historical") {
+        expect(claims()).toHaveLength(0)
+        expect(t.captureCharFrame()).not.toContain("Repair  Stop  Previous  Next")
+        expect(toasts.at(-1)).toContain("superseded")
+        expect(selections).toHaveLength(1)
+        continue
+      }
+      expect(toasts).toEqual([])
+      expect(claims()).toHaveLength(1)
+      expect(t.captureCharFrame()).toContain("Repair  Stop  Previous  Next")
+    }
+    key("return") // Default Stop, proven in the current readable frame.
+    await drain()
+    expect(selections.at(-1)).toEqual({ decisionID: currentDecision.id, action: "Stop" })
+    expect(claims()).toHaveLength(0)
   }
-  expect(toasts).toEqual([])
-  expect(claims()).toHaveLength(1)
-  const repairLayer = layers.at(-1)()
-  expect(t.captureCharFrame()).toContain("Repair  Stop  Previous  Next")
-  expect(repairLayer.enabled()).toBe(true)
-  // No automatic mutation, and the first readable page cannot grant Repair.
-  repairLayer.commands.find((c: any) => c.bind === "left").run()
-  repairLayer.commands.find((c: any) => c.bind === "return").run()
-  for (let i = 0; i < 50; i++) await Promise.resolve()
-  expect(selections).toEqual([])
-  // Default Stop's positive action remains readable even with the host inset.
-  repairLayer.commands.find((c: any) => c.bind === "right").run()
-  repairLayer.commands.find((c: any) => c.bind === "return").run()
-  for (let i = 0; i < 100; i++) await Promise.resolve()
-  expect(selections).toEqual([{ decisionID: "repair-decision", action: "Stop" }])
-  expect(claims()).toHaveLength(0)
 } finally {
   cleanup?.()
   t.renderer.destroy()

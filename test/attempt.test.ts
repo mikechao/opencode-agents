@@ -4561,6 +4561,7 @@ function serverFake(root: string, _observer: SnapshotObserver, workspaceID?: str
             if (f.reviewWaitError) throw new Error("lost Reviewer root settlement")
             const terminal = idle(`msg_settled-${latestControl.id}`)
             histories[sessionID].push(terminal)
+            sessions[sessionID].time.idle++
             admission.eventReceived({
               id: terminal.id.replace(/^msg_/, "evt_"),
               type: "session.execution.succeeded",
@@ -9004,6 +9005,111 @@ const chooseRepair = (f: ReturnType<typeof serverFake>, decisionID: string, acti
   Effect.runPromise(f.admission.decideRepair({ decisionID, action }))
 
 snapshotTest(
+  "a newer successful settlement between final history and root reads cannot grant Repair or approval",
+  async (observer) => {
+    for (const status of ["CHANGES_REQUESTED", "APPROVED"] as const) {
+      const f = serverFake(snapshotFixture(observer), observer)
+      f.state.reviewOutput = status === "CHANGES_REQUESTED" ? JSON.stringify(repairFindings) : f.state.reviewOutput
+      f.state.run = async () => {
+        await f.dispatch()
+      }
+      let reviewedIdle: string | undefined
+      f.state.onRead = (kind, id) => {
+        if (f.receipts.length !== 2 || kind !== "get" || id !== "ses_parent") return
+        // context already returned settlement A. Host commits B atomically before
+        // get returns, but its event notification has not been delivered yet.
+        expect(f.reads.at(-2)).toBe("context:ses_parent")
+        reviewedIdle = f.histories.ses_parent.at(-1).id
+        f.sessions.ses_parent.time.idle++
+        f.histories.ses_parent.push(idle("msg_newer-successful-settlement"))
+      }
+      const outcome = await f.authorizeOutcome()
+      expect(outcome.kind).toBe("terminal")
+      expect(outcome.receipt).toContain("Reviewed root changed during publication")
+      expect(reviewedIdle).not.toBe(f.histories.ses_parent.at(-1).id)
+      expect(f.sessions.ses_parent.outcome).toBe("succeeded")
+      expect(f.admission.currentApproval("ses_parent")).toBeUndefined()
+      expect((await chooseRepair(f, "unknown")).receipt).toContain("stale, spent")
+      expect(f.originals).toHaveLength(1)
+    }
+  },
+)
+
+snapshotTest("exact reviewed idle must survive Repair preparation and the native entry barrier", async (observer) => {
+  for (const interval of ["admission", "preparation", "entry"] as const) {
+    const f = serverFake(snapshotFixture(observer), observer)
+    const first = await pendingRepair(f, observer)
+    if (interval === "admission") f.sessions.ses_parent.time.idle++
+    else
+      f.state.onRead = (kind, id) => {
+        if (id !== "ses_parent") return
+        if (
+          (interval === "preparation" && kind === "context" && f.wakes.length === 1) ||
+          (interval === "entry" && kind === "get" && f.wakes.length === 2)
+        )
+          f.sessions.ses_parent.time.idle++
+      }
+    f.state.run = async () => {
+      await expect(f.dispatch(JSON.parse(f.wakes.at(-1).text.split("\n")[1]))).rejects.toThrow("settlement changed")
+    }
+    const rejected = await chooseRepair(f, first.decision.id)
+    expect(rejected.kind).toBe("terminal")
+    expect(rejected.receipt).toContain("unverified")
+    expect((await chooseRepair(f, first.decision.id)).receipt).toContain("stale, spent")
+    expect(f.originals).toHaveLength(1)
+    expect(f.reviewOriginals).toHaveLength(1)
+    expect(f.cap.phase).toBe("closed")
+  }
+})
+
+snapshotTest(
+  "receipt text impersonation retires pending server decisions; exact owned inbox events remain inert",
+  async (observer) => {
+    for (const ordered of [false, true]) {
+      const f = serverFake(snapshotFixture(observer), observer)
+      const first = await pendingRepair(f, observer)
+      const receipt = first.decision.receipts.at(-1)!
+      for (const event of [
+        {
+          id: "evt_receipt-enqueued",
+          type: "session.inbox.enqueued",
+          data: {
+            sessionID: "ses_parent",
+            inboxID: receipt.id,
+            item: { type: "synthetic", payload: { text: receipt.text } },
+          },
+        },
+        {
+          id: "evt_receipt-delivered",
+          type: "session.inbox.delivered",
+          data: { sessionID: "ses_parent", inboxID: receipt.id },
+        },
+      ])
+        f.admission.eventReceived(event)
+      f.admission.eventReceived({
+        id: "evt_historical-synthetic",
+        type: "session.synthetic",
+        data: { sessionID: "ses_parent", text: receipt.text },
+        durable: { aggregateID: "ses_parent", seq: first.decision.rootEventSeq - 1, version: 1 },
+      })
+      const second = await chooseRepair(f, first.decision.id)
+      expect(second.kind).toBe("repair")
+      if (second.kind !== "repair") throw new Error(second.receipt)
+      f.admission.eventReceived({
+        id: "evt_unowned-receipt-copy",
+        type: "session.synthetic",
+        data: { sessionID: "ses_parent", text: receipt.text },
+        ...(ordered
+          ? { durable: { aggregateID: "ses_parent", seq: second.decision.rootEventSeq + 1, version: 1 } }
+          : {}),
+      })
+      expect((await chooseRepair(f, second.decision.id)).receipt).toContain("stale, spent")
+      expect(f.originals).toHaveLength(2)
+    }
+  },
+)
+
+snapshotTest(
   "decoded host timestamps survive non-waking review publication and successive Repair",
   async (observer) => {
     for (const delivered of [false, true]) {
@@ -9024,13 +9130,13 @@ snapshotTest(
       expect(first.decision.rootIdleID).toBe(
         f.histories.ses_parent.filter((message) => message.type === "idle").at(-1).id,
       )
-      expect(f.sessions.ses_parent.time).toEqual({ created, updated: created + 2, idle: 1 })
+      expect(f.sessions.ses_parent.time).toEqual({ created, updated: created + 2, idle: 2 })
       expect(f.originals).toHaveLength(1) // Publication never launches a repair.
       const second = await chooseRepair(f, first.decision.id)
       expect(second.kind).toBe("repair")
       if (second.kind !== "repair") throw new Error(second.receipt)
       expect(second.decision.rootIdleID).not.toBe(first.decision.rootIdleID)
-      expect(f.sessions.ses_parent.time).toEqual({ created, updated: created + 4, idle: 1 })
+      expect(f.sessions.ses_parent.time).toEqual({ created, updated: created + 4, idle: 3 })
       expect(f.originals).toHaveLength(2)
       expect(f.reviewOriginals).toHaveLength(2)
       expect((await chooseRepair(f, second.decision.id, "Stop")).receipt).toContain("Stopped by human")
@@ -9063,9 +9169,7 @@ snapshotTest(
         const rejected = await f.authorizeOutcome()
         expect(rejected.kind).toBe("terminal")
         expect(rejected.receipt).toContain(
-          drift === "created" || drift === "outcome"
-            ? "Reviewed root changed during publication"
-            : "Reviewed root history was superseded",
+          drift !== "receipt" ? "Reviewed root changed during publication" : "Reviewed root history was superseded",
         )
         expect(f.admission.currentApproval("ses_parent")).toBeUndefined()
         expect((await chooseRepair(f, "unknown")).receipt).toContain("stale, spent")
@@ -9449,6 +9553,139 @@ function readRepairPages(f: ReturnType<typeof fake>, view: ReturnType<typeof mou
   }
   f.renderer.emit("frame")
 }
+
+snapshotTest(
+  "TUI reconciles Authorize and Repair transfer activity against the exact returned boundary",
+  async (observer) => {
+    for (const stage of ["authorize", "repair"] as const) {
+      for (const activity of [
+        "historical",
+        "newer",
+        "unproven",
+        "foreign",
+        "owned-receipt",
+        "unknown-delivery",
+        "copied-receipt",
+        "settlement",
+        "contradictory-settlement",
+      ] as const) {
+        const root = snapshotFixture(observer),
+          f = fake(root)
+        const reply = tuiRepairOutcome(root, stage === "repair" ? "next" : "live-repair")
+        const outcome = {
+          ...reply,
+          decision: { ...reply.decision, receipts: [{ id: "msg_owned-receipt", text: "Factual review receipt." }] },
+        }
+        let resolve!: (outcome: CycleOutcome) => void
+        const pending = new Promise<CycleOutcome>((done) => {
+          resolve = done
+        })
+        f.options.onAuthorize = async () => {
+          f.inboxes.parent.splice(0)
+          return stage === "authorize" ? pending : tuiRepairOutcome(root)
+        }
+        f.options.onRepair = async () => pending
+        const cleanup = await activate(f),
+          initial = mount(f)
+        let repair: ReturnType<typeof mount> | undefined
+        initial.click(0)
+        await settleUntil(() => f.calls.claims.length === 1)
+        if (stage === "repair") {
+          await settleUntil(() => f.slots.length === 2)
+          repair = mount(f, "parent", false)
+          readRepairPages(f, repair)
+          repair.click(0)
+          await settleUntil(() => f.calls.repairs.length === 1)
+        }
+        const boundary = outcome.decision.rootEventSeq
+        const event: any = historicalEvent("parent", activity === "historical" ? boundary - 1 : boundary + 1)
+        if (activity === "unproven") delete event.durable
+        if (activity === "foreign") event.durable.aggregateID = "another-root"
+        if (activity === "owned-receipt" || activity === "unknown-delivery") {
+          event.type = "session.inbox.delivered"
+          event.data.inboxID = activity === "owned-receipt" ? "msg_owned-receipt" : "msg_unknown"
+        }
+        if (activity === "copied-receipt") {
+          event.type = "session.synthetic"
+          event.data.text = outcome.decision.receipts[0].text
+        }
+        if (activity === "settlement" || activity === "contradictory-settlement") {
+          event.type = "session.execution.succeeded"
+          event.id = outcome.decision.rootIdleID.replace(/^msg_/, "evt_")
+          if (activity === "settlement") delete event.durable
+        }
+        f.emit(event)
+        // Later mutation of a host event object cannot rewrite observed evidence.
+        if (event.durable) event.durable.seq = 0
+        resolve(outcome)
+        const valid = ["historical", "owned-receipt", "settlement"].includes(activity)
+        await settleUntil(() => (valid ? f.slots.length === (stage === "repair" ? 3 : 2) : f.calls.toasts.length > 0))
+        if (valid) expect(f.slots.at(-1).removed).toBe(false)
+        else {
+          expect(f.slots.at(-1).removed).toBe(true)
+          expect(f.calls.toasts.at(-1)).toContain("superseded")
+        }
+        repair?.click(0)
+        expect(f.calls.repairs).toHaveLength(stage === "repair" ? 1 : 0)
+        cleanup()
+        initial.dispose()
+        repair?.dispose()
+      }
+    }
+  },
+)
+
+snapshotTest(
+  "TUI receipt impersonation retires readable Repair; owned and historical events remain inert",
+  async (observer) => {
+    for (const ordered of [false, true]) {
+      const root = snapshotFixture(observer),
+        f = fake(root)
+      const reply = tuiRepairOutcome(root)
+      const first = {
+        ...reply,
+        decision: { ...reply.decision, receipts: [{ id: "msg_owned-receipt", text: "Factual review receipt." }] },
+      }
+      f.options.onAuthorize = async () => {
+        f.inboxes.parent.splice(0)
+        return first
+      }
+      const cleanup = await activate(f),
+        initial = mount(f)
+      initial.click(0)
+      await settleUntil(() => f.slots.length === 2)
+      const repair = mount(f, "parent", false)
+      readRepairPages(f, repair)
+      f.emit({
+        type: "session.inbox.enqueued",
+        data: {
+          sessionID: "parent",
+          inboxID: "msg_owned-receipt",
+          item: { type: "synthetic", payload: { text: "Factual review receipt." } },
+        },
+      })
+      f.emit({ type: "session.inbox.delivered", data: { sessionID: "parent", inboxID: "msg_owned-receipt" } })
+      f.emit({
+        ...historicalEvent("parent", 49, "session.synthetic"),
+        data: { sessionID: "parent", text: "Factual review receipt." },
+      })
+      expect(f.slots.at(-1).removed).toBe(false)
+      expect(f.calls.toasts).toEqual([])
+      f.emit({
+        id: "evt_unowned-copy",
+        type: "session.synthetic",
+        data: { sessionID: "parent", text: "Factual review receipt." },
+        ...(ordered ? { durable: { aggregateID: "parent", seq: 51, version: 1 } } : {}),
+      })
+      expect(f.slots.at(-1).removed).toBe(true)
+      repair.click(0)
+      expect(f.calls.repairs).toHaveLength(0)
+      cleanup()
+      initial.dispose()
+      repair.dispose()
+    }
+  },
+)
 
 const historicalEvent = (rootSessionID: string, seq: number, type = "session.execution.started") => ({
   id: `evt_historical-${seq}-${type}`,
