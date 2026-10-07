@@ -1,6 +1,19 @@
 import { execFileSync } from "node:child_process"
-import { realpathSync, lstatSync, openSync, fstatSync, readSync, closeSync, readlinkSync, constants } from "node:fs"
+import {
+  realpathSync,
+  lstatSync,
+  openSync,
+  fstatSync,
+  readSync,
+  closeSync,
+  readlinkSync,
+  mkdtempSync,
+  unlinkSync,
+  rmSync,
+  constants,
+} from "node:fs"
 import { createHash } from "node:crypto"
+import { tmpdir } from "node:os"
 import path from "node:path"
 
 export interface GitSnapshot {
@@ -11,40 +24,48 @@ export interface GitSnapshot {
 
 const decoder = new TextDecoder("utf-8", { fatal: true })
 
-export function trustedGit(root: string, args: readonly string[], timeout = 10_000, input?: Buffer): Buffer {
-  return execFileSync(
-    "/usr/bin/git",
-    [
-      "--no-pager",
-      "--no-optional-locks",
-      "--no-lazy-fetch",
-      "--literal-pathspecs",
-      "-c",
-      "core.fsmonitor=false",
-      "-c",
-      "protocol.allow=never",
-      "-C",
-      root,
-      ...args,
-    ],
-    {
-      env: {
-        PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
-        HOME: process.env.HOME,
-        USER: process.env.USER,
-        LOGNAME: process.env.LOGNAME,
-        TMPDIR: process.env.TMPDIR,
-        LC_ALL: "C",
-        GIT_NO_REPLACE_OBJECTS: "1",
-        GIT_NO_LAZY_FETCH: "1",
-        GIT_TERMINAL_PROMPT: "0",
+export function trustedGit(
+  root: string,
+  args: readonly string[],
+  timeout = 10_000,
+  input?: Buffer,
+  output?: number,
+): Buffer {
+  return (
+    execFileSync(
+      "/usr/bin/git",
+      [
+        "--no-pager",
+        "--no-optional-locks",
+        "--no-lazy-fetch",
+        "--literal-pathspecs",
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "protocol.allow=never",
+        "-C",
+        root,
+        ...args,
+      ],
+      {
+        env: {
+          PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
+          HOME: process.env.HOME,
+          USER: process.env.USER,
+          LOGNAME: process.env.LOGNAME,
+          TMPDIR: process.env.TMPDIR,
+          LC_ALL: "C",
+          GIT_NO_REPLACE_OBJECTS: "1",
+          GIT_NO_LAZY_FETCH: "1",
+          GIT_TERMINAL_PROMPT: "0",
+        },
+        timeout,
+        maxBuffer: 16 * 1024 * 1024,
+        shell: false,
+        input,
+        stdio: [input ? "pipe" : "ignore", output ?? "pipe", "pipe"],
       },
-      timeout,
-      maxBuffer: 16 * 1024 * 1024,
-      shell: false,
-      input,
-      stdio: [input ? "pipe" : "ignore", "pipe", "pipe"],
-    },
+    ) ?? Buffer.alloc(0)
   )
 }
 
@@ -261,28 +282,117 @@ function indexEntries(root: string): Map<string, { mode: string; oid: string }> 
   return result
 }
 
-// One bounded batch read avoids one Git subprocess per repository file.
-function indexBlobs(root: string, objects: readonly string[]): Map<string, Buffer> {
+const blobBatchBytes = 1024 * 1024
+function blobSize(header: string, id: string): number {
+  const match = /^([0-9a-f]{40}|[0-9a-f]{64}) blob (0|[1-9][0-9]*)$/.exec(header)
+  if (!match || match[0] !== header || match[1] !== id) throw new Error("Unexpected staged blob identity/type")
+  const size = Number(match[2])
+  if (!Number.isSafeInteger(size) || size > Number.MAX_SAFE_INTEGER - 128) throw new Error("Invalid staged blob size")
+  return size
+}
+
+// Retain only digests (and bounded symlink bytes), never the complete index's
+// blob contents. Metadata batches are bounded independently of object sizes.
+function indexBlobs(
+  root: string,
+  objects: readonly string[],
+  links: ReadonlyMap<string, number>,
+): Map<string, { digest: string; link?: string }> {
   const ids = [...new Set(objects)]
-  const result = new Map<string, Buffer>()
-  if (!ids.length) return result
-  const bytes = trustedGit(root, ["cat-file", "--batch"], 10_000, Buffer.from(ids.join("\n") + "\n"))
-  let offset = 0
-  for (const id of ids) {
-    const end = bytes.indexOf(10, offset)
-    if (end < 0) throw new Error("Incomplete staged blob header")
-    const header = decoder.decode(bytes.subarray(offset, end))
-    const match = /^([0-9a-f]{40}|[0-9a-f]{64}) blob (0|[1-9][0-9]*)$/.exec(header)
-    if (!match || match[1] !== id) throw new Error("Unexpected staged blob identity/type")
-    const size = Number(match[2])
-    offset = end + 1
-    if (!Number.isSafeInteger(size) || offset + size >= bytes.length || bytes[offset + size] !== 10)
-      throw new Error("Incomplete staged blob content")
-    result.set(id, bytes.subarray(offset, offset + size))
-    offset += size + 1
+  const result = new Map<string, { digest: string; link?: string }>()
+  for (let start = 0; start < ids.length; start += 4096) {
+    const group = ids.slice(start, start + 4096)
+    const metadata = trustedGit(root, ["cat-file", "--batch-check"], 10_000, Buffer.from(group.join("\n") + "\n"))
+    const headers = decoder.decode(metadata).split("\n")
+    if (headers.length !== group.length + 1 || headers.at(-1) !== "")
+      throw new Error("Incomplete or unexpected staged blob metadata")
+    const sizes = new Map(group.map((id, index) => [id, blobSize(headers[index]!, id)]))
+    let batch: string[] = [],
+      budget = 0
+    const flush = () => {
+      if (!batch.length) return
+      const bytes = trustedGit(root, ["cat-file", "--batch"], 10_000, Buffer.from(batch.join("\n") + "\n"))
+      if (bytes.length > blobBatchBytes) throw new Error("Unexpected staged blob batch size")
+      let offset = 0
+      for (const id of batch) {
+        const end = bytes.indexOf(10, offset)
+        if (end < 0) throw new Error("Incomplete staged blob header")
+        const size = blobSize(decoder.decode(bytes.subarray(offset, end)), id)
+        offset = end + 1
+        if (size !== sizes.get(id) || offset + size >= bytes.length || bytes[offset + size] !== 10)
+          throw new Error("Incomplete or changed staged blob content")
+        const content = bytes.subarray(offset, offset + size)
+        result.set(id, {
+          digest: createHash("sha256").update(content).digest("hex"),
+          ...(links.has(id) ? { link: content.toString("base64") } : {}),
+        })
+        offset += size + 1
+      }
+      if (offset !== bytes.length) throw new Error("Unexpected staged blob output")
+      batch = []
+      budget = 0
+    }
+    for (let index = 0; index < group.length; index++) {
+      const id = group[index]!,
+        size = sizes.get(id)!
+      if (links.has(id) && size !== links.get(id))
+        throw new Error("Prepared staged content differs from approved content")
+      // A physical symlink's expected bytes are bounded by the filesystem, and
+      // large blob output must never be retained for symlink comparison.
+      if (links.has(id) && size > blobBatchBytes) throw new Error("Unsupported staged symlink size")
+      const framedSize = headers[index]!.length + 1 + size + 1
+      if (framedSize > blobBatchBytes) {
+        flush()
+        result.set(id, { digest: largeBlobDigest(root, id, size) })
+      } else {
+        if (budget + framedSize > blobBatchBytes) flush()
+        batch.push(id)
+        budget += framedSize
+      }
+    }
+    flush()
   }
-  if (offset !== bytes.length) throw new Error("Unexpected staged blob output")
   return result
+}
+
+function largeBlobDigest(root: string, id: string, size: number): string {
+  // Redirect stdout directly to an unlinked private file: the synchronous Git
+  // boundary remains intact without buffering this object in process memory.
+  // Only one large object occupies temporary disk at a time, never the index.
+  const directory = mkdtempSync(path.join(tmpdir(), "opencode-agents-blob-"))
+  let descriptor: number | undefined
+  try {
+    const file = path.join(directory, "blob")
+    descriptor = openSync(file, constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600)
+    unlinkSync(file)
+    trustedGit(root, ["cat-file", "--batch"], 10_000, Buffer.from(id + "\n"), descriptor)
+    const buffer = Buffer.allocUnsafe(64 * 1024)
+    const count = readSync(descriptor, buffer, 0, 128, 0)
+    const end = buffer.subarray(0, count).indexOf(10)
+    if (end < 0) throw new Error("Incomplete staged blob header")
+    if (blobSize(decoder.decode(buffer.subarray(0, end)), id) !== size) throw new Error("Changed staged blob size")
+    if (fstatSync(descriptor).size !== end + 1 + size + 1)
+      throw new Error("Incomplete or unexpected staged blob output")
+    const digest = createHash("sha256")
+    let offset = end + 1,
+      remaining = size
+    while (remaining) {
+      const read = readSync(descriptor, buffer, 0, Math.min(buffer.length, remaining), offset)
+      if (!read) throw new Error("Incomplete staged blob content")
+      digest.update(buffer.subarray(0, read))
+      offset += read
+      remaining -= read
+    }
+    if (readSync(descriptor, buffer, 0, 1, offset) !== 1 || buffer[0] !== 10)
+      throw new Error("Incomplete staged blob terminator")
+    return digest.digest("hex")
+  } finally {
+    try {
+      if (descriptor !== undefined) closeSync(descriptor)
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  }
 }
 
 function requireIndexContent(root: string, prepared: Pick<PreparedCommit, "names" | "entries">): void {
@@ -292,6 +402,12 @@ function requireIndexContent(root: string, prepared: Pick<PreparedCommit, "names
   const blobs = indexBlobs(
     root,
     [...index.values()].map((entry) => entry.oid),
+    new Map(
+      prepared.entries.flatMap(([name, type, value]) => {
+        const entry = index.get(name)
+        return type === "symlink" && entry ? [[entry.oid, Buffer.from(value, "base64").length] as const] : []
+      }),
+    ),
   )
   for (const [name, type, value, digest] of prepared.entries) {
     const entry = index.get(name)
@@ -301,17 +417,15 @@ function requireIndexContent(root: string, prepared: Pick<PreparedCommit, "names
     }
     const mode = type === "symlink" ? "120000" : value ? "100755" : "100644"
     if (!entry || entry.mode !== mode) throw new Error("Prepared index mode/path differs from approved content")
-    const bytes = blobs.get(entry.oid)
-    if (!bytes) throw new Error("Missing staged blob")
-    if (
-      type === "symlink"
-        ? bytes.toString("base64") !== value
-        : createHash("sha256").update(bytes).digest("hex") !== digest
-    )
+    const blob = blobs.get(entry.oid)
+    if (!blob) throw new Error("Missing staged blob")
+    if (type === "symlink" ? blob.link !== value : blob.digest !== digest)
       throw new Error("Prepared staged content differs from approved content")
     index.delete(name)
   }
   if (index.size) throw new Error("Unexpected prepared index paths")
+  if (JSON.stringify(worktreeEntries(root, prepared.names)) !== JSON.stringify(prepared.entries))
+    throw new Error("Approved worktree content changed during commit transition")
 }
 
 export function prepareCommit(target: ReviewTarget): PreparedCommit {

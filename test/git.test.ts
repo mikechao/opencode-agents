@@ -1,5 +1,8 @@
 import { afterAll, afterEach, beforeAll, expect, spyOn, test } from "bun:test"
 import { execFileSync } from "node:child_process"
+import * as childProcess from "node:child_process"
+import * as fs from "node:fs"
+import { createHash } from "node:crypto"
 import {
   cpSync,
   mkdirSync,
@@ -232,6 +235,265 @@ test("review target rejects unsupported Git entries and ambiguous file topology"
   mkdirSync(path.join(root, "old.txt"))
   expect(() => observeReviewTarget(root, observeGit(root))).toThrow("Unsupported review worktree entry")
   expect(() => observeReviewTarget("/does-not-exist", snapshot)).toThrow()
+})
+
+test("complete-index proof commits a tiny reviewed edit with an unchanged tracked blob larger than 16 MiB", () => {
+  const root = fixture()
+  const asset = Buffer.alloc(17 * 1024 * 1024, 0x61)
+  writeFileSync(path.join(root, "large.bin"), asset)
+  writeFileSync(path.join(root, "duplicate.bin"), asset)
+  git(root, "add", "large.bin", "duplicate.bin")
+  git(root, "commit", "-qm", "Track large unchanged assets")
+  const oid = git(root, "rev-parse", "HEAD:large.bin")
+  expect(git(root, "rev-parse", "HEAD:duplicate.bin")).toBe(oid)
+  expect(Number(git(root, "cat-file", "-s", oid))).toBeGreaterThan(16 * 1024 * 1024)
+  writeFileSync(path.join(root, "old.txt"), "Tiny approved edit\n")
+  const target = observeReviewTarget(root, observeGit(root))
+  expect(target.paths).toEqual(["old.txt"])
+  const owner = new CommitGit(target)
+  expect(owner.execute({ operation: "prepare" }, () => {})).toContain('Complete reviewed paths prepared: ["old.txt"]')
+  expect(git(root, "diff", "--cached", "--name-only")).toBe("old.txt")
+  expect(git(root, "ls-files", "--stage")).toContain(`${oid} 0\tlarge.bin`)
+  expect(git(root, "ls-files", "--stage")).toContain(`${oid} 0\tduplicate.bin`)
+  const receipt = owner.execute({ operation: "commit", message: "Make tiny approved edit" }, () => {})
+  expect(receipt).toContain("Commit succeeded")
+  expect(receipt).toContain('Exact committed paths: ["old.txt"]')
+  expect(owner.final()).toBe(receipt)
+  expect(git(root, "rev-parse", "HEAD^")).toBe(target.head)
+  expect(git(root, "rev-parse", "HEAD:large.bin")).toBe(oid)
+  expect(git(root, "rev-parse", "HEAD:duplicate.bin")).toBe(oid)
+  expect(git(root, "show", "HEAD:old.txt")).toBe("Tiny approved edit")
+  expect(observeGit(root).paths).toEqual([])
+})
+
+test("complete-index preparation and final proof preserve SHA-256 Git object identities", () => {
+  const root = realpathSync(mkdtempSync(path.join(tmpdir(), "opencode-agents-sha256-")))
+  roots.push(root)
+  git(root, "init", "-q", "--object-format=sha256")
+  git(root, "config", "user.name", "Primitive Test")
+  git(root, "config", "user.email", "primitives@example.invalid")
+  writeFileSync(path.join(root, "old.txt"), "initial\n")
+  git(root, "add", "old.txt")
+  git(root, "commit", "-qm", "SHA-256 baseline")
+  writeFileSync(path.join(root, "old.txt"), "approved SHA-256 change\n")
+  const target = observeReviewTarget(root, observeGit(root))
+  expect(target.head).toHaveLength(64)
+  const owner = new CommitGit(target)
+  owner.execute({ operation: "prepare" }, () => {})
+  expect(owner.execute({ operation: "commit", message: "Implement SHA-256 change" }, () => {})).toContain(
+    "Commit succeeded",
+  )
+  expect(owner.final()).toContain("Commit succeeded")
+  expect(git(root, "rev-parse", "HEAD^")).toBe(target.head)
+  expect(git(root, "show", "HEAD:old.txt")).toBe("approved SHA-256 change")
+  expect(observeGit(root).paths).toEqual([])
+})
+
+test("bounded blob proof rejects malformed output and races, and closes/unlinks large-object resources on failure", () => {
+  // These parser/resource cases use only test-scoped Git doubles and tiny files;
+  // real-Git content, scope and object-format behavior is covered separately.
+  for (const width of [40, 64]) {
+    const root = realpathSync(mkdtempSync(path.join(tmpdir(), "opencode-agents-blob-proof-")))
+    roots.push(root)
+    for (const scenario of [
+      "index-extra",
+      "index-duplicate",
+      "index-mode",
+      "metadata-id",
+      "metadata-type",
+      "metadata-size",
+      "metadata-cr",
+      "metadata-truncated",
+      "metadata-extra",
+      "body-truncated",
+      "body-extra",
+      "body-size",
+      "body-header",
+      "body-terminator",
+      "worktree-race",
+      "large-header",
+      "large-size",
+      "large-truncated",
+      "large-extra",
+      "large-terminator",
+      "large-process",
+      "large-timeout",
+      "large-success",
+    ]) {
+      const data = scenario === "large-success" ? Buffer.alloc(1024 * 1024 + 1024, 0x61) : Buffer.from("ok\n")
+      writeFileSync(path.join(root, "old.txt"), data)
+      const oid = "c".repeat(width),
+        head = "1".repeat(width),
+        tree = "b".repeat(width)
+      const prepared = {
+        target: { root, head, paths: ["old.txt"], digest: "a".repeat(64) },
+        names: ["old.txt"],
+        entries: [["old.txt", "file", false, createHash("sha256").update(data).digest("hex")] as const],
+        tree,
+      }
+      const size = scenario.startsWith("large-") ? 1024 * 1024 + 1024 : data.length
+      const header = `${oid} blob ${size}\n`
+      const descriptors: number[] = [],
+        directories: string[] = []
+      const makeDirectory = fs.mkdtempSync
+      const temporary = spyOn(fs, "mkdtempSync").mockImplementation((prefix) => {
+        const directory = makeDirectory(prefix)
+        directories.push(directory)
+        roots.push(directory)
+        return directory as any
+      })
+      const command = spyOn(childProcess, "execFileSync").mockImplementation((_file, argv = [], options = {}) => {
+        const args = argv as string[]
+        const operation = args.slice(args.indexOf("-C") + 2)
+        if (operation[0] === "rev-parse")
+          return Buffer.from(operation.includes("--show-toplevel") ? root + "\n" : head + "\n")
+        if (operation[0] === "ls-files" && operation.includes("--stage")) {
+          const record = `${scenario === "index-mode" ? "160000" : "100644"} ${oid} 0\told.txt\0`
+          return Buffer.from(
+            record +
+              (scenario === "index-extra"
+                ? `100644 ${oid} 0\toutside.txt\0`
+                : scenario === "index-duplicate"
+                  ? record
+                  : ""),
+          )
+        }
+        if (operation[0] === "diff-index" && operation.includes(head)) return Buffer.from("old.txt\0")
+        if (operation[0] !== "cat-file") return Buffer.alloc(0)
+        if (operation[1] === "--batch-check") {
+          if (scenario === "metadata-id") return Buffer.from(`${"d".repeat(width)} blob ${size}\n`)
+          if (scenario === "metadata-type") return Buffer.from(`${oid} tree ${size}\n`)
+          if (scenario === "metadata-size") return Buffer.from(`${oid} blob 99999999999999999999\n`)
+          if (scenario === "metadata-cr") return Buffer.from(`${oid} blob ${size}\r\n`)
+          if (scenario === "metadata-truncated") return Buffer.from(header.trimEnd())
+          if (scenario === "metadata-extra") return Buffer.from(header + header)
+          return Buffer.from(header)
+        }
+        const output = (options as any).stdio[1]
+        if (typeof output === "number") {
+          descriptors.push(output)
+          expect(fs.fstatSync(output).nlink).toBe(0)
+          expect(fs.fstatSync(output).mode & 0o077).toBe(0)
+          fs.writeSync(
+            output,
+            scenario === "large-header"
+              ? `${oid} tree ${size}\n`
+              : scenario === "large-size"
+                ? `${oid} blob ${size + 1}\n`
+                : header,
+          )
+          if (scenario === "large-process" || scenario === "large-timeout")
+            throw Object.assign(new Error(scenario), {
+              status: scenario === "large-process" ? 1 : null,
+              code: scenario === "large-timeout" ? "ETIMEDOUT" : undefined,
+            })
+          fs.writeSync(
+            output,
+            scenario === "large-truncated" || scenario === "large-header" || scenario === "large-size"
+              ? data
+              : Buffer.alloc(size, 0x61),
+          )
+          fs.writeSync(output, scenario === "large-terminator" ? "!" : scenario === "large-extra" ? "\nextra" : "\n")
+          return null as any
+        }
+        if (scenario === "body-header") return Buffer.from(`${oid} tree ${size}\n`)
+        if (scenario === "body-size")
+          return Buffer.concat([Buffer.from(`${oid} blob ${size + 1}\n`), data, Buffer.from("\n")])
+        if (scenario === "body-truncated") return Buffer.concat([Buffer.from(header), data])
+        if (scenario === "worktree-race") writeFileSync(path.join(root, "old.txt"), "raced bytes\n")
+        return Buffer.concat([
+          Buffer.from(header),
+          data,
+          Buffer.from(scenario === "body-extra" ? "\nextra" : scenario === "body-terminator" ? "!" : "\n"),
+        ])
+      })
+      try {
+        const proof = () => gitModule.requirePreparedCommit(prepared)
+        if (scenario === "large-success") expect(proof).not.toThrow()
+        else
+          expect(proof).toThrow(
+            scenario === "worktree-race"
+              ? "Approved worktree content changed"
+              : scenario === "index-extra"
+                ? "Unexpected prepared index paths"
+                : scenario === "index-duplicate"
+                  ? "Duplicate commit index entry"
+                  : scenario === "index-mode"
+                    ? "Unsupported commit index entry"
+                    : scenario.startsWith("large-") && ["large-process", "large-timeout"].includes(scenario)
+                      ? scenario
+                      : /staged blob/,
+          )
+        expect(descriptors.length).toBe(scenario.startsWith("large-") ? 1 : 0)
+        for (const descriptor of descriptors) expect(() => fs.fstatSync(descriptor)).toThrow()
+        for (const directory of directories) expect(fs.existsSync(directory)).toBe(false)
+        expect(command.mock.calls.some(([, args]) => (args as string[]).includes("commit"))).toBe(false)
+      } finally {
+        command.mockRestore()
+        temporary.mockRestore()
+      }
+    }
+  }
+})
+
+test("small staged blobs exceeding 16 MiB in aggregate are split by byte budget without retaining whole-index content", () => {
+  const root = realpathSync(mkdtempSync(path.join(tmpdir(), "opencode-agents-small-blobs-")))
+  roots.push(root)
+  const size = 900 * 1024
+  const objects = Array.from({ length: 20 }, (_, index) => {
+    const name = `file-${String(index).padStart(2, "0")}.bin`
+    const bytes = Buffer.alloc(size, index)
+    writeFileSync(path.join(root, name), bytes)
+    return {
+      name,
+      fill: index,
+      oid: (index + 10).toString(16).padStart(40, "0"),
+      digest: createHash("sha256").update(bytes).digest("hex"),
+    }
+  })
+  const names = objects.map(({ name }) => name),
+    head = "1".repeat(40),
+    tree = "b".repeat(40)
+  const prepared = {
+    target: { root, head, paths: names, digest: "a".repeat(64) },
+    tree,
+    names,
+    entries: objects.map(({ name, digest }) => [name, "file", false, digest] as const),
+  }
+  let largestBatch = 0
+  const readIDs: string[] = []
+  const command = spyOn(childProcess, "execFileSync").mockImplementation((_file, argv = [], options = {}): any => {
+    const args = argv as string[],
+      operation = args.slice(args.indexOf("-C") + 2)
+    if (operation[0] === "rev-parse")
+      return Buffer.from(operation.includes("--show-toplevel") ? root + "\n" : head + "\n")
+    if (operation[0] === "ls-files" && operation.includes("--stage"))
+      return Buffer.from(objects.map(({ name, oid }) => `100644 ${oid} 0\t${name}\0`).join(""))
+    if (operation[0] === "diff-index" && operation.includes(head)) return Buffer.from(names.join("\0") + "\0")
+    if (operation[0] !== "cat-file") return Buffer.alloc(0)
+    const ids = (options as any).input.toString("utf8").trimEnd().split("\n") as string[]
+    const blobs = ids.map((id) => objects.find(({ oid }) => oid === id)!)
+    if (operation[1] === "--batch-check") return Buffer.from(blobs.map(({ oid }) => `${oid} blob ${size}\n`).join(""))
+    expect((options as any).stdio[1]).toBe("pipe")
+    readIDs.push(...ids)
+    const bytes = Buffer.concat(
+      blobs.flatMap(({ oid, fill }) => [
+        Buffer.from(`${oid} blob ${size}\n`),
+        Buffer.alloc(size, fill),
+        Buffer.from("\n"),
+      ]),
+    )
+    largestBatch = Math.max(largestBatch, bytes.length)
+    return bytes
+  })
+  try {
+    expect(size * objects.length).toBeGreaterThan(16 * 1024 * 1024)
+    expect(() => gitModule.requirePreparedCommit(prepared)).not.toThrow()
+    expect(largestBatch).toBeLessThanOrEqual(1024 * 1024)
+    expect(readIDs).toEqual(objects.map(({ oid }) => oid))
+  } finally {
+    command.mockRestore()
+  }
 })
 
 test("approved worktree transitions through exact staged bytes/modes/deletions/symlinks to one verified commit", () => {
