@@ -1540,11 +1540,16 @@ export function nativeAdmission(context: Context) {
           (message.agent !== "committer" ||
             message.error ||
             message.content.some(
-              (part) => part.type === "tool" && (part.name !== committerGitName || part.executed === true),
+              // The host publishes malformed JSON as an errored local tool
+              // without invoking execution hooks. executed=false also occurs
+              // on valid local calls, so only the error state retires those.
+              (part) =>
+                part.type === "tool" &&
+                (part.name !== committerGitName || part.executed === true || part.state.status === "error"),
             )),
       )
     )
-      throw new Error("Committer bootstrap/history changed or forbidden tool appeared")
+      throw new Error("Committer bootstrap/history changed or forbidden/errored tool appeared")
   }
   const commitGate = (cap: CommitClaim) => {
     local(cap)

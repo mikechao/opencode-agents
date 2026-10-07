@@ -49,6 +49,7 @@ export class CommitGit {
     | { kind: "closed" } = { kind: "unprepared" }
   processSettled = true
   private failureReason?: unknown
+  private verifiedCommit?: string
   receipt?: string
   constructor(readonly target: ReviewTarget) {}
   close() {
@@ -58,9 +59,14 @@ export class CommitGit {
     if (!this.receipt) return this.failure("No commit attempt was completed")
     if (this.state.kind === "spent") {
       try {
-        verifyCommitted(this.state.prepared)
+        const current = verifyCommitted(this.state.prepared)
+        if (this.verifiedCommit !== undefined && current.head !== this.verifiedCommit)
+          throw new Error(
+            `HEAD changed after successful commit postflight verification; history uncertain. Expected ${this.verifiedCommit}, observed ${current.head}`,
+          )
       } catch (error) {
-        this.receipt = this.failure(this.failureReason ?? error)
+        this.failureReason ??= error
+        this.receipt = this.failure(this.failureReason)
       }
     }
     return this.receipt
@@ -178,6 +184,7 @@ export class CommitGit {
         try {
           const final = verifyCommitted(prepared) // Inspect even when commit exits nonzero.
           if (failure) throw new Error(`Commit process failed although history changed: ${String(failure)}`)
+          this.verifiedCommit = final.head
           this.receipt = `Commit succeeded.\nCommit: ${final.head}\nSubject: ${JSON.stringify(final.subject)}\nExact committed paths: ${JSON.stringify(this.target.paths)}\nFinal staged/worktree state: clean.\nOne normal commit attempt completed; no push was issued.`
         } catch (error) {
           this.failureReason = failure ?? error

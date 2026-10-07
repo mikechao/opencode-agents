@@ -42,6 +42,31 @@ test("pinned host publishes original tool input before executor dispatch and ret
   expect(source("session/context.ts")).toContain("models.resolve(session,model.available)")
 })
 
+test("pinned host malformed JSON skips execution and projects an errored non-provider-executed tool part", () => {
+  const step = source("session/runner/step.ts")
+  expect(step).toContain('if(event.type!=="tool-call"||event.providerExecuted)return')
+  const publisher = source("session/runner/publish-llm-event.ts")
+  expect(publisher).toContain('case"tool-input-error":')
+  expect(publisher).toContain("yield*failMalformedToolInput(event)")
+  const start = publisher.indexOf("constfailMalformedToolInput=")
+  const malformed = publisher.slice(start, publisher.indexOf("constflush=", start))
+  expect(malformed).toContain("bus.publish(SessionEvent.Tool.Failed,{")
+  expect(malformed).toContain('type:"tool.input-json"')
+  expect(malformed).toContain(
+    'message:"Tool call arguments were malformed JSON and were not executed. Retry with valid JSON."',
+  )
+  expect(malformed).toContain("executed:false")
+  const projection = source("session/message-updater.ts")
+  const failed = projection.slice(
+    projection.indexOf('"session.tool.failed":'),
+    projection.indexOf('"session.reasoning.started":'),
+  )
+  expect(failed).toContain("match.executed=event.data.executed||match.executed===true")
+  expect(failed).toContain(
+    'status:"error",error:event.data.error,input:typeofmatch.state.input==="string"?{}:match.state.input',
+  )
+})
+
 test("pinned OpenCode native sponsorship forwards explicit actor and real parent/source before child creation", () => {
   const native = source("tool/plugin/subagent.ts")
   const assert = native.indexOf("yield*permission.assert({")

@@ -10656,6 +10656,7 @@ snapshotTest(
         type: "tool",
         id: invocation.id,
         name: "committer_git",
+        executed: false, // Normal local calls are not provider-executed.
         state: { status: "running", input: { operation: "prepare" } },
       }
       f.histories.ses_committer.splice(1, 0, {
@@ -10694,6 +10695,95 @@ snapshotTest(
     } finally {
       operation.mockRestore()
       final.mockRestore()
+    }
+  },
+)
+
+snapshotTest(
+  "malformed Committer JSON that skips execution hooks terminally blocks later operations and settlement",
+  async (observer) => {
+    for (const boundary of ["before", "execute", "settlement"] as const) {
+      const f = serverFake(snapshotFixture(observer), observer)
+      const approved = await pendingCommit(f, observer)
+      const operation = spyOn(CommitGit.prototype, "execute")
+      f.state.run = async () => {
+        await f.dispatch(JSON.parse(f.wakes.at(-1).text.split("\n")[1]))
+      }
+      f.state.onNative = async () => {
+        // OpenCode 2.0.24 failMalformedToolInput -> session.tool.failed
+        // projection. No execute.before hook or tool executor ran for this part.
+        const malformed = {
+          type: "tool",
+          id: "malformed-json",
+          name: "committer_git",
+          executed: false,
+          state: {
+            status: "error",
+            input: {},
+            error: {
+              type: "tool.input-json",
+              message: "Tool call arguments were malformed JSON and were not executed. Retry with valid JSON.",
+            },
+          },
+        }
+        const message = {
+          type: "assistant",
+          id: "malformed-operation",
+          agent: "committer",
+          model,
+          content: [malformed],
+        }
+        f.histories.ses_committer.splice(1, 0, message)
+        expect(operation).not.toHaveBeenCalled()
+        if (boundary === "settlement") return
+
+        const invocation = {
+          sessionID: "ses_committer",
+          agent: "committer",
+          messageID: "valid-operation",
+          id: "valid-call",
+        } as any
+        const input = { operation: "prepare" }
+        f.histories.ses_committer.splice(2, 0, {
+          type: "assistant",
+          id: invocation.messageID,
+          agent: "committer",
+          model,
+          content: [
+            {
+              type: "tool",
+              id: invocation.id,
+              name: "committer_git",
+              executed: false,
+              state: { status: "running", input },
+            },
+          ],
+        })
+        const retry = () =>
+          boundary === "before"
+            ? Effect.runPromise(f.admission.before({ ...invocation, tool: "committer_git", input }))
+            : Effect.runPromise(f.admission.executeCommitterGit(input, invocation))
+        await expect(retry()).rejects.toThrow("errored tool")
+        // Even removing the failed transcript part cannot restore the spent
+        // authority after the trusted admission boundary has retired it.
+        f.histories.ses_committer.splice(1, 1)
+        await expect(retry()).rejects.toThrow()
+        await expect(
+          Effect.runPromise(f.admission.executeCommitterGit({ operation: "commit", message: "Retry" }, invocation)),
+        ).rejects.toThrow()
+      }
+      try {
+        const result = await chooseCommit(f, approved.decision.id)
+        expect(result.receipt).toContain("did not reach a verified successful terminal state")
+        if (boundary === "settlement") expect(result.receipt).toContain("errored tool")
+        expect(result.receipt).toContain("No commit attempt was completed")
+        expect(operation).not.toHaveBeenCalled()
+        expect(observeGit(f.candidate.root).head).toBe(HEAD)
+        expect((await chooseCommit(f, approved.decision.id)).receipt).toContain("stale, spent")
+        expect(f.originals.map((entry) => entry.input.agent)).toEqual(["authorized_implementer", "committer"])
+      } finally {
+        operation.mockRestore()
+      }
     }
   },
 )
