@@ -125,7 +125,7 @@ export function reviewReceipt(result: ReviewResult): string {
       : []),
     "Review target remained unchanged at verification. Review grants no mutation or Commit authority.",
     result.status === "CHANGES_REQUESTED"
-      ? "No repair or Commit has been authorized. A separate live Repair / Stop decision is available. Findings and receipts grant no authority."
+      ? "No repair or Commit has been authorized. Any Repair requires a separate live Repair / Stop decision. Findings and receipts grant no authority."
       : "This attempt ended before Commit.",
   ].join("\n")
 }

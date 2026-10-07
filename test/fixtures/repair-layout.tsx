@@ -2,6 +2,7 @@ import { expect, mock } from "bun:test"
 import { createSignal, For, createComponent, ErrorBoundary } from "solid-js"
 import { render } from "@opentui/solid"
 import { createTestRenderer } from "@opentui/core/testing"
+import { TextRenderable, type Renderable } from "@opentui/core"
 import { makeCandidate, parseProposal } from "../../src/proposal.ts"
 import { checkedCycleOutcome, type RepairDecision } from "../../src/authorize-rpc.ts"
 
@@ -244,6 +245,21 @@ const activity = (seq: number, ordered = true) => ({
   data: { sessionID: "root" },
   ...(ordered ? { durable: { aggregateID: "root", seq, version: 1 } } : {}),
 })
+const repairEvidence = () => {
+  const find = (node: Renderable): TextRenderable | undefined => {
+    if (node instanceof TextRenderable && node.plainText.startsWith("Repair or stop?")) {
+      const evidence = node.parent?.getChildren()[0]
+      if (evidence instanceof TextRenderable) return evidence
+    }
+    for (const child of node.getChildren()) {
+      const found = find(child)
+      if (found) return found
+    }
+  }
+  const evidence = find(t.renderer.root)
+  expect(evidence).toBeDefined()
+  return evidence!
+}
 try {
   for (const [width, height] of [
     [248, 58],
@@ -258,6 +274,8 @@ try {
       "single-repair",
       "single-mouse-stop",
       "resize-controls",
+      "unicode-width-initial-repair",
+      "unicode-width-later-repair",
       "authorize-newer",
       "authorize-unproven",
       "repair-newer",
@@ -265,6 +283,8 @@ try {
       "repair-historical",
       "synthetic-copy",
     ]) {
+      // The reviewer's reproducer exercises the narrow renderer specifically.
+      if (scenario.startsWith("unicode-width-") && width !== 50) continue
       cleanup?.()
       t.resize(248, 58) // Establish the initial Plan separately from Repair geometry.
       setRoute({ type: "home" })
@@ -279,6 +299,11 @@ try {
         currentDecision = {
           ...singleDecision,
           result: { ...singleDecision.result, summary: "Review café 😀 " + "界".repeat(70) },
+        }
+      if (scenario.startsWith("unicode-width-"))
+        currentDecision = {
+          ...decision,
+          result: { ...decision.result, summary: "\u1161".repeat(50) + " IMPORTANT SUMMARY TAIL" },
         }
       authorizing = false
       repairing = false
@@ -323,9 +348,9 @@ try {
           durable: { aggregateID: "root", seq: 51, version: 1 },
         })
       }
+      t.resize(width!, height!)
       releaseAuthorize()
       await drain()
-      t.resize(width!, height!)
       await frames(5)
       if (scenario.startsWith("authorize-")) {
         expect(claims()).toHaveLength(0)
@@ -348,6 +373,51 @@ try {
       })
       expect(toasts).toEqual([])
       expect(claims()).toHaveLength(1)
+      if (scenario.startsWith("unicode-width-")) {
+        const frame = t.captureCharFrame()
+        const evidence = repairEvidence()
+        // Check pixels/cells captured from the renderer, not just source text:
+        // all 50 printable Jamo and the important tail must survive wrapping.
+        expect(frame.match(/\u1161/g)).toHaveLength(50)
+        expect(frame).toContain("IMPORTANT SUMMARY TAIL")
+        expect(evidence.plainText.replace(/\n/g, "")).toContain(currentDecision.result.summary)
+        expect(evidence.scrollWidth).toBeLessThanOrEqual(evidence.width)
+        expect(evidence.virtualLineCount).toBe(evidence.height)
+        expect(layers.at(-1)().enabled()).toBe(true)
+        expect(frame).toContain("Repair  Stop  Previous  Next")
+        expect(frame).toMatch(/Repair or stop\? Page 1\/[2-9]/)
+        if (scenario === "unicode-width-later-repair") {
+          key("right")
+          key("right") // Next
+          key("return")
+          expect(layers.at(-1)().enabled()).toBe(false)
+          await frames()
+          expect(t.captureCharFrame()).toContain("Repair or stop? Page 2/")
+          expect(layers.at(-1)().enabled()).toBe(true)
+          await clickAction("Previous")
+          await frames()
+          expect(t.captureCharFrame()).toContain("IMPORTANT SUMMARY TAIL")
+          await clickAction("Next")
+          await frames()
+          const nextEvidence = repairEvidence()
+          expect(nextEvidence.scrollWidth).toBeLessThanOrEqual(nextEvidence.width)
+          expect(nextEvidence.virtualLineCount).toBe(nextEvidence.height)
+          expect(layers.at(-1)().enabled()).toBe(true)
+        }
+        // Initial-page selection has never visited another evidence page.
+        currentDecision = { ...singleDecision, id: "unicode-next", rootIdleID: "msg_unicode-idle", rootEventSeq: 100 }
+        await clickAction("Repair")
+        await drain()
+        expect(selections).toEqual([{ decisionID: decision.id, action: "Repair" }])
+        releaseRepair()
+        await drain()
+        await frames()
+        await clickAction("Stop")
+        await drain()
+        expect(selections.at(-1)).toEqual({ decisionID: "unicode-next", action: "Stop" })
+        expect(claims()).toHaveLength(0)
+        continue
+      }
       if (scenario === "resize-controls") {
         // Narrow Unicode evidence needs paging; widening removes it. A selected
         // paging action must fall back to Stop after the actual controls change.

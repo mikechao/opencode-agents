@@ -53,6 +53,18 @@ mock.module("@opentui/solid", () => ({
       visible: true,
       isDestroyed: false,
     }
+    if (type === "text") {
+      // These cheap handler tests contain ASCII evidence. Unicode/layout proof
+      // belongs to the isolated real OpenTUI fixture.
+      Object.defineProperties(node, {
+        plainText: { get: () => (node as any).content ?? "" },
+        scrollWidth: {
+          get: () => Math.max(...((node as any).content ?? "").split("\n").map((line: string) => line.length)),
+        },
+        virtualLineCount: { get: () => ((node as any).content ?? "").split("\n").length },
+      })
+      Object.assign(node, { scrollX: 0, scrollY: 0 })
+    }
     if (type === "textarea") {
       Object.assign(node, {
         plainText: "",
@@ -308,7 +320,12 @@ function fake(root: string, options: FakeOptions = {}) {
   const listeners = new Set<(event: any) => void>()
   const slots: any[] = []
   const layers: Array<() => KeymapLayer> = []
-  const renderer = Object.assign(new EventEmitter(), { terminalWidth: 120, terminalHeight: 60, isDestroyed: false })
+  const renderer = Object.assign(new EventEmitter(), {
+    terminalWidth: 120,
+    terminalHeight: 60,
+    widthMethod: "wcwidth",
+    isDestroyed: false,
+  })
   const calls = {
     claims: [] as any[],
     repairs: [] as any[],
@@ -698,8 +715,8 @@ function mount(
   const text = () =>
     elements
       .slice(begin)
-      .filter((node) => node.type === "literal")
-      .map((node) => String(node.value))
+      .filter((node) => node.type === "literal" || (node.type === "text" && node.content !== undefined))
+      .map((node) => String(node.type === "literal" ? node.value : node.content))
       .join(" ")
   return { view, mounted, buttons, layers: f.layers.slice(layerBegin), click, text, dispose }
 }
@@ -9191,6 +9208,8 @@ snapshotTest(
       f = serverFake(root, observer)
     const outcome = await pendingRepair(f, observer)
     expect(checkedCycleOutcome(outcome)).toEqual(outcome)
+    expect(f.receipts[1].text).toContain("Any Repair requires a separate live Repair / Stop decision")
+    expect(f.receipts[1].text).not.toContain("decision is available")
     expect(Object.isFrozen(outcome.decision.result.findings[0])).toBe(true)
     expect(outcome.decision.target.paths).toEqual(["old.txt"])
     expect(outcome.decision.candidate.proposal.files).not.toContain("outside.txt")
@@ -9490,6 +9509,11 @@ snapshotTest("INCONCLUSIVE, unverified review, and post-publication drift expose
       }
     }
     expect((await f.authorizeOutcome()).kind).toBe("terminal")
+    if (status === "receipt-drift") {
+      expect(f.receipts[1].text).toContain("Review requested changes")
+      expect(f.receipts[1].text).toContain("Any Repair requires a separate live Repair / Stop decision")
+      expect(f.receipts[1].text).not.toContain("decision is available")
+    }
     expect((await chooseRepair(f, "unknown")).receipt).toContain("stale, spent")
     expect(f.originals).toHaveLength(1)
   }
@@ -9851,6 +9875,9 @@ snapshotTest("new execution during review publication cannot mint a pending deci
   const outcome = await f.authorizeOutcome()
   expect(outcome.kind).toBe("terminal")
   expect(outcome.receipt).toContain("root activity was superseded")
+  expect(f.receipts[1].text).toContain("Review requested changes")
+  expect(f.receipts[1].text).toContain("Any Repair requires a separate live Repair / Stop decision")
+  expect(f.receipts[1].text).not.toContain("decision is available")
   expect((await chooseRepair(f, "unknown")).receipt).toContain("stale, spent")
   expect(f.originals).toHaveLength(1)
 })
@@ -10309,6 +10336,10 @@ snapshotTest(
       const rejected = await f.authorizeOutcome()
       expect(rejected.kind).toBe("terminal")
       expect(rejected.receipt).toContain("history was superseded")
+      if (status === "CHANGES_REQUESTED") {
+        expect(f.receipts[1].text).toContain("Any Repair requires a separate live Repair / Stop decision")
+        expect(f.receipts[1].text).not.toContain("decision is available")
+      }
       expect(f.admission.currentApproval("ses_parent")).toBeUndefined()
     }
   },

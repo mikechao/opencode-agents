@@ -2,6 +2,7 @@ import type { Definition } from "@opencode/plugin/tui/plugin"
 import type { OpenCodeEvent } from "@opencode/client"
 import type { Data } from "@opencode/client/solid"
 import type { Renderable, MouseEvent } from "@opentui/core"
+import { TextBuffer, TextBufferView, type TextRenderable } from "@opentui/core"
 import {
   createEffect,
   createMemo,
@@ -616,7 +617,7 @@ const plugin: Definition = {
         const [rows, setRows] = createSignal(Math.max(1, Math.min(10, context.renderer.terminalHeight - 10)))
         const [ready, setReady] = createSignal(false)
         let surface: Renderable | undefined
-        let evidence: Renderable | undefined
+        let evidence: TextRenderable | undefined
         let question: Renderable | undefined
         const buttons = new Map<(typeof allActions)[number], Renderable>()
         let proof: { width: number; height: number; frame: Renderable } | undefined
@@ -638,21 +639,30 @@ const plugin: Definition = {
           ]),
           "Repair stays within the original scope. No Commit authority.",
         ]
-        const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" })
+        // Use the same native buffer and width method as TextRenderable. Even
+        // native char wrapping can retain a cluster wider than the viewport;
+        // measure candidate prefixes and split those rather than clipping them.
+        const measurementBuffer = TextBuffer.create(context.renderer.widthMethod)
+        const measurementView = TextBufferView.create(measurementBuffer)
+        measurementView.setWrapMode("none")
+        onCleanup(() => {
+          measurementView.destroy()
+          measurementBuffer.destroy()
+        })
+        const measuredWidth = (text: string) => {
+          measurementBuffer.setText(text)
+          return measurementView.logicalLineInfo.lineWidthColsMax
+        }
         const lines = createMemo(() =>
           content.flatMap((line) => {
             const result: string[] = []
             let current = ""
-            let columns = 0
-            for (const { segment } of graphemes.segment(line)) {
-              const size = Bun.stringWidth(segment)
-              if (current && columns + size > Math.max(1, width())) {
+            for (const character of line) {
+              if (current && measuredWidth(current + character) > Math.max(1, width())) {
                 result.push(current)
                 current = ""
-                columns = 0
               }
-              current += segment
-              columns += size
+              current += character
             }
             if (current) result.push(current)
             return result
@@ -691,9 +701,11 @@ const plugin: Definition = {
           inViewport(surface, evidenceHeight() + 2) &&
           inViewport(evidence, evidenceHeight()) &&
           evidence!.width >= width() &&
-          evidenceText()
-            .split("\n")
-            .every((line) => Bun.stringWidth(line) <= evidence!.width) &&
+          evidence!.plainText === evidenceText() &&
+          evidence!.scrollWidth <= evidence!.width &&
+          evidence!.virtualLineCount === evidenceHeight() &&
+          evidence!.scrollX === 0 &&
+          evidence!.scrollY === 0 &&
           inViewport(question, 1) &&
           question!.width >= columns(questionText()) &&
           actions().every((action) => {
@@ -809,10 +821,9 @@ const plugin: Definition = {
               }}
               height={evidenceHeight()}
               wrapMode="none"
+              content={evidenceText()}
               fg={theme.text.base}
-            >
-              {evidenceText()}
-            </text>
+            />
             <text
               ref={(node) => {
                 question = node
