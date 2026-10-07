@@ -105,8 +105,11 @@ test("live inspections validate the approved or prepared target and permanently 
         staged.mockImplementation(() => {})
         const owner = new CommitGit(target)
         if (state === "prepared") owner.execute({ operation: "prepare" }, () => {})
+        const before = state === "prepared" ? staged.mock.calls.length : reviewed.mock.calls.length
         const inspected = owner.execute({ operation }, () => {})
         expect(inspected).toContain(operation === "status" ? target.head : "Trusted inspection")
+        const after = state === "prepared" ? staged.mock.calls.length : reviewed.mock.calls.length
+        expect(after - before).toBe(operation === "status" ? 1 : 2)
         if (state === "prepared") expect(staged).toHaveBeenLastCalledWith(prepared)
         else expect(reviewed).toHaveBeenLastCalledWith(target.root, target)
 
@@ -139,6 +142,53 @@ test("live inspections validate the approved or prepared target and permanently 
     observed.mockRestore()
     reviewed.mockRestore()
     staged.mockRestore()
+    command.mockRestore()
+  }
+})
+
+test("staged inspection brackets the fixed diff command with content proofs and closes on intervening drift", () => {
+  const filters = spyOn(git, "requireNoCommitFilters").mockImplementation(() => {})
+  const preparing = spyOn(git, "prepareCommit").mockReturnValue(prepared)
+  let changed = false
+  const proof = spyOn(git, "requirePreparedCommit").mockImplementation(() => {
+    if (changed) throw new Error("Prepared content changed during staged inspection")
+  })
+  const observed = spyOn(git, "observeGit").mockReturnValue(target)
+  const command = spyOn(git, "trustedGit").mockImplementation((_root, args) => {
+    if (args[0] === "diff") {
+      expect(proof).toHaveBeenCalledTimes(1)
+      expect(args).toEqual([
+        "diff",
+        "--cached",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-renames",
+        "--no-color",
+        target.head,
+        "--",
+        ...target.paths,
+      ])
+      changed = true
+      return Buffer.from("Drifting diff must not be returned")
+    }
+    if (args[0] === "rev-parse") return Buffer.from(target.head)
+    if (args[0] === "diff-index") return Buffer.from("old.txt\0")
+    throw new Error(`Unexpected inspection command: ${args.join(" ")}`)
+  })
+  try {
+    const owner = new CommitGit(target)
+    owner.execute({ operation: "prepare" }, () => {})
+    expect(() => owner.execute({ operation: "staged" }, () => {})).toThrow("changed during staged inspection")
+    expect(proof).toHaveBeenCalledTimes(2)
+    changed = false
+    expect(() => owner.execute({ operation: "commit", message: "Retry" }, () => {})).toThrow("closed")
+    expect(command.mock.calls.some(([, args]) => args[0] === "commit")).toBe(false)
+    expect(owner.final()).toContain("changed during staged inspection")
+  } finally {
+    filters.mockRestore()
+    preparing.mockRestore()
+    proof.mockRestore()
+    observed.mockRestore()
     command.mockRestore()
   }
 })
@@ -197,4 +247,170 @@ test("trusted Git runner isolates inherited repository/index/environment overrid
     else process.env.GIT_INDEX_FILE = inherited
     command.mockRestore()
   }
+})
+
+// Settlement assertions concern activation-local state and receipt binding. Real
+// content/history proofs and hook execution belong to git.test.ts; these doubles
+// expose each trusted observation explicitly without replaying preparation.
+function settlement(
+  run: (facts: {
+    owner: CommitGit
+    head: string
+    paths: string[]
+    staged: string[]
+    drift: boolean
+    attempts: number
+    proofs: number
+  }) => void,
+) {
+  const facts = {
+    owner: new CommitGit(target),
+    head: target.head,
+    paths: [...target.paths],
+    staged: [] as string[],
+    drift: false,
+    attempts: 0,
+    proofs: 0,
+  }
+  const subject = "Implement approved content"
+  const filters = spyOn(git, "requireNoCommitFilters").mockImplementation(() => {})
+  const preparing = spyOn(git, "prepareCommit").mockImplementation(() => {
+    if (facts.drift) throw new Error("Review target changed")
+    facts.staged = [...target.paths]
+    return prepared
+  })
+  const proof = spyOn(git, "requirePreparedCommit").mockImplementation(() => {})
+  const observed = spyOn(git, "observeGit").mockImplementation((_root, baseline) => {
+    if (baseline && facts.head !== baseline.head) throw new Error("HEAD changed before Git observation")
+    return { root: target.root, head: facts.head, paths: [...facts.paths] }
+  })
+  const verify = spyOn(git, "verifyCommitted").mockImplementation(() => {
+    facts.proofs++
+    if (facts.head === target.head || facts.paths.length) throw new Error("Unexpected final HEAD/worktree state")
+    return { root: target.root, head: facts.head, paths: [], subject }
+  })
+  const command = spyOn(git, "trustedGit").mockImplementation((_root, args) => {
+    if (args[0] === "commit") {
+      facts.attempts++
+      facts.head = "2".repeat(40)
+      facts.paths = []
+      facts.staged = []
+      return Buffer.alloc(0)
+    }
+    if (args[0] === "rev-parse") return Buffer.from(facts.head + "\n")
+    if (args[0] === "diff-index") return Buffer.from(facts.staged.map((name) => name + "\0").join(""))
+    throw new Error(`Unexpected settlement command: ${args.join(" ")}`)
+  })
+  try {
+    run(facts)
+  } finally {
+    filters.mockRestore()
+    preparing.mockRestore()
+    proof.mockRestore()
+    observed.mockRestore()
+    verify.mockRestore()
+    command.mockRestore()
+  }
+}
+
+test("final settlement rejects a message-only external amend of the exact postflight commit", () => {
+  settlement((facts) => {
+    const { owner } = facts
+    owner.execute({ operation: "prepare" }, () => {})
+    const receipt = owner.execute({ operation: "commit", message: "Implement approved content" }, () => {})
+    const committed = facts.head
+    expect(receipt).toContain(`Commit succeeded.\nCommit: ${committed}`)
+    expect(owner.final()).toBe(receipt)
+    // The lower-level verifier accepts an identical approved tree/parent under
+    // a new commit identity. Final must additionally bind the postflight HEAD.
+    facts.head = "3".repeat(40)
+    const final = owner.final()
+    expect(final).toContain("did not reach a verified successful terminal state")
+    expect(final).toContain("history uncertain")
+    expect(final).toContain(`Known HEAD: ${facts.head}`)
+    expect(final).toContain(`Known postflight commit: ${committed}`)
+    expect(final).toContain('Known postflight subject: "Implement approved content"')
+    expect(final).not.toContain("Commit succeeded")
+    expect(owner.final()).toBe(final)
+    expect(() => owner.execute({ operation: "commit", message: "Retry" }, () => {})).toThrow("spent")
+    expect(facts.attempts).toBe(1)
+    expect(facts.head).toBe("3".repeat(40))
+    expect(facts.paths).toEqual([])
+    expect(facts.proofs).toBe(4)
+  })
+})
+
+test("observed HEAD drift through status permanently retires Commit authority even after the approved HEAD is restored", () => {
+  settlement((facts) => {
+    const { owner } = facts
+    facts.head = "3".repeat(40)
+    expect(() => owner.execute({ operation: "status" }, () => {})).toThrow("HEAD changed")
+    expect(owner.receipt).toContain(`Known HEAD: ${facts.head}`)
+    facts.head = target.head
+    expect(() => owner.execute({ operation: "prepare" }, () => {})).toThrow("closed")
+    expect(() => owner.execute({ operation: "commit", message: "Retry restored target" }, () => {})).toThrow("closed")
+    expect(owner.final()).toContain("HEAD changed")
+    expect(facts.head).toBe(target.head)
+    expect(facts.staged).toEqual([])
+    expect(facts.attempts).toBe(0)
+  })
+})
+
+test("closed preparation failure refreshes final HEAD/index/worktree facts without replacing its original reason", () => {
+  settlement((facts) => {
+    const { owner } = facts
+    facts.drift = true
+    expect(() => owner.execute({ operation: "prepare" }, () => {})).toThrow("Review target changed")
+    const original = owner.receipt!
+    const reason = original.split("\n").find((line) => line.startsWith("Reason:"))!
+    expect(original).toContain(`Known HEAD: ${target.head}`)
+    expect(original).toContain("Final staged paths (NUL bytes, base64): (empty)")
+    facts.head = "3".repeat(40)
+    facts.paths = ["old.txt", "outside.txt"]
+    facts.staged = ["outside.txt"]
+    const final = owner.final()
+    expect(final).toContain(reason)
+    expect(final).toContain(`Known HEAD: ${facts.head}`)
+    expect(final).not.toContain(`Known HEAD: ${target.head}`)
+    expect(final).toContain('Final ordinary changed paths: ["old.txt","outside.txt"]')
+    expect(final).toContain(
+      `Final staged paths (NUL bytes, base64): ${Buffer.from("outside.txt\0").toString("base64")}`,
+    )
+    expect(() => owner.execute({ operation: "prepare" }, () => {})).toThrow("closed")
+    expect(() => owner.execute({ operation: "commit", message: "Retry" }, () => {})).toThrow("closed")
+    expect(owner.final()).toContain(reason)
+    expect(facts.head).toBe("3".repeat(40))
+    expect(facts.staged).toEqual(["outside.txt"])
+    expect(facts.attempts).toBe(0)
+  })
+})
+
+test("postflight commit facts survive an external reset to the approved parent as terminal history uncertainty", () => {
+  settlement((facts) => {
+    const { owner } = facts
+    owner.execute({ operation: "prepare" }, () => {})
+    const subject = "Implement approved content"
+    const receipt = owner.execute({ operation: "commit", message: subject }, () => {})
+    const committed = facts.head
+    expect(receipt).toContain(`Commit succeeded.\nCommit: ${committed}\nSubject: ${JSON.stringify(subject)}`)
+    facts.head = target.head
+    facts.paths = ["old.txt"]
+    facts.staged = ["old.txt"]
+    const final = owner.final()
+    expect(final).toContain("did not reach a verified successful terminal state")
+    expect(final).toContain("history uncertain")
+    expect(final).toContain(`Known postflight commit: ${committed}`)
+    expect(final).toContain(`Known postflight subject: ${JSON.stringify(subject)}`)
+    expect(final).toContain(`Verified prepared approved tree at postflight: ${prepared.tree}`)
+    expect(final).toContain(`Known HEAD: ${target.head}`)
+    expect(final).toContain('Final ordinary changed paths: ["old.txt"]')
+    expect(final).toContain(`Final staged paths (NUL bytes, base64): ${Buffer.from("old.txt\0").toString("base64")}`)
+    expect(final).not.toContain("observed unchanged")
+    expect(final).not.toContain("Commit succeeded")
+    expect(() => owner.execute({ operation: "commit", message: "Retry" }, () => {})).toThrow("spent")
+    expect(owner.final()).toBe(final)
+    expect(facts.head).toBe(target.head)
+    expect(facts.staged).toEqual(["old.txt"])
+    expect(facts.attempts).toBe(1)
+  })
 })

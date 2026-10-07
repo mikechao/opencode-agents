@@ -30,6 +30,7 @@ import {
 
 const roots: string[] = []
 let seed: string
+let seedHead: string
 beforeAll(() => {
   seed = realpathSync(mkdtempSync(path.join(tmpdir(), "opencode-agents-primitives-seed-")))
   git(seed, "init", "-q")
@@ -38,6 +39,7 @@ beforeAll(() => {
   writeFileSync(path.join(seed, "old.txt"), "initial\n")
   git(seed, "add", "old.txt")
   git(seed, "commit", "-qm", "baseline")
+  seedHead = git(seed, "rev-parse", "HEAD")
 })
 afterAll(() => {
   rmSync(seed, { recursive: true, force: true })
@@ -59,21 +61,25 @@ function fixture(): string {
   return root
 }
 
-test("trusted Git observation covers staged, unstaged, untracked, deletion, and both rename paths", () => {
+test("trusted Git observation covers staged, unstaged, ignored/unusual untracked paths, deletion, and both rename paths", () => {
   const root = fixture()
+  writeFileSync(path.join(root, ".git", "info", "exclude"), "ignored.txt\n")
+  writeFileSync(path.join(root, "ignored.txt"), "ignored")
   const baseline = observeGit(root)
   expect(baseline.paths).toEqual([])
+  expect(() => requireFresh(baseline, { root, head: seedHead, paths: [] })).not.toThrow()
   writeFileSync(path.join(root, "old.txt"), "changed\n")
   expect(observeGit(root).paths).toEqual(["old.txt"])
   git(root, "add", "old.txt")
   expect(observeGit(root).paths).toEqual(["old.txt"])
-  writeFileSync(path.join(root, "new.txt"), "new\n")
+  const unusual = "line\nbreak.txt"
+  writeFileSync(path.join(root, unusual), "new\n")
   const untracked = observeGit(root)
-  expect(new Set(untracked.paths)).toEqual(new Set(["old.txt", "new.txt"]))
+  expect(new Set(untracked.paths)).toEqual(new Set(["old.txt", unusual]))
   expect(() => requireFresh(untracked, baseline)).toThrow()
   expect(() => requireInScope(untracked, baseline, ["old.txt"])).toThrow()
-  expect(requireInScope(untracked, baseline, ["old.txt", "new.txt"])).toHaveLength(2)
-  unlinkSync(path.join(root, "new.txt"))
+  expect(requireInScope(untracked, baseline, ["old.txt", unusual])).toHaveLength(2)
+  unlinkSync(path.join(root, unusual))
   git(root, "reset", "-q", "--hard", "HEAD")
   unlinkSync(path.join(root, "old.txt"))
   expect(observeGit(root).paths).toEqual(["old.txt"])
@@ -106,40 +112,23 @@ test("ordinary staged and unstaged paths are observed together", () => {
   expect(requireInScope(observed, baseline, ["old.txt", "second.txt"])).toEqual(observed.paths)
 })
 
-test("ignored untracked paths are excluded from ordinary cleanliness", () => {
-  const root = fixture()
-  writeFileSync(path.join(root, ".gitignore"), "ignored.txt\n")
-  git(root, "add", ".gitignore")
-  git(root, "commit", "-qm", "ignore rule")
-  const baseline = observeGit(root)
-  writeFileSync(path.join(root, "ignored.txt"), "ignored")
-  const ignored = observeGit(root)
-  expect(ignored.paths).toEqual([])
-  expect(() => requireFresh(ignored, baseline)).not.toThrow()
-  writeFileSync(path.join(root, "visible.txt"), "visible")
-  expect(observeGit(root).paths).toEqual(["visible.txt"])
-})
-
 test("scope uses exact path equality and observation requires the worktree root", () => {
-  const root = fixture()
-  const baseline = observeGit(root)
-  writeFileSync(path.join(root, "old.txt.bak"), "different path")
-  const observed = observeGit(root)
-  expect(observed.paths).toEqual(["old.txt.bak"])
+  const root = realpathSync(mkdtempSync(path.join(tmpdir(), "opencode-agents-root-")))
+  roots.push(root)
+  const baseline = { root, head: seedHead, paths: [] }
+  const observed = { ...baseline, paths: ["old.txt.bak"] }
   expect(() => requireInScope(observed, baseline, ["old.txt"])).toThrow("old.txt.bak")
   mkdirSync(path.join(root, "subdirectory"))
-  expect(() => observeGit(path.join(root, "subdirectory"))).toThrow("Git root differ")
-})
-
-test("changed HEAD cannot pass; unusual pathnames remain exact", () => {
-  const root = fixture()
-  const baseline = observeGit(root)
-  writeFileSync(path.join(root, "line\nbreak.txt"), "data")
-  expect(observeGit(root).paths).toEqual(["line\nbreak.txt"])
-  git(root, "add", "-A")
-  git(root, "commit", "-qm", "new head")
-  expect(() => observeGit(root, baseline)).toThrow("HEAD changed before Git observation")
-  expect(() => requireInScope(observeGit(root), baseline, ["line\nbreak.txt"])).toThrow()
+  // Root equality is a canonical-path check on trusted rev-parse output, not a
+  // Git mutation. An actual directory and fixed output prove the rejection.
+  const command = spyOn(childProcess, "execFileSync").mockReturnValue(Buffer.from(root + "\n"))
+  try {
+    expect(() => observeGit(path.join(root, "subdirectory"))).toThrow("Git root differ")
+    expect(command).toHaveBeenCalledTimes(1)
+    expect(command.mock.calls[0]![1]).toContain("--show-toplevel")
+  } finally {
+    command.mockRestore()
+  }
 })
 
 test("freshness and exact scope reject substituted root or HEAD independently of paths", () => {
@@ -159,114 +148,109 @@ test("freshness and exact scope reject substituted root or HEAD independently of
   expect(requireInScope(baseline, baseline, [])).toEqual([])
 })
 
-// Digest-only checks retain real index reads and filesystem hashing. Reuse the
-// exact observed path/HEAD state while the case holds it fixed; initial targets,
-// scope/HEAD rejection and unsupported topology below use the full observer.
-function fingerprintAt(snapshot: GitSnapshot) {
-  const observer = spyOn(gitModule, "observeGit").mockReturnValue(snapshot)
+// Content-digest cases need actual filesystem bytes/modes/topology, but not a
+// repeated seven-process path observation. The real transition test below proves
+// composition with observeGit and the real index. Only trusted observations are
+// doubled here; contentDigest/worktreeEntries and their race checks stay real.
+function reviewFiles(run: (state: { snapshot: GitSnapshot; index: string; untracked: string[] }) => void) {
+  const root = realpathSync(mkdtempSync(path.join(tmpdir(), "opencode-agents-review-files-")))
+  roots.push(root)
+  writeFileSync(path.join(root, "old.txt"), "initial\n")
+  const state = {
+    snapshot: { root, head: "1".repeat(40), paths: [] as string[] },
+    index: `100644 ${"2".repeat(40)} 0\told.txt\0`,
+    untracked: [] as string[],
+  }
+  const observer = spyOn(gitModule, "observeGit").mockImplementation(() => state.snapshot)
+  const command = spyOn(childProcess, "execFileSync").mockImplementation((_file, argv = []): any => {
+    const args = argv as string[]
+    const operation = args.slice(args.indexOf("-C") + 2)
+    if (operation[0] === "config") return Buffer.alloc(0)
+    if (JSON.stringify(operation) === JSON.stringify(["ls-files", "--stage", "-z", "--"]))
+      return Buffer.from(state.index)
+    if (JSON.stringify(operation) === JSON.stringify(["ls-files", "--others", "--exclude-standard", "-z", "--"]))
+      return Buffer.from(state.untracked.map((name) => name + "\0").join(""))
+    throw new Error(`Unexpected review command: ${operation.join(" ")}`)
+  })
   try {
-    return observeReviewTarget(snapshot.root, snapshot)
+    run(state)
   } finally {
     observer.mockRestore()
+    command.mockRestore()
   }
 }
 
 test("review fingerprint binds worktree bytes and staged identities, including same-path and untracked drift", () => {
-  const root = fixture()
-  writeFileSync(path.join(root, "old.txt"), "implemented\n")
-  writeFileSync(path.join(root, "new.txt"), "untracked\n")
-  const snapshot = observeGit(root)
-  const target = observeReviewTarget(root, snapshot)
-  expect(fingerprintAt(snapshot)).toEqual(target)
-  const assertDrift = () => {
-    const current = observeGit(root)
-    expect(current.paths).toEqual(snapshot.paths)
-    expect(() => requireReviewTarget(fingerprintAt(current), target)).toThrow("Review target changed")
-  }
-  writeFileSync(path.join(root, "old.txt"), "different!!\n")
-  assertDrift()
-  writeFileSync(path.join(root, "old.txt"), "implemented\n")
-  writeFileSync(path.join(root, "new.txt"), "different\n")
-  assertDrift()
-  writeFileSync(path.join(root, "new.txt"), "untracked\n")
-  git(root, "add", "old.txt")
-  assertDrift() // Identical worktree bytes, different index content.
-  expect(git(root, "status", "--porcelain")).toContain("old.txt")
+  reviewFiles((state) => {
+    const { root } = state.snapshot
+    writeFileSync(path.join(root, "old.txt"), "implemented\n")
+    writeFileSync(path.join(root, "new.txt"), "untracked\n")
+    state.snapshot = { ...state.snapshot, paths: ["new.txt", "old.txt"] }
+    state.untracked = ["new.txt"]
+    const snapshot = state.snapshot
+    const target = observeReviewTarget(root, snapshot)
+    expect(observeReviewTarget(root, snapshot)).toEqual(target)
+    const assertDrift = () => {
+      expect(state.snapshot.paths).toEqual(snapshot.paths)
+      expect(() => requireReviewTarget(observeReviewTarget(root, snapshot), target)).toThrow("Review target changed")
+    }
+    writeFileSync(path.join(root, "old.txt"), "different!!\n")
+    assertDrift()
+    writeFileSync(path.join(root, "old.txt"), "implemented\n")
+    writeFileSync(path.join(root, "new.txt"), "different\n")
+    assertDrift()
+    writeFileSync(path.join(root, "new.txt"), "untracked\n")
+    state.index = `100644 ${"3".repeat(40)} 0\told.txt\0`
+    assertDrift() // Identical worktree bytes and changed paths, different index identity.
+  })
 })
 
 test("review fingerprint detects tracked bytes hidden from diff, mode/type/deletion changes and rejects widening/HEAD changes", () => {
-  const root = fixture()
-  const snapshot = observeGit(root)
-  const target = observeReviewTarget(root, snapshot)
-  git(root, "update-index", "--assume-unchanged", "old.txt")
-  writeFileSync(path.join(root, "old.txt"), "hidden change\n")
-  const hidden = observeGit(root)
-  expect(hidden.paths).toEqual([])
-  expect(() => requireReviewTarget(fingerprintAt(hidden), target)).toThrow()
-  git(root, "update-index", "--no-assume-unchanged", "old.txt")
-  writeFileSync(path.join(root, "old.txt"), "changed\n")
-  const changed = observeGit(root)
-  const changedTarget = fingerprintAt(changed)
-  chmodSync(path.join(root, "old.txt"), 0o755)
-  expect(() => requireReviewTarget(fingerprintAt(changed), changedTarget)).toThrow()
-  unlinkSync(path.join(root, "old.txt"))
-  const deletion = fingerprintAt(changed)
-  expect(deletion.digest).not.toBe(changedTarget.digest)
-  symlinkSync("missing-one", path.join(root, "old.txt"))
-  const link = fingerprintAt(changed)
-  unlinkSync(path.join(root, "old.txt"))
-  symlinkSync("missing-two", path.join(root, "old.txt"))
-  expect(fingerprintAt(changed).digest).not.toBe(link.digest)
-  writeFileSync(path.join(root, "outside.txt"), "outside")
-  expect(() => observeReviewTarget(root, changed)).toThrow("Review target changed")
-  git(root, "add", "-A")
-  git(root, "commit", "-qm", "changed head")
-  expect(() => observeReviewTarget(root, changed)).toThrow("Review target changed")
+  reviewFiles((state) => {
+    const { root } = state.snapshot
+    const snapshot = state.snapshot
+    const target = observeReviewTarget(root, snapshot)
+    // A stat/assume-unchanged observation can retain an empty delta. Digest
+    // hashing must still reject changed tracked bytes independently of Git.
+    writeFileSync(path.join(root, "old.txt"), "hidden change\n")
+    expect(state.snapshot.paths).toEqual([])
+    expect(() => requireReviewTarget(observeReviewTarget(root, snapshot), target)).toThrow()
+    writeFileSync(path.join(root, "old.txt"), "changed\n")
+    state.snapshot = { ...snapshot, paths: ["old.txt"] }
+    const changed = state.snapshot
+    const changedTarget = observeReviewTarget(root, changed)
+    chmodSync(path.join(root, "old.txt"), 0o755)
+    expect(() => requireReviewTarget(observeReviewTarget(root, changed), changedTarget)).toThrow()
+    unlinkSync(path.join(root, "old.txt"))
+    expect(observeReviewTarget(root, changed).digest).not.toBe(changedTarget.digest)
+    symlinkSync("missing-one", path.join(root, "old.txt"))
+    const link = observeReviewTarget(root, changed)
+    unlinkSync(path.join(root, "old.txt"))
+    symlinkSync("missing-two", path.join(root, "old.txt"))
+    expect(observeReviewTarget(root, changed).digest).not.toBe(link.digest)
+    state.snapshot = { ...changed, paths: ["old.txt", "outside.txt"] }
+    expect(() => observeReviewTarget(root, changed)).toThrow("Review target changed")
+    state.snapshot = { ...changed, head: "4".repeat(40) }
+    expect(() => observeReviewTarget(root, changed)).toThrow("Review target changed")
+  })
 })
 
 test("review target rejects unsupported Git entries and ambiguous file topology", () => {
-  const root = fixture()
-  const snapshot = observeGit(root)
-  const head = git(root, "rev-parse", "HEAD")
-  git(root, "update-index", "--add", "--cacheinfo", `160000,${head},module`)
-  expect(() => observeReviewTarget(root, observeGit(root))).toThrow("Unsupported or ambiguous index")
-  git(root, "reset", "-q", "HEAD")
-  unlinkSync(path.join(root, "old.txt"))
-  mkdirSync(path.join(root, "old.txt"))
-  expect(() => observeReviewTarget(root, observeGit(root))).toThrow("Unsupported review worktree entry")
-  expect(() => observeReviewTarget("/does-not-exist", snapshot)).toThrow()
+  reviewFiles((state) => {
+    const { root } = state.snapshot
+    state.index = `160000 ${state.snapshot.head} 0\tmodule\0`
+    expect(() => observeReviewTarget(root, state.snapshot)).toThrow("Unsupported or ambiguous index")
+    state.index = `100644 ${"2".repeat(40)} 0\told.txt\0`
+    unlinkSync(path.join(root, "old.txt"))
+    mkdirSync(path.join(root, "old.txt"))
+    expect(() => observeReviewTarget(root, state.snapshot)).toThrow("Unsupported review worktree entry")
+    expect(() => observeReviewTarget("/does-not-exist", { ...state.snapshot, root: "/does-not-exist" })).toThrow()
+  })
 })
 
-test("complete-index proof commits a tiny reviewed edit with an unchanged tracked blob larger than 16 MiB", () => {
-  const root = fixture()
-  const asset = Buffer.alloc(17 * 1024 * 1024, 0x61)
-  writeFileSync(path.join(root, "large.bin"), asset)
-  writeFileSync(path.join(root, "duplicate.bin"), asset)
-  git(root, "add", "large.bin", "duplicate.bin")
-  git(root, "commit", "-qm", "Track large unchanged assets")
-  const oid = git(root, "rev-parse", "HEAD:large.bin")
-  expect(git(root, "rev-parse", "HEAD:duplicate.bin")).toBe(oid)
-  expect(Number(git(root, "cat-file", "-s", oid))).toBeGreaterThan(16 * 1024 * 1024)
-  writeFileSync(path.join(root, "old.txt"), "Tiny approved edit\n")
-  const target = observeReviewTarget(root, observeGit(root))
-  expect(target.paths).toEqual(["old.txt"])
-  const owner = new CommitGit(target)
-  expect(owner.execute({ operation: "prepare" }, () => {})).toContain('Complete reviewed paths prepared: ["old.txt"]')
-  expect(git(root, "diff", "--cached", "--name-only")).toBe("old.txt")
-  expect(git(root, "ls-files", "--stage")).toContain(`${oid} 0\tlarge.bin`)
-  expect(git(root, "ls-files", "--stage")).toContain(`${oid} 0\tduplicate.bin`)
-  const receipt = owner.execute({ operation: "commit", message: "Make tiny approved edit" }, () => {})
-  expect(receipt).toContain("Commit succeeded")
-  expect(receipt).toContain('Exact committed paths: ["old.txt"]')
-  expect(owner.final()).toBe(receipt)
-  expect(git(root, "rev-parse", "HEAD^")).toBe(target.head)
-  expect(git(root, "rev-parse", "HEAD:large.bin")).toBe(oid)
-  expect(git(root, "rev-parse", "HEAD:duplicate.bin")).toBe(oid)
-  expect(git(root, "show", "HEAD:old.txt")).toBe("Tiny approved edit")
-  expect(observeGit(root).paths).toEqual([])
-})
-
-test("complete-index preparation and final proof preserve SHA-256 Git object identities", () => {
+// Object-format coverage starts at the index-content primitive. The complete
+// authority lifecycle below and the large-Git suite already prove orchestration.
+test("complete-index and postflight proofs preserve real SHA-256 Git object identities", () => {
   const root = realpathSync(mkdtempSync(path.join(tmpdir(), "opencode-agents-sha256-")))
   roots.push(root)
   git(root, "init", "-q", "--object-format=sha256")
@@ -275,18 +259,34 @@ test("complete-index preparation and final proof preserve SHA-256 Git object ide
   writeFileSync(path.join(root, "old.txt"), "initial\n")
   git(root, "add", "old.txt")
   git(root, "commit", "-qm", "SHA-256 baseline")
-  writeFileSync(path.join(root, "old.txt"), "approved SHA-256 change\n")
-  const target = observeReviewTarget(root, observeGit(root))
-  expect(target.head).toHaveLength(64)
-  const owner = new CommitGit(target)
-  owner.execute({ operation: "prepare" }, () => {})
-  expect(owner.execute({ operation: "commit", message: "Implement SHA-256 change" }, () => {})).toContain(
-    "Commit succeeded",
-  )
-  expect(owner.final()).toContain("Commit succeeded")
-  expect(git(root, "rev-parse", "HEAD^")).toBe(target.head)
-  expect(git(root, "show", "HEAD:old.txt")).toBe("approved SHA-256 change")
-  expect(observeGit(root).paths).toEqual([])
+  const head = git(root, "rev-parse", "HEAD")
+  const data = "approved SHA-256 change\n"
+  writeFileSync(path.join(root, "old.txt"), data)
+  git(root, "add", "old.txt")
+  const prepared = {
+    target: { root, head, paths: ["old.txt"], digest: "a".repeat(64) },
+    tree: git(root, "write-tree"),
+    names: ["old.txt"],
+    entries: [["old.txt", "file", false, createHash("sha256").update(data).digest("hex")] as const],
+  }
+  expect(head).toHaveLength(64)
+  expect(prepared.tree).toHaveLength(64)
+  // Ordinary root/HEAD/path observation is independent of object width and is
+  // integrated below. Retain real 64-character index/blob/commit object reads.
+  const observer = spyOn(gitModule, "observeGit").mockReturnValue(prepared.target)
+  try {
+    gitModule.requirePreparedCommit(prepared)
+    gitModule.trustedGit(root, ["commit", "-qm", "Implement SHA-256 change"])
+    observer.mockReturnValue({ root, head: git(root, "rev-parse", "HEAD"), paths: [] })
+    const final = gitModule.verifyCommitted(prepared)
+    expect(final.head).toHaveLength(64)
+    expect(final.paths).toEqual([])
+    expect(final.subject).toBe("Implement SHA-256 change")
+  } finally {
+    observer.mockRestore()
+  }
+  expect(git(root, "rev-parse", "HEAD^")).toBe(head)
+  expect(git(root, "show", "HEAD:old.txt")).toBe(data.trimEnd())
 })
 
 test("bounded blob proof rejects malformed output and races, and closes/unlinks large-object resources on failure", () => {
@@ -309,9 +309,12 @@ test("bounded blob proof rejects malformed output and races, and closes/unlinks 
       "body-extra",
       "body-size",
       "body-header",
+      "body-id",
+      "body-content",
       "body-terminator",
       "worktree-race",
       "large-header",
+      "large-id",
       "large-size",
       "large-truncated",
       "large-extra",
@@ -378,9 +381,11 @@ test("bounded blob proof rejects malformed output and races, and closes/unlinks 
             output,
             scenario === "large-header"
               ? `${oid} tree ${size}\n`
-              : scenario === "large-size"
-                ? `${oid} blob ${size + 1}\n`
-                : header,
+              : scenario === "large-id"
+                ? `${"d".repeat(width)} blob ${size}\n`
+                : scenario === "large-size"
+                  ? `${oid} blob ${size + 1}\n`
+                  : header,
           )
           if (scenario === "large-process" || scenario === "large-timeout")
             throw Object.assign(new Error(scenario), {
@@ -397,6 +402,9 @@ test("bounded blob proof rejects malformed output and races, and closes/unlinks 
           return null as any
         }
         if (scenario === "body-header") return Buffer.from(`${oid} tree ${size}\n`)
+        if (scenario === "body-id") return Buffer.from(`${"d".repeat(width)} blob ${size}\n`)
+        if (scenario === "body-content")
+          return Buffer.concat([Buffer.from(header), Buffer.from("no\n"), Buffer.from("\n")])
         if (scenario === "body-size")
           return Buffer.concat([Buffer.from(`${oid} blob ${size + 1}\n`), data, Buffer.from("\n")])
         if (scenario === "body-truncated") return Buffer.concat([Buffer.from(header), data])
@@ -422,7 +430,9 @@ test("bounded blob proof rejects malformed output and races, and closes/unlinks 
                     ? "Unsupported commit index entry"
                     : scenario.startsWith("large-") && ["large-process", "large-timeout"].includes(scenario)
                       ? scenario
-                      : /staged blob/,
+                      : scenario === "body-content"
+                        ? "Prepared staged content differs from approved content"
+                        : /staged blob/,
           )
         expect(descriptors.length).toBe(scenario.startsWith("large-") ? 1 : 0)
         for (const descriptor of descriptors) expect(() => fs.fstatSync(descriptor)).toThrow()
@@ -436,240 +446,165 @@ test("bounded blob proof rejects malformed output and races, and closes/unlinks 
   }
 })
 
-test("small staged blobs exceeding 16 MiB in aggregate are split by byte budget without retaining whole-index content", () => {
-  const root = realpathSync(mkdtempSync(path.join(tmpdir(), "opencode-agents-small-blobs-")))
-  roots.push(root)
-  const size = 900 * 1024
-  const objects = Array.from({ length: 20 }, (_, index) => {
-    const name = `file-${String(index).padStart(2, "0")}.bin`
-    const bytes = Buffer.alloc(size, index)
-    writeFileSync(path.join(root, name), bytes)
-    return {
-      name,
-      fill: index,
-      oid: (index + 10).toString(16).padStart(40, "0"),
-      digest: createHash("sha256").update(bytes).digest("hex"),
-    }
-  })
-  const names = objects.map(({ name }) => name),
-    head = "1".repeat(40),
-    tree = "b".repeat(40)
-  const prepared = {
-    target: { root, head, paths: names, digest: "a".repeat(64) },
-    tree,
-    names,
-    entries: objects.map(({ name, digest }) => [name, "file", false, digest] as const),
+// Cross the internal batching boundaries with tiny metadata fixtures and only
+// 1.2 MiB of content. The >16 MiB real-Git proofs live in git-large.integration.ts.
+for (const width of [40, 64]) {
+  for (const { count, size, expectedMetadata, expectedReads } of [
+    { count: 4097, size: 0, expectedMetadata: [4096, 1], expectedReads: [4096, 1] },
+    { count: 3, size: 400 * 1024, expectedMetadata: [3], expectedReads: [2, 1] },
+  ]) {
+    test(`${size ? "complete index" : "blob metadata"} proof bounds batches and deduplicates ${width * 4}-bit OIDs`, () => {
+      const root = realpathSync(mkdtempSync(path.join(tmpdir(), "opencode-agents-batches-")))
+      roots.push(root)
+      const content = Buffer.alloc(size, 0x61),
+        digest = createHash("sha256").update(content).digest("hex")
+      const objects = Array.from({ length: count }, (_, index) => ({
+        name: `file-${String(index).padStart(4, "0")}.bin`,
+        oid: (index + 10).toString(16).padStart(width, "0"),
+      }))
+      const entries = [...objects, { name: "duplicate.bin", oid: objects[0]!.oid }]
+      // The metadata case reaches all 4097 unique IDs before rejecting the
+      // deliberately incomplete prepared path set. Only two physical files are
+      // needed; the byte-budget case verifies every path through a complete proof.
+      const approved = size ? entries : [entries[0]!, entries.at(-1)!]
+      for (const { name } of approved) writeFileSync(path.join(root, name), content)
+      const names = approved.map(({ name }) => name).sort(),
+        head = "1".repeat(width)
+      const prepared = {
+        target: { root, head, paths: names, digest: "a".repeat(64) },
+        tree: "b".repeat(width),
+        names,
+        entries: names.map((name) => [name, "file", false, digest] as const),
+      }
+      const metadataGroups: string[][] = [],
+        readGroups: string[][] = []
+      const command = spyOn(childProcess, "execFileSync").mockImplementation((_file, argv = [], options = {}): any => {
+        const args = argv as string[],
+          operation = args.slice(args.indexOf("-C") + 2)
+        if (operation[0] === "rev-parse")
+          return Buffer.from(operation.includes("--show-toplevel") ? root + "\n" : head + "\n")
+        if (operation[0] === "ls-files" && operation.includes("--stage"))
+          return Buffer.from(entries.map(({ name, oid }) => `100644 ${oid} 0\t${name}\0`).join(""))
+        if (operation[0] === "diff-index" && operation.includes(head)) return Buffer.from(names.join("\0") + "\0")
+        if (operation[0] !== "cat-file") return Buffer.alloc(0)
+        const ids = (options as any).input.toString("utf8").trimEnd().split("\n") as string[]
+        if (operation[1] === "--batch-check") {
+          metadataGroups.push(ids)
+          return Buffer.from(ids.map((oid) => `${oid} blob ${size}\n`).join(""))
+        }
+        expect((options as any).stdio[1]).toBe("pipe")
+        readGroups.push(ids)
+        const output = Buffer.concat(
+          ids.flatMap((oid) => [Buffer.from(`${oid} blob ${size}\n`), content, Buffer.from("\n")]),
+        )
+        expect(output.length).toBeLessThanOrEqual(1024 * 1024)
+        return output
+      })
+      try {
+        if (size) expect(() => gitModule.requirePreparedCommit(prepared)).not.toThrow()
+        else expect(() => gitModule.requirePreparedCommit(prepared)).toThrow("Unexpected prepared index paths")
+        expect(metadataGroups.map((group) => group.length)).toEqual(expectedMetadata)
+        expect(readGroups.map((group) => group.length)).toEqual(expectedReads)
+        expect(metadataGroups.flat()).toEqual(objects.map(({ oid }) => oid))
+        expect(readGroups.flat()).toEqual(metadataGroups.flat())
+      } finally {
+        command.mockRestore()
+      }
+    })
   }
-  let largestBatch = 0
-  const readIDs: string[] = []
-  const command = spyOn(childProcess, "execFileSync").mockImplementation((_file, argv = [], options = {}): any => {
-    const args = argv as string[],
-      operation = args.slice(args.indexOf("-C") + 2)
-    if (operation[0] === "rev-parse")
-      return Buffer.from(operation.includes("--show-toplevel") ? root + "\n" : head + "\n")
-    if (operation[0] === "ls-files" && operation.includes("--stage"))
-      return Buffer.from(objects.map(({ name, oid }) => `100644 ${oid} 0\t${name}\0`).join(""))
-    if (operation[0] === "diff-index" && operation.includes(head)) return Buffer.from(names.join("\0") + "\0")
-    if (operation[0] !== "cat-file") return Buffer.alloc(0)
-    const ids = (options as any).input.toString("utf8").trimEnd().split("\n") as string[]
-    const blobs = ids.map((id) => objects.find(({ oid }) => oid === id)!)
-    if (operation[1] === "--batch-check") return Buffer.from(blobs.map(({ oid }) => `${oid} blob ${size}\n`).join(""))
-    expect((options as any).stdio[1]).toBe("pipe")
-    readIDs.push(...ids)
-    const bytes = Buffer.concat(
-      blobs.flatMap(({ oid, fill }) => [
-        Buffer.from(`${oid} blob ${size}\n`),
-        Buffer.alloc(size, fill),
-        Buffer.from("\n"),
-      ]),
-    )
-    largestBatch = Math.max(largestBatch, bytes.length)
-    return bytes
-  })
-  try {
-    expect(size * objects.length).toBeGreaterThan(16 * 1024 * 1024)
-    expect(() => gitModule.requirePreparedCommit(prepared)).not.toThrow()
-    expect(largestBatch).toBeLessThanOrEqual(1024 * 1024)
-    expect(readIDs).toEqual(objects.map(({ oid }) => oid))
-  } finally {
-    command.mockRestore()
-  }
-})
+}
 
 test("approved worktree transitions through exact staged bytes/modes/deletions/symlinks to one verified commit", () => {
   const root = fixture()
-  const head = observeGit(root).head
+  const head = seedHead
   unlinkSync(path.join(root, "old.txt"))
   writeFileSync(path.join(root, "new.txt"), "new approved executable\n")
   chmodSync(path.join(root, "new.txt"), 0o755)
   symlinkSync("new.txt", path.join(root, "link.txt"))
-  const target = observeReviewTarget(root, observeGit(root))
+  const target = observeReviewTarget(root, { root, head, paths: ["link.txt", "new.txt", "old.txt"] })
   const owner = new CommitGit(target)
   owner.execute({ operation: "prepare" }, () => {})
-  expect(() => requireReviewTarget(observeReviewTarget(root, observeGit(root)), target)).toThrow() // Staging changes original digest.
-  expect(owner.execute({ operation: "staged" }, () => {})).toContain("new approved executable")
   expect(
     owner.execute(
       { operation: "commit", message: "Implement approved content\n\nLiteral --amend --no-verify $(touch nope)" },
       () => {},
     ),
   ).toContain("Commit succeeded")
-  const final = observeGit(root)
-  expect(final.paths).toEqual([])
-  expect(final.head).not.toBe(head)
+  expect(git(root, "status", "--porcelain")).toBe("")
+  expect(git(root, "rev-parse", "HEAD")).not.toBe(head)
   expect(git(root, "rev-parse", "HEAD^")).toBe(head)
   expect(git(root, "show", "HEAD:new.txt")).toBe("new approved executable")
   expect(git(root, "show", "HEAD:link.txt")).toBe("new.txt")
-  expect(git(root, "ls-tree", "HEAD")).toContain("100755")
-  expect(git(root, "ls-tree", "HEAD")).not.toContain("old.txt")
+  const tree = git(root, "ls-tree", "HEAD")
+  expect(tree).toContain("100755")
+  expect(tree).not.toContain("old.txt")
   chmodSync(path.join(root, "new.txt"), 0o644)
   expect(owner.final()).toContain("did not reach a verified successful")
 })
 
-test("final settlement rejects a message-only external amend of the exact postflight commit", () => {
-  const root = fixture()
-  writeFileSync(path.join(root, "old.txt"), "approved\n")
-  const target = observeReviewTarget(root, observeGit(root))
-  const owner = new CommitGit(target)
-  owner.execute({ operation: "prepare" }, () => {})
-  const receipt = owner.execute({ operation: "commit", message: "Implement approved content" }, () => {})
-  const committed = git(root, "rev-parse", "HEAD")
-  const tree = git(root, "rev-parse", "HEAD^{tree}")
-  expect(receipt).toContain(`Commit succeeded.\nCommit: ${committed}`)
-  expect(owner.final()).toBe(receipt)
-
-  git(root, "commit", "--amend", "-qm", "Externally replace only the message")
-  const replacement = git(root, "rev-parse", "HEAD")
-  expect(replacement).not.toBe(committed)
-  expect(git(root, "rev-parse", "HEAD^{tree}")).toBe(tree)
-  expect(git(root, "rev-parse", "HEAD^")).toBe(target.head)
-  const final = owner.final()
-  expect(final).toContain("did not reach a verified successful terminal state")
-  expect(final).toContain("history uncertain")
-  expect(final).toContain(`Known HEAD: ${replacement}`)
-  expect(final).toContain(`Known postflight commit: ${committed}`)
-  expect(final).toContain('Known postflight subject: "Implement approved content"')
-  expect(final).not.toContain("Commit succeeded")
-  expect(owner.final()).toBe(final)
-  expect(() => owner.execute({ operation: "commit", message: "Retry" }, () => {})).toThrow("spent")
-  expect(git(root, "rev-parse", "HEAD")).toBe(replacement)
-  expect(git(root, "status", "--porcelain")).toBe("")
+test("preparation rejects widened scope and same-path byte drift before staging", () => {
+  reviewFiles((state) => {
+    const { root } = state.snapshot
+    state.snapshot = { ...state.snapshot, paths: ["old.txt"] }
+    writeFileSync(path.join(root, "old.txt"), "approved\n")
+    const target = observeReviewTarget(root, state.snapshot)
+    state.snapshot = { ...state.snapshot, paths: ["old.txt", "outside.txt"] }
+    expect(() => gitModule.prepareCommit(target)).toThrow("Review target changed")
+    state.snapshot = { ...state.snapshot, paths: ["old.txt"] }
+    writeFileSync(path.join(root, "old.txt"), "drift\n")
+    expect(() => gitModule.prepareCommit(target)).toThrow("Review target changed")
+    // The double rejects every unconfigured command, including add/write-tree.
+  })
 })
 
-test("observed HEAD drift through status permanently retires Commit authority even after the approved HEAD is restored", () => {
+test("prepared content proof rejects real partial/substituted index hidden by stat flags, and changed HEAD", () => {
   const root = fixture()
-  writeFileSync(path.join(root, "old.txt"), "approved\n")
-  const target = observeReviewTarget(root, observeGit(root))
-  const owner = new CommitGit(target)
-  git(root, "commit", "--allow-empty", "-qm", "External empty commit")
-  const external = git(root, "rev-parse", "HEAD")
-  expect(external).not.toBe(target.head)
-  expect(() => owner.execute({ operation: "status" }, () => {})).toThrow("HEAD changed")
-  expect(owner.receipt).toContain(`Known HEAD: ${external}`)
-  git(root, "reset", "--soft", target.head)
-  requireReviewTarget(observeReviewTarget(root, target), target)
-  expect(() => owner.execute({ operation: "prepare" }, () => {})).toThrow("closed")
-  expect(() => owner.execute({ operation: "commit", message: "Retry restored target" }, () => {})).toThrow("closed")
-  expect(owner.final()).toContain("HEAD changed")
-  expect(git(root, "rev-parse", "HEAD")).toBe(target.head)
-  expect(git(root, "diff", "--cached", "--name-only")).toBe("")
-})
-
-test("closed preparation failure refreshes final HEAD/index/worktree facts without replacing its original reason", () => {
-  const root = fixture()
-  writeFileSync(path.join(root, "old.txt"), "approved\n")
-  const target = observeReviewTarget(root, observeGit(root))
-  const owner = new CommitGit(target)
-  writeFileSync(path.join(root, "old.txt"), "External content drift\n")
-  expect(() => owner.execute({ operation: "prepare" }, () => {})).toThrow("Review target changed")
-  const original = owner.receipt!
-  const reason = original.split("\n").find((line) => line.startsWith("Reason:"))!
-  expect(original).toContain(`Known HEAD: ${target.head}`)
-  expect(original).toContain("Final staged paths (NUL bytes, base64): (empty)")
-
-  git(root, "commit", "--allow-empty", "-qm", "External HEAD drift during settlement")
-  const external = git(root, "rev-parse", "HEAD")
-  writeFileSync(path.join(root, "outside.txt"), "External staged content\n")
-  git(root, "add", "outside.txt")
-  const index = git(root, "ls-files", "--stage")
-  const final = owner.final()
-  expect(final).toContain(reason)
-  expect(final).toContain(`Known HEAD: ${external}`)
-  expect(final).not.toContain(`Known HEAD: ${target.head}`)
-  expect(final).toContain('Final ordinary changed paths: ["old.txt","outside.txt"]')
-  expect(final).toContain(`Final staged paths (NUL bytes, base64): ${Buffer.from("outside.txt\0").toString("base64")}`)
-  expect(() => owner.execute({ operation: "prepare" }, () => {})).toThrow("closed")
-  expect(() => owner.execute({ operation: "commit", message: "Retry" }, () => {})).toThrow("closed")
-  expect(owner.final()).toContain(reason)
-  expect(git(root, "rev-parse", "HEAD")).toBe(external)
-  expect(git(root, "ls-files", "--stage")).toBe(index)
-})
-
-test("postflight commit facts survive an external reset to the approved parent as terminal history uncertainty", () => {
-  const root = fixture()
-  writeFileSync(path.join(root, "old.txt"), "approved\n")
-  const target = observeReviewTarget(root, observeGit(root))
-  const owner = new CommitGit(target)
-  owner.execute({ operation: "prepare" }, () => {})
-  const subject = "Implement approved content"
-  const receipt = owner.execute({ operation: "commit", message: subject }, () => {})
-  const committed = git(root, "rev-parse", "HEAD")
-  const tree = git(root, "rev-parse", "HEAD^{tree}")
-  expect(receipt).toContain(`Commit succeeded.\nCommit: ${committed}\nSubject: ${JSON.stringify(subject)}`)
-  git(root, "reset", "--soft", target.head)
-  const index = git(root, "ls-files", "--stage")
-  const final = owner.final()
-  expect(final).toContain("did not reach a verified successful terminal state")
-  expect(final).toContain("history uncertain")
-  expect(final).toContain(`Known postflight commit: ${committed}`)
-  expect(final).toContain(`Known postflight subject: ${JSON.stringify(subject)}`)
-  expect(final).toContain(`Verified prepared approved tree at postflight: ${tree}`)
-  expect(final).toContain(`Known HEAD: ${target.head}`)
-  expect(final).toContain('Final ordinary changed paths: ["old.txt"]')
-  expect(final).toContain(`Final staged paths (NUL bytes, base64): ${Buffer.from("old.txt\0").toString("base64")}`)
-  expect(final).not.toContain("observed unchanged")
-  expect(final).not.toContain("Commit succeeded")
-  expect(() => owner.execute({ operation: "commit", message: "Retry" }, () => {})).toThrow("spent")
-  expect(owner.final()).toBe(final)
-  expect(git(root, "rev-parse", "HEAD")).toBe(target.head)
-  expect(git(root, "ls-files", "--stage")).toBe(index)
-  expect(git(root, "cat-file", "-t", committed)).toBe("commit")
-})
-
-test("commit preparation rejects fresh drift, unrelated staged content, partial or substituted index, and changed HEAD", () => {
-  const root = fixture()
-  writeFileSync(path.join(root, "old.txt"), "approved\n")
-  const target = observeReviewTarget(root, observeGit(root))
-  writeFileSync(path.join(root, "outside.txt"), "outside\n")
-  git(root, "add", "outside.txt")
-  expect(() => gitModule.prepareCommit(target)).toThrow("Review target changed")
-  git(root, "reset", "-q", "HEAD", "--", "outside.txt")
-  unlinkSync(path.join(root, "outside.txt"))
-  writeFileSync(path.join(root, "old.txt"), "drift\n")
-  expect(() => gitModule.prepareCommit(target)).toThrow("Review target changed")
-  writeFileSync(path.join(root, "old.txt"), "approved\n")
-  const prepared = gitModule.prepareCommit(target)
-  git(root, "reset", "-q", "HEAD", "--", "old.txt")
-  expect(() => gitModule.requirePreparedCommit(prepared)).toThrow("Staged paths")
-  writeFileSync(path.join(root, "old.txt"), "substituted\n")
+  const data = "approved\n"
+  writeFileSync(path.join(root, "old.txt"), data)
   git(root, "add", "old.txt")
-  writeFileSync(path.join(root, "old.txt"), "approved\n")
-  git(root, "update-index", "--assume-unchanged", "old.txt")
-  expect(() => gitModule.requirePreparedCommit(prepared)).toThrow("staged content differs from approved")
-  git(root, "update-index", "--no-assume-unchanged", "old.txt")
-  git(root, "add", "old.txt")
-  gitModule.requirePreparedCommit(prepared)
+  const target = { root, head: seedHead, paths: ["old.txt"], digest: "a".repeat(64) }
+  const prepared = {
+    target,
+    tree: git(root, "write-tree"),
+    names: ["old.txt"],
+    entries: [["old.txt", "file", false, createHash("sha256").update(data).digest("hex")] as const],
+  }
+  // This case holds the exact ordinary delta fixed and tests the real index
+  // proof. Root/HEAD observation is covered independently and again below.
+  const observer = spyOn(gitModule, "observeGit").mockReturnValue(target)
+  try {
+    git(root, "reset", "-q", "HEAD", "--", "old.txt")
+    expect(() => gitModule.requirePreparedCommit(prepared)).toThrow("Staged paths")
+    writeFileSync(path.join(root, "old.txt"), "substituted\n")
+    git(root, "add", "old.txt")
+    writeFileSync(path.join(root, "old.txt"), data)
+    git(root, "update-index", "--assume-unchanged", "old.txt")
+    expect(() => gitModule.requirePreparedCommit(prepared)).toThrow("staged content differs from approved")
+    git(root, "update-index", "--no-assume-unchanged", "old.txt")
+    git(root, "add", "old.txt")
+    gitModule.requirePreparedCommit(prepared)
+  } finally {
+    observer.mockRestore()
+  }
   git(root, "commit", "-qm", "External commit")
   expect(() => gitModule.requirePreparedCommit(prepared)).toThrow("HEAD changed")
 })
 
+// Hook execution and postflight object semantics require real Git. Authority
+// spending for all three outcomes is tested at the state-machine layer instead
+// of replaying prepare, pre-spawn verification and failure receipt observation.
 for (const hook of ["reject", "modify", "ambiguous"] as const) {
-  test(`real ${hook} hook is honored and remains terminal without cleanup or a second commit`, () => {
+  test(`real ${hook} hook is honored and postflight fails closed without cleanup`, () => {
     const root = fixture()
     writeFileSync(path.join(root, "old.txt"), "approved\n")
-    const target = observeReviewTarget(root, observeGit(root))
-    const owner = new CommitGit(target)
-    owner.execute({ operation: "prepare" }, () => {})
+    git(root, "add", "old.txt")
+    const target = { root, head: seedHead, paths: ["old.txt"], digest: "a".repeat(64) }
+    const prepared = {
+      target,
+      tree: git(root, "write-tree"),
+      names: ["old.txt"],
+      entries: [["old.txt", "file", false, createHash("sha256").update("approved\n").digest("hex")] as const],
+    }
     const hookName = hook === "ambiguous" ? "post-commit" : "pre-commit"
     writeFileSync(
       path.join(root, ".git", "hooks", hookName),
@@ -680,12 +615,21 @@ for (const hook of ["reject", "modify", "ambiguous"] as const) {
           : "#!/bin/sh\ngit -c core.hooksPath=/dev/null commit --allow-empty -qm 'hook extra commit'\n",
     )
     chmodSync(path.join(root, ".git", "hooks", hookName), 0o755)
-    const receipt = owner.execute({ operation: "commit", message: "Implement reviewed change" }, () => {})
-    expect(receipt).toContain("did not reach a verified successful")
-    const headAfter = observeGit(root).head
+    const commit = () => gitModule.trustedGit(root, ["commit", "--cleanup=verbatim", "-m", "Implement reviewed change"])
+    if (hook === "reject") expect(commit).toThrow()
+    else expect(commit).not.toThrow()
+    const headAfter = git(root, "rev-parse", "HEAD")
+    const indexAfter = git(root, "ls-files", "--stage")
     expect(headAfter === target.head).toBe(hook === "reject")
-    expect(() => owner.execute({ operation: "commit", message: "Retry" }, () => {})).toThrow("spent")
-    expect(observeGit(root).head).toBe(headAfter)
+    expect(() => gitModule.verifyCommitted(prepared)).toThrow(
+      hook === "reject"
+        ? "Unexpected final HEAD/worktree state"
+        : hook === "modify"
+          ? "Committed tree differs from prepared approved content"
+          : "Commit did not advance the approved HEAD by exactly one parent",
+    )
+    expect(git(root, "rev-parse", "HEAD")).toBe(headAfter)
+    expect(git(root, "ls-files", "--stage")).toBe(indexAfter)
     if (hook === "reject") expect(git(root, "diff", "--cached", "--name-only")).toBe("old.txt")
     if (hook === "modify") expect(git(root, "show", "HEAD:old.txt")).toBe("hook modified")
   })

@@ -1,0 +1,2335 @@
+{
+  "environment": {
+    "date": "2026-10-07",
+    "bun": "1.4.2",
+    "trustedGit": "2.50.1 (Apple Git-155)",
+    "fixtureGit": "2.54.0",
+    "architecture": "macOS arm64"
+  },
+  "method": "Three serial uninstrumented /usr/bin/time -p runs per command, alternating default and Git file. Separate diagnostic function/exec/FS/hash instrumentation; no production instrumentation retained. Launches count direct execFileSync calls, excluding Git-internal/hook descendant processes. Fixture-helper launches include test actions, not just setup.",
+  "before": {
+    "timingSamples": [
+      {
+        "suite": "default",
+        "run": 1,
+        "seconds": 38.855874333996326,
+        "exit": 0
+      },
+      {
+        "suite": "git",
+        "run": 1,
+        "seconds": 34.29821579204872,
+        "exit": 0
+      },
+      {
+        "suite": "default",
+        "run": 2,
+        "seconds": 40.301789583987556,
+        "exit": 0
+      },
+      {
+        "suite": "git",
+        "run": 2,
+        "seconds": 34.62296329101082,
+        "exit": 0
+      },
+      {
+        "suite": "default",
+        "run": 3,
+        "seconds": 37.56603612494655,
+        "exit": 0
+      },
+      {
+        "suite": "git",
+        "run": 3,
+        "seconds": 33.259250000002794,
+        "exit": 0
+      }
+    ],
+    "medianWallSeconds": {
+      "default": 38.855874333996326,
+      "git": 34.29821579204872
+    },
+    "tests": [
+      {
+        "name": "trusted Git observation covers staged, unstaged, untracked, deletion, and both rename paths",
+        "medianWallMs": 721.23,
+        "profileBodyMs": 812.988417,
+        "trustedGitLaunches": 42,
+        "fixtureHelperGitLaunches": 5,
+        "operations": {
+          "observeGit": {
+            "calls": 6,
+            "ms": 762.2279169999997,
+            "self": 1.4020819999994956,
+            "launches": 42
+          },
+          "fixture": {
+            "calls": 1,
+            "ms": 13.743667000000016,
+            "self": 0.15149900000002958,
+            "launches": 1
+          },
+          "$git": {
+            "calls": 47,
+            "ms": 802.0877949999996,
+            "self": 802.0877949999996,
+            "launches": 0
+          }
+        }
+      },
+      {
+        "name": "ordinary staged and unstaged paths are observed together",
+        "medianWallMs": 291.06,
+        "profileBodyMs": 261.37683300000003,
+        "trustedGitLaunches": 14,
+        "fixtureHelperGitLaunches": 6,
+        "operations": {
+          "observeGit": {
+            "calls": 2,
+            "ms": 205.27437499999996,
+            "self": 0.3232069999999112,
+            "launches": 14
+          },
+          "fixture": {
+            "calls": 1,
+            "ms": 13.053666000000021,
+            "self": 0.07370800000012423,
+            "launches": 1
+          },
+          "$git": {
+            "calls": 20,
+            "ms": 253.73896000000013,
+            "self": 253.73896000000013,
+            "launches": 0
+          }
+        }
+      },
+      {
+        "name": "ignored untracked paths are excluded from ordinary cleanliness",
+        "medianWallMs": 372.16,
+        "profileBodyMs": 341.3461669999999,
+        "trustedGitLaunches": 21,
+        "fixtureHelperGitLaunches": 3,
+        "operations": {
+          "observeGit": {
+            "calls": 3,
+            "ms": 305.2688750000002,
+            "self": 0.4814599999992879,
+            "launches": 21
+          },
+          "fixture": {
+            "calls": 1,
+            "ms": 12.25974999999994,
+            "self": 0.04091600000015205,
+            "launches": 1
+          },
+          "$git": {
+            "calls": 24,
+            "ms": 333.9345410000001,
+            "self": 333.9345410000001,
+            "launches": 0
+          }
+        }
+      },
+      {
+        "name": "scope uses exact path equality and observation requires the worktree root",
+        "medianWallMs": 243.51,
+        "profileBodyMs": 228.87208399999986,
+        "trustedGitLaunches": 15,
+        "fixtureHelperGitLaunches": 1,
+        "operations": {
+          "observeGit": {
+            "calls": 3,
+            "ms": 215.25162499999988,
+            "self": 0.39416300000038973,
+            "launches": 15
+          },
+          "fixture": {
+            "calls": 1,
+            "ms": 13.101624999999785,
+            "self": 0.04100099999982376,
+            "launches": 1
+          },
+          "$git": {
+            "calls": 16,
+            "ms": 221.61925000000042,
+            "self": 221.61925000000042,
+            "launches": 0
+          }
+        }
+      },
+      {
+        "name": "changed HEAD cannot pass; unusual pathnames remain exact",
+        "medianWallMs": 403.79,
+        "profileBodyMs": 371.2771670000002,
+        "trustedGitLaunches": 23,
+        "fixtureHelperGitLaunches": 3,
+        "operations": {
+          "observeGit": {
+            "calls": 4,
+            "ms": 335.4275829999999,
+            "self": 0.5074990000000525,
+            "launches": 23
+          },
+          "fixture": {
+            "calls": 1,
+            "ms": 12.111250000000155,
+            "self": 0.03933399999982612,
+            "launches": 1
+          },
+          "$git": {
+            "calls": 26,
+            "ms": 363.9762490000005,
+            "self": 363.9762490000005,
+            "launches": 0
+          }
+        }
+      },
+      {
+        "name": "freshness and exact scope reject substituted root or HEAD independently of paths",
+        "medianWallMs": 0.16,
+        "profileBodyMs": 0.18941700000004857,
+        "trustedGitLaunches": 0,
+        "fixtureHelperGitLaunches": 0,
+        "operations": {}
+      },
+      {
+        "name": "review fingerprint binds worktree bytes and staged identities, including same-path and untracked drift",
+        "medianWallMs": 1079.04,
+        "profileBodyMs": 1048.02275,
+        "trustedGitLaunches": 69,
+        "fixtureHelperGitLaunches": 3,
+        "operations": {
+          "observeGit": {
+            "calls": 7,
+            "ms": 718.648416,
+            "self": 1.0086620000006405,
+            "launches": 49
+          },
+          "observeReviewTarget": {
+            "calls": 5,
+            "ms": 599.8859159999997,
+            "self": 0.32462400000122216,
+            "launches": 41
+          },
+          "contentDigest": {
+            "calls": 10,
+            "ms": 300.40824899999916,
+            "self": 0.9542090000040844,
+            "launches": 20
+          },
+          "fixture": {
+            "calls": 1,
+            "ms": 11.893082999999933,
+            "self": 0.039249999999810825,
+            "launches": 1
+          },
+          "hash.update": {
+            "calls": 40,
+            "ms": 0.06950099999903614,
+            "self": 0.06950099999903614,
+            "launches": 0
+          },
+          "hash.digest": {
+            "calls": 30,
+            "ms": 0.04687400000011621,
+            "self": 0.04687400000011621,
+            "launches": 0
+          },
+          "$git": {
+            "calls": 72,
+            "ms": 1034.7715850000027,
+            "self": 1034.7715850000027,
+            "launches": 0
+          }
+        }
+      },
+      {
+        "name": "review fingerprint detects tracked bytes hidden from diff, mode/type/deletion changes and rejects widening/HEAD changes",
+        "medianWallMs": 1335.77,
+        "profileBodyMs": 1326.6139580000004,
+        "trustedGitLaunches": 84,
+        "fixtureHelperGitLaunches": 5,
+        "operations": {
+          "observeGit": {
+            "calls": 8,
+            "ms": 830.0977909999997,
+            "self": 1.2330009999996037,
+            "launches": 56
+          },
+          "observeReviewTarget": {
+            "calls": 9,
+            "ms": 959.8855000000003,
+            "self": 0.15241600000081235,
+            "launches": 63
+          },
+          "contentDigest": {
+            "calls": 14,
+            "ms": 440.75591799999984,
+            "self": 0.8634170000059385,
+            "launches": 28
+          },
+          "fixture": {
+            "calls": 1,
+            "ms": 14.03104200000007,
+            "self": 0.05500000000029104,
+            "launches": 1
+          },
+          "hash.update": {
+            "calls": 36,
+            "ms": 0.05875099999911981,
+            "self": 0.05875099999911981,
+            "launches": 0
+          },
+          "hash.digest": {
+            "calls": 22,
+            "ms": 0.03829199999972843,
+            "self": 0.03829199999972843,
+            "launches": 0
+          },
+          "$git": {
+            "calls": 89,
+            "ms": 1314.140538000002,
+            "self": 1314.140538000002,
+            "launches": 0
+          }
+        }
+      },
+      {
+        "name": "review target rejects unsupported Git entries and ambiguous file topology",
+        "medianWallMs": 617.98,
+        "profileBodyMs": 645.8777919999993,
+        "trustedGitLaunches": 38,
+        "fixtureHelperGitLaunches": 4,
+        "operations": {
+          "observeGit": {
+            "calls": 6,
+            "ms": 567.515915,
+            "self": 1.1273759999994581,
+            "launches": 35
+          },
+          "observeReviewTarget": {
+            "calls": 3,
+            "ms": 273.41041700000005,
+            "self": 0.0378340000006574,
+            "launches": 17
+          },
+          "contentDigest": {
+            "calls": 2,
+            "ms": 44.031041999999616,
+            "self": 0.13604299999951763,
+            "launches": 3
+          },
+          "fixture": {
+            "calls": 1,
+            "ms": 13.01745899999969,
+            "self": 0.07375099999990198,
+            "launches": 1
+          },
+          "$git": {
+            "calls": 42,
+            "ms": 636.8599530000001,
+            "self": 636.8599530000001,
+            "launches": 0
+          }
+        }
+      },
+      {
+        "name": "complete-index preparation and final proof preserve SHA-256 Git object identities",
+        "medianWallMs": 2961.33,
+        "profileBodyMs": 2915.4644169999992,
+        "trustedGitLaunches": 185,
+        "fixtureHelperGitLaunches": 7,
+        "operations": {
+          "observeGit": {
+            "calls": 19,
+            "ms": 2038.1839599999994,
+            "self": 3.0605440000117596,
+            "launches": 133
+          },
+          "observeReviewTarget": {
+            "calls": 3,
+            "ms": 1161.580417000002,
+            "self": 0.09499900000173511,
+            "launches": 75
+          },
+          "contentDigest": {
+            "calls": 6,
+            "ms": 187.21379199999956,
+            "self": 0.3613370000011855,
+            "launches": 12
+          },
+          "prepareCommit": {
+            "calls": 1,
+            "ms": 1166.5037079999993,
+            "self": 0.3717079999987618,
+            "launches": 77
+          },
+          "requirePreparedCommit": {
+            "calls": 2,
+            "ms": 658.8239999999996,
+            "self": 0.3055000000003929,
+            "launches": 44
+          },
+          "requireIndexContent": {
+            "calls": 4,
+            "ms": 184.34616800000094,
+            "self": 0.3602530000016486,
+            "launches": 12
+          },
+          "verifyCommitted": {
+            "calls": 2,
+            "ms": 673.8918339999991,
+            "self": 0.21941599999809114,
+            "launches": 44
+          },
+          "CommitGit.prepare": {
+            "calls": 1,
+            "ms": 1185.2879999999996,
+            "self": 1.7049999999999272,
+            "launches": 78
+          },
+          "CommitGit.commit": {
+            "calls": 1,
+            "ms": 694.8531659999999,
+            "self": 0.8533330000018395,
+            "launches": 46
+          },
+          "CommitGit.final": {
+            "calls": 1,
+            "ms": 344.5463749999999,
+            "self": 0.0058330000001660665,
+            "launches": 22
+          },
+          "hash.update": {
+            "calls": 31,
+            "ms": 0.04845799999930023,
+            "self": 0.04845799999930023,
+            "launches": 0
+          },
+          "hash.digest": {
+            "calls": 25,
+            "ms": 0.05421000000205822,
+            "self": 0.05421000000205822,
+            "launches": 0
+          },
+          "$git": {
+            "calls": 192,
+            "ms": 2901.550081000002,
+            "self": 2901.550081000002,
+            "launches": 0
+          }
+        }
+      },
+      {
+        "name": "bounded blob proof rejects malformed output and races, and closes/unlinks large-object resources on failure",
+        "medianWallMs": 33.45,
+        "profileBodyMs": 31.344332999999097,
+        "trustedGitLaunches": 0,
+        "fixtureHelperGitLaunches": 0,
+        "operations": {
+          "observeGit": {
+            "calls": 54,
+            "ms": 3.848000999994838,
+            "self": 3.25939099999232,
+            "launches": 0
+          },
+          "requirePreparedCommit": {
+            "calls": 52,
+            "ms": 25.57349900000554,
+            "self": 0.21966900000006717,
+            "launches": 0
+          },
+          "requireIndexContent": {
+            "calls": 52,
+            "ms": 21.127249000006486,
+            "self": 0.3515890000217041,
+            "launches": 0
+          },
+          "hash.update": {
+            "calls": 192,
+            "ms": 3.493162000006123,
+            "self": 3.493162000006123,
+            "launches": 0
+          },
+          "hash.digest": {
+            "calls": 62,
+            "ms": 0.024832000002788845,
+            "self": 0.024832000002788845,
+            "launches": 0
+          }
+        }
+      },
+      {
+        "name": "blob metadata proof bounds batches and deduplicates 160-bit OIDs",
+        "medianWallMs": 11.39,
+        "profileBodyMs": 14.409166000001278,
+        "trustedGitLaunches": 0,
+        "fixtureHelperGitLaunches": 0,
+        "operations": {
+          "observeGit": {
+            "calls": 1,
+            "ms": 0.07550000000082946,
+            "self": 0.05774800000108371,
+            "launches": 0
+          },
+          "requirePreparedCommit": {
+            "calls": 1,
+            "ms": 12.764415999999983,
+            "self": 0.006288999999014777,
+            "launches": 0
+          },
+          "requireIndexContent": {
+            "calls": 1,
+            "ms": 12.624458999998751,
+            "self": 0.23058399999899848,
+            "launches": 0
+          },
+          "hash.update": {
+            "calls": 4097,
+            "ms": 0.28252199997587013,
+            "self": 0.28252199997587013,
+            "launches": 0
+          },
+          "hash.digest": {
+            "calls": 4099,
+            "ms": 0.6472869999834074,
+            "self": 0.6472869999834074,
+            "launches": 0
+          }
+        }
+      },
+      {
+        "name": "complete index proof bounds batches and deduplicates 160-bit OIDs",
+        "medianWallMs": 5.99,
+        "profileBodyMs": 5.4067919999997684,
+        "trustedGitLaunches": 0,
+        "fixtureHelperGitLaunches": 0,
+        "operations": {
+          "observeGit": {
+            "calls": 2,
+            "ms": 0.21620900000016263,
+            "self": 0.15616500000214728,
+            "launches": 0
+          },
+          "requirePreparedCommit": {
+            "calls": 1,
+            "ms": 4.514207999998689,
+            "self": 0.012747999999191961,
+            "launches": 0
+          },
+          "requireIndexContent": {
+            "calls": 1,
+            "ms": 4.273499999999331,
+            "self": 0.03854200000023411,
+            "launches": 0
+          },
+          "hash.update": {
+            "calls": 59,
+            "ms": 1.8322950000019773,
+            "self": 1.8322950000019773,
+            "launches": 0
+          },
+          "hash.digest": {
+            "calls": 11,
+            "ms": 0.012917000001834822,
+            "self": 0.012917000001834822,
+            "launches": 0
+          }
+        }
+      },
+      {
+        "name": "blob metadata proof bounds batches and deduplicates 256-bit OIDs",
+        "medianWallMs": 12.34,
+        "profileBodyMs": 13.150417000000743,
+        "trustedGitLaunches": 0,
+        "fixtureHelperGitLaunches": 0,
+        "operations": {
+          "observeGit": {
+            "calls": 1,
+            "ms": 0.10733299999992596,
+            "self": 0.07612599999993108,
+            "launches": 0
+          },
+          "requirePreparedCommit": {
+            "calls": 1,
+            "ms": 11.399082999998427,
+            "self": 0.011374999998224666,
+            "launches": 0
+          },
+          "requireIndexContent": {
+            "calls": 1,
+            "ms": 11.266874999999345,
+            "self": 0.16562599999997474,
+            "launches": 0
+          },
+          "hash.update": {
+            "calls": 4097,
+            "ms": 0.20563100002254942,
+            "self": 0.20563100002254942,
+            "launches": 0
+          },
+          "hash.digest": {
+            "calls": 4099,
+            "ms": 0.5047320000103355,
+            "self": 0.5047320000103355,
+            "launches": 0
+          }
+        }
+      },
+      {
+        "name": "complete index proof bounds batches and deduplicates 256-bit OIDs",
+        "medianWallMs": 4.16,
+        "profileBodyMs": 5.541124999999738,
+        "trustedGitLaunches": 0,
+        "fixtureHelperGitLaunches": 0,
+        "operations": {
+          "observeGit": {
+            "calls": 2,
+            "ms": 0.19374899999820627,
+            "self": 0.15216499999951338,
+            "launches": 0
+          },
+          "requirePreparedCommit": {
+            "calls": 1,
+            "ms": 4.469417000000249,
+            "self": 0.013168000001314795,
+            "launches": 0
+          },
+          "requireIndexContent": {
+            "calls": 1,
+            "ms": 4.242874999999913,
+            "self": 0.05270799999743758,
+            "launches": 0
+          },
+          "hash.update": {
+            "calls": 59,
+            "ms": 1.9740860000038083,
+            "self": 1.9740860000038083,
+            "launches": 0
+          },
+          "hash.digest": {
+            "calls": 11,
+            "ms": 0.008334000007380382,
+            "self": 0.008334000007380382,
+            "launches": 0
+          }
+        }
+      },
+      {
+        "name": "approved worktree transitions through exact staged bytes/modes/deletions/symlinks to one verified commit",
+        "medianWallMs": 4185.52,
+        "profileBodyMs": 4051.774792,
+        "trustedGitLaunches": 266,
+        "fixtureHelperGitLaunches": 6,
+        "operations": {
+          "observeGit": {
+            "calls": 28,
+            "ms": 2948.646916999998,
+            "self": 4.140706999985923,
+            "launches": 196
+          },
+          "observeReviewTarget": {
+            "calls": 4,
+            "ms": 1530.6731660000005,
+            "self": 0.10991800000010699,
+            "launches": 100
+          },
+          "contentDigest": {
+            "calls": 8,
+            "ms": 241.2203329999993,
+            "self": 0.43949900000916386,
+            "launches": 16
+          },
+          "prepareCommit": {
+            "calls": 1,
+            "ms": 1190.3437919999997,
+            "self": 0.10896099999808939,
+            "launches": 77
+          },
+          "requirePreparedCommit": {
+            "calls": 4,
+            "ms": 1280.2524579999972,
+            "self": 0.2107540000033623,
+            "launches": 88
+          },
+          "requireIndexContent": {
+            "calls": 5,
+            "ms": 216.6519169999956,
+            "self": 0.28654399999504676,
+            "launches": 15
+          },
+          "verifyCommitted": {
+            "calls": 2,
+            "ms": 444.9804579999982,
+            "self": 0.12174899999990885,
+            "launches": 30
+          },
+          "CommitGit.prepare": {
+            "calls": 1,
+            "ms": 1206.497958,
+            "self": 0.10308299999996962,
+            "launches": 78
+          },
+          "CommitGit.staged": {
+            "calls": 1,
+            "ms": 657.3395409999994,
+            "self": 0.12120800000047893,
+            "launches": 46
+          },
+          "CommitGit.commit": {
+            "calls": 1,
+            "ms": 674.9957080000004,
+            "self": 0.17962500000248838,
+            "launches": 46
+          },
+          "CommitGit.final": {
+            "calls": 1,
+            "ms": 272.1797920000008,
+            "self": 0.17587600000115344,
+            "launches": 18
+          },
+          "fixture": {
+            "calls": 1,
+            "ms": 12.770166999998764,
+            "self": 0.04562599999735539,
+            "launches": 1
+          },
+          "hash.update": {
+            "calls": 45,
+            "ms": 0.04416599999058235,
+            "self": 0.04416599999058235,
+            "launches": 0
+          },
+          "hash.digest": {
+            "calls": 37,
+            "ms": 0.04074800000125833,
+            "self": 0.04074800000125833,
+            "launches": 0
+          },
+          "$git": {
+            "calls": 272,
+            "ms": 4032.6315460000114,
+            "self": 4032.6315460000114,
+            "launches": 0
+          }
+        }
+      },
+      {
+        "name": "final settlement rejects a message-only external amend of the exact postflight commit",
+        "medianWallMs": 3759.66,
+        "profileBodyMs": 4262.666792000002,
+        "trustedGitLaunches": 242,
+        "fixtureHelperGitLaunches": 9,
+        "operations": {
+          "observeGit": {
+            "calls": 24,
+            "ms": 2858.8996640000023,
+            "self": 4.144912999998269,
+            "launches": 168
+          },
+          "observeReviewTarget": {
+            "calls": 3,
+            "ms": 1131.8894590000018,
+            "self": 0.06854400000156602,
+            "launches": 75
+          },
+          "contentDigest": {
+            "calls": 6,
+            "ms": 185.48228999999992,
+            "self": 0.27345900000182155,
+            "launches": 12
+          },
+          "prepareCommit": {
+            "calls": 1,
+            "ms": 1371.1397500000003,
+            "self": 0.05074899999817717,
+            "launches": 77
+          },
+          "requirePreparedCommit": {
+            "calls": 2,
+            "ms": 934.8820419999993,
+            "self": 0.19921199999953387,
+            "launches": 44
+          },
+          "requireIndexContent": {
+            "calls": 6,
+            "ms": 320.6379169999982,
+            "self": 0.30337799999870185,
+            "launches": 18
+          },
+          "verifyCommitted": {
+            "calls": 4,
+            "ms": 1561.6767499999987,
+            "self": 0.24671100001069135,
+            "launches": 88
+          },
+          "CommitGit.prepare": {
+            "calls": 1,
+            "ms": 1385.0059169999986,
+            "self": 0.08825099999921804,
+            "launches": 78
+          },
+          "CommitGit.commit": {
+            "calls": 2,
+            "ms": 861.666959000002,
+            "self": 0.3658750000031432,
+            "launches": 46
+          },
+          "CommitGit.final": {
+            "calls": 3,
+            "ms": 1442.5844589999997,
+            "self": 0.06212499999855936,
+            "launches": 86
+          },
+          "fixture": {
+            "calls": 1,
+            "ms": 12.582334000000628,
+            "self": 0.05866700000115088,
+            "launches": 1
+          },
+          "hash.update": {
+            "calls": 37,
+            "ms": 0.04291700000248966,
+            "self": 0.04291700000248966,
+            "launches": 0
+          },
+          "hash.digest": {
+            "calls": 31,
+            "ms": 0.055080999993151636,
+            "self": 0.055080999993151636,
+            "launches": 0
+          },
+          "$git": {
+            "calls": 251,
+            "ms": 4244.323092999981,
+            "self": 4244.323092999981,
+            "launches": 0
+          }
+        }
+      },
+      {
+        "name": "observed HEAD drift through status permanently retires Commit authority even after the approved HEAD is restored",
+        "medianWallMs": 1604.13,
+        "profileBodyMs": 1642.6260839999995,
+        "trustedGitLaunches": 100,
+        "fixtureHelperGitLaunches": 6,
+        "operations": {
+          "observeGit": {
+            "calls": 12,
+            "ms": 1249.648709000001,
+            "self": 1.8539619999937713,
+            "launches": 79
+          },
+          "observeReviewTarget": {
+            "calls": 2,
+            "ms": 783.4012079999993,
+            "self": 0.059542000002693385,
+            "launches": 50
+          },
+          "contentDigest": {
+            "calls": 4,
+            "ms": 126.7730829999964,
+            "self": 0.16549900000245543,
+            "launches": 8
+          },
+          "CommitGit.prepare": {
+            "calls": 1,
+            "ms": 0.06020899999930407,
+            "self": 0.06020899999930407,
+            "launches": 0
+          },
+          "CommitGit.commit": {
+            "calls": 1,
+            "ms": 0.11291600000186008,
+            "self": 0.11291600000186008,
+            "launches": 0
+          },
+          "CommitGit.final": {
+            "calls": 1,
+            "ms": 154.83908399999927,
+            "self": 0.002541999998356914,
+            "launches": 10
+          },
+          "fixture": {
+            "calls": 1,
+            "ms": 13.654583999999886,
+            "self": 0.05558299999756855,
+            "launches": 1
+          },
+          "hash.update": {
+            "calls": 12,
+            "ms": 0.011498999996547354,
+            "self": 0.011498999996547354,
+            "launches": 0
+          },
+          "hash.digest": {
+            "calls": 8,
+            "ms": 0.011750999998184852,
+            "self": 0.011750999998184852,
+            "launches": 0
+          },
+          "$git": {
+            "calls": 106,
+            "ms": 1631.7679930000122,
+            "self": 1631.7679930000122,
+            "launches": 0
+          }
+        }
+      },
+      {
+        "name": "closed preparation failure refreshes final HEAD/index/worktree facts without replacing its original reason",
+        "medianWallMs": 1752.49,
+        "profileBodyMs": 1889.5250000000015,
+        "trustedGitLaunches": 109,
+        "fixtureHelperGitLaunches": 7,
+        "operations": {
+          "observeGit": {
+            "calls": 12,
+            "ms": 1404.8923760000034,
+            "self": 2.2302509999899485,
+            "launches": 84
+          },
+          "observeReviewTarget": {
+            "calls": 2,
+            "ms": 838.6189159999958,
+            "self": 0.044955999986996176,
+            "launches": 50
+          },
+          "contentDigest": {
+            "calls": 4,
+            "ms": 138.45171000000119,
+            "self": 0.2080850000056671,
+            "launches": 8
+          },
+          "prepareCommit": {
+            "calls": 1,
+            "ms": 446.5425000000032,
+            "self": 0.028959000006580027,
+            "launches": 26
+          },
+          "CommitGit.prepare": {
+            "calls": 2,
+            "ms": 464.9106240000001,
+            "self": 0.13495699999839417,
+            "launches": 27
+          },
+          "CommitGit.commit": {
+            "calls": 1,
+            "ms": 0.11016599999857135,
+            "self": 0.11016599999857135,
+            "launches": 0
+          },
+          "CommitGit.final": {
+            "calls": 2,
+            "ms": 322.38354099999924,
+            "self": 0.006875000002764864,
+            "launches": 20
+          },
+          "fixture": {
+            "calls": 1,
+            "ms": 13.248666999999841,
+            "self": 0.04366700000173296,
+            "launches": 1
+          },
+          "hash.update": {
+            "calls": 12,
+            "ms": 0.012501000001066132,
+            "self": 0.012501000001066132,
+            "launches": 0
+          },
+          "hash.digest": {
+            "calls": 8,
+            "ms": 0.010957000005873851,
+            "self": 0.010957000005873851,
+            "launches": 0
+          },
+          "$git": {
+            "calls": 116,
+            "ms": 1877.620117999999,
+            "self": 1877.620117999999,
+            "launches": 0
+          }
+        }
+      },
+      {
+        "name": "postflight commit facts survive an external reset to the approved parent as terminal history uncertainty",
+        "medianWallMs": 3095.34,
+        "profileBodyMs": 3569.3621669999993,
+        "trustedGitLaunches": 192,
+        "fixtureHelperGitLaunches": 8,
+        "operations": {
+          "observeGit": {
+            "calls": 20,
+            "ms": 2638.0883339999964,
+            "self": 3.365713000024698,
+            "launches": 140
+          },
+          "observeReviewTarget": {
+            "calls": 3,
+            "ms": 1608.1482509999987,
+            "self": 0.07099999999263673,
+            "launches": 75
+          },
+          "contentDigest": {
+            "calls": 6,
+            "ms": 218.77499999999782,
+            "self": 0.33199699999022414,
+            "launches": 12
+          },
+          "prepareCommit": {
+            "calls": 1,
+            "ms": 1690.101749999998,
+            "self": 0.04837500000212458,
+            "launches": 77
+          },
+          "requirePreparedCommit": {
+            "calls": 2,
+            "ms": 797.4142909999973,
+            "self": 0.1027920000051381,
+            "launches": 44
+          },
+          "requireIndexContent": {
+            "calls": 3,
+            "ms": 143.1500840000008,
+            "self": 0.11183200000232318,
+            "launches": 9
+          },
+          "verifyCommitted": {
+            "calls": 3,
+            "ms": 556.1935010000016,
+            "self": 0.08758300000044983,
+            "launches": 38
+          },
+          "CommitGit.prepare": {
+            "calls": 1,
+            "ms": 1706.5228750000024,
+            "self": 0.09383300000263262,
+            "launches": 78
+          },
+          "CommitGit.commit": {
+            "calls": 2,
+            "ms": 757.6598750000012,
+            "self": 0.3211260000025504,
+            "launches": 46
+          },
+          "CommitGit.final": {
+            "calls": 2,
+            "ms": 522.585665999999,
+            "self": 0.01878999999826192,
+            "launches": 36
+          },
+          "fixture": {
+            "calls": 1,
+            "ms": 12.900042000001122,
+            "self": 0.04837699999916367,
+            "launches": 1
+          },
+          "hash.update": {
+            "calls": 28,
+            "ms": 0.041086000004725065,
+            "self": 0.041086000004725065,
+            "launches": 0
+          },
+          "hash.digest": {
+            "calls": 22,
+            "ms": 0.03553900000406429,
+            "self": 0.03553900000406429,
+            "launches": 0
+          },
+          "$git": {
+            "calls": 200,
+            "ms": 3554.1791990000165,
+            "self": 3554.1791990000165,
+            "launches": 0
+          }
+        }
+      },
+      {
+        "name": "commit preparation rejects fresh drift, unrelated staged content, partial or substituted index, and changed HEAD",
+        "medianWallMs": 3023.02,
+        "profileBodyMs": 2834.6471249999995,
+        "trustedGitLaunches": 191,
+        "fixtureHelperGitLaunches": 9,
+        "operations": {
+          "observeGit": {
+            "calls": 21,
+            "ms": 2045.6064560000086,
+            "self": 2.707252000025619,
+            "launches": 142
+          },
+          "observeReviewTarget": {
+            "calls": 5,
+            "ms": 1542.456084000005,
+            "self": 0.1047950000174751,
+            "launches": 107
+          },
+          "contentDigest": {
+            "calls": 8,
+            "ms": 231.23283099998662,
+            "self": 0.36349899999186164,
+            "launches": 16
+          },
+          "prepareCommit": {
+            "calls": 3,
+            "ms": 1605.9596249999995,
+            "self": 0.0832499999924039,
+            "launches": 111
+          },
+          "requirePreparedCommit": {
+            "calls": 5,
+            "ms": 1010.536251000005,
+            "self": 0.18874899999354966,
+            "launches": 70
+          },
+          "requireIndexContent": {
+            "calls": 3,
+            "ms": 128.35545799999818,
+            "self": 0.1209160000034899,
+            "launches": 9
+          },
+          "fixture": {
+            "calls": 1,
+            "ms": 12.16937500000131,
+            "self": 0.03537500000311411,
+            "launches": 1
+          },
+          "hash.update": {
+            "calls": 33,
+            "ms": 0.042834000007133,
+            "self": 0.042834000007133,
+            "launches": 0
+          },
+          "hash.digest": {
+            "calls": 25,
+            "ms": 0.040626999998494284,
+            "self": 0.040626999998494284,
+            "launches": 0
+          },
+          "$git": {
+            "calls": 200,
+            "ms": 2820.497585999983,
+            "self": 2820.497585999983,
+            "launches": 0
+          }
+        }
+      },
+      {
+        "name": "real reject hook is honored and remains terminal without cleanup or a second commit",
+        "medianWallMs": 2623.51,
+        "profileBodyMs": 3420.2655840000007,
+        "trustedGitLaunches": 166,
+        "fixtureHelperGitLaunches": 2,
+        "operations": {
+          "observeGit": {
+            "calls": 18,
+            "ms": 2612.537000999997,
+            "self": 2.7390809999633348,
+            "launches": 126
+          },
+          "observeReviewTarget": {
+            "calls": 3,
+            "ms": 1335.844291000005,
+            "self": 0.08028800000829506,
+            "launches": 75
+          },
+          "contentDigest": {
+            "calls": 6,
+            "ms": 226.80033499999627,
+            "self": 0.3009530000053928,
+            "launches": 12
+          },
+          "prepareCommit": {
+            "calls": 1,
+            "ms": 1813.920083000001,
+            "self": 0.06862699998964672,
+            "launches": 77
+          },
+          "requirePreparedCommit": {
+            "calls": 2,
+            "ms": 1285.7616250000028,
+            "self": 0.17817000000650296,
+            "launches": 44
+          },
+          "requireIndexContent": {
+            "calls": 2,
+            "ms": 93.52624899999864,
+            "self": 0.07374899999558693,
+            "launches": 6
+          },
+          "verifyCommitted": {
+            "calls": 1,
+            "ms": 124.66545799999949,
+            "self": 0.01212400000076741,
+            "launches": 8
+          },
+          "CommitGit.prepare": {
+            "calls": 1,
+            "ms": 1828.419750000001,
+            "self": 0.10729200000059791,
+            "launches": 78
+          },
+          "CommitGit.commit": {
+            "calls": 2,
+            "ms": 888.0747920000031,
+            "self": 0.41970900000524125,
+            "launches": 42
+          },
+          "fixture": {
+            "calls": 1,
+            "ms": 12.446167000001878,
+            "self": 0.039876000006188406,
+            "launches": 1
+          },
+          "hash.update": {
+            "calls": 25,
+            "ms": 0.030375999984244118,
+            "self": 0.030375999984244118,
+            "launches": 0
+          },
+          "hash.digest": {
+            "calls": 19,
+            "ms": 0.03229199999987031,
+            "self": 0.03229199999987031,
+            "launches": 0
+          },
+          "$git": {
+            "calls": 168,
+            "ms": 3406.1917479999975,
+            "self": 3406.1917479999975,
+            "launches": 0
+          }
+        }
+      },
+      {
+        "name": "real modify hook is honored and remains terminal without cleanup or a second commit",
+        "medianWallMs": 2626.37,
+        "profileBodyMs": 3973.954249999995,
+        "trustedGitLaunches": 167,
+        "fixtureHelperGitLaunches": 2,
+        "operations": {
+          "observeGit": {
+            "calls": 18,
+            "ms": 3030.777749999994,
+            "self": 3.641381999990699,
+            "launches": 126
+          },
+          "observeReviewTarget": {
+            "calls": 3,
+            "ms": 2174.7764999999963,
+            "self": 0.05270800000289455,
+            "launches": 75
+          },
+          "contentDigest": {
+            "calls": 6,
+            "ms": 361.5219169999946,
+            "self": 0.30108499999550986,
+            "launches": 12
+          },
+          "prepareCommit": {
+            "calls": 1,
+            "ms": 2102.607082999999,
+            "self": 0.05296000000817003,
+            "launches": 77
+          },
+          "requirePreparedCommit": {
+            "calls": 2,
+            "ms": 769.1335830000025,
+            "self": 0.06941699999515549,
+            "launches": 44
+          },
+          "requireIndexContent": {
+            "calls": 2,
+            "ms": 110.93170900000405,
+            "self": 0.07333199999629869,
+            "launches": 6
+          },
+          "verifyCommitted": {
+            "calls": 1,
+            "ms": 165.02954099999624,
+            "self": 0.07274899999174522,
+            "launches": 9
+          },
+          "CommitGit.prepare": {
+            "calls": 1,
+            "ms": 2124.7172089999985,
+            "self": 0.08545899999808171,
+            "launches": 78
+          },
+          "CommitGit.commit": {
+            "calls": 2,
+            "ms": 765.2572509999954,
+            "self": 0.3589589999974123,
+            "launches": 43
+          },
+          "fixture": {
+            "calls": 1,
+            "ms": 13.288709000000381,
+            "self": 0.05700000000433647,
+            "launches": 1
+          },
+          "hash.update": {
+            "calls": 25,
+            "ms": 0.02583299999605515,
+            "self": 0.02583299999605515,
+            "launches": 0
+          },
+          "hash.digest": {
+            "calls": 19,
+            "ms": 0.06495899999936228,
+            "self": 0.06495899999936228,
+            "launches": 0
+          },
+          "$git": {
+            "calls": 169,
+            "ms": 3958.6704929999905,
+            "self": 3958.6704929999905,
+            "launches": 0
+          }
+        }
+      },
+      {
+        "name": "real ambiguous hook is honored and remains terminal without cleanup or a second commit",
+        "medianWallMs": 2628.5,
+        "profileBodyMs": 4228.918791000004,
+        "trustedGitLaunches": 167,
+        "fixtureHelperGitLaunches": 1,
+        "operations": {
+          "observeGit": {
+            "calls": 18,
+            "ms": 3031.779040000016,
+            "self": 4.040461000025971,
+            "launches": 126
+          },
+          "observeReviewTarget": {
+            "calls": 3,
+            "ms": 2101.4541249999966,
+            "self": 0.0977109999730601,
+            "launches": 75
+          },
+          "contentDigest": {
+            "calls": 6,
+            "ms": 396.29699800000526,
+            "self": 0.33574700001918245,
+            "launches": 12
+          },
+          "prepareCommit": {
+            "calls": 1,
+            "ms": 2243.2659579999963,
+            "self": 0.06603900001209695,
+            "launches": 77
+          },
+          "requirePreparedCommit": {
+            "calls": 2,
+            "ms": 1052.2388749999955,
+            "self": 0.07345799998438451,
+            "launches": 44
+          },
+          "requireIndexContent": {
+            "calls": 2,
+            "ms": 139.2890830000033,
+            "self": 0.08737500000279397,
+            "launches": 6
+          },
+          "verifyCommitted": {
+            "calls": 1,
+            "ms": 186.0435839999991,
+            "self": 0.047001999999338295,
+            "launches": 9
+          },
+          "CommitGit.prepare": {
+            "calls": 1,
+            "ms": 2262.514667000003,
+            "self": 0.08462600000348175,
+            "launches": 78
+          },
+          "CommitGit.commit": {
+            "calls": 2,
+            "ms": 966.3078750000059,
+            "self": 0.3070830000069691,
+            "launches": 43
+          },
+          "fixture": {
+            "calls": 1,
+            "ms": 19.478540999996767,
+            "self": 0.05520799999067094,
+            "launches": 1
+          },
+          "hash.update": {
+            "calls": 25,
+            "ms": 0.03812800000741845,
+            "self": 0.03812800000741845,
+            "launches": 0
+          },
+          "hash.digest": {
+            "calls": 19,
+            "ms": 0.03750100001343526,
+            "self": 0.03750100001343526,
+            "launches": 0
+          },
+          "$git": {
+            "calls": 168,
+            "ms": 4205.407088000051,
+            "self": 4205.407088000051,
+            "launches": 0
+          }
+        }
+      }
+    ],
+    "operationTotals": {
+      "observeGit": {
+        "calls": 289,
+        "inclusiveMs": 27803.213496000008,
+        "exclusiveMs": 42.10331100000383,
+        "launches": 1575
+      },
+      "observeReviewTarget": {
+        "calls": 48,
+        "inclusiveMs": 16042.02425,
+        "exclusiveMs": 1.2993349999901511,
+        "launches": 878
+      },
+      "contentDigest": {
+        "calls": 86,
+        "inclusiveMs": 3098.9634979999755,
+        "exclusiveMs": 5.034829000032005,
+        "launches": 171
+      },
+      "prepareCommit": {
+        "calls": 11,
+        "inclusiveMs": 13630.384248999995,
+        "exclusiveMs": 0.8796280000060506,
+        "launches": 676
+      },
+      "requirePreparedCommit": {
+        "calls": 77,
+        "inclusiveMs": 7847.763748000002,
+        "exclusiveMs": 1.5913009999858332,
+        "launches": 422
+      },
+      "requireIndexContent": {
+        "calls": 83,
+        "inclusiveMs": 1390.4235430000035,
+        "exclusiveMs": 2.256428000014239,
+        "launches": 81
+      },
+      "verifyCommitted": {
+        "calls": 14,
+        "inclusiveMs": 3712.4811259999924,
+        "exclusiveMs": 0.8073340000009921,
+        "launches": 226
+      },
+      "CommitGit.prepare": {
+        "calls": 10,
+        "inclusiveMs": 12163.937209000003,
+        "exclusiveMs": 2.462710000001607,
+        "launches": 573
+      },
+      "CommitGit.staged": {
+        "calls": 1,
+        "inclusiveMs": 657.3395409999994,
+        "exclusiveMs": 0.12120800000047893,
+        "launches": 46
+      },
+      "CommitGit.commit": {
+        "calls": 14,
+        "inclusiveMs": 5609.038708000008,
+        "exclusiveMs": 3.0287920000200756,
+        "launches": 312
+      },
+      "CommitGit.final": {
+        "calls": 10,
+        "inclusiveMs": 3059.118916999998,
+        "exclusiveMs": 0.27204099999926257,
+        "launches": 192
+      },
+      "fixture": {
+        "calls": 17,
+        "inclusiveMs": 225.7501280000002,
+        "exclusiveMs": 0.953838000001241,
+        "launches": 17
+      },
+      "hash.update": {
+        "calls": 8853,
+        "inclusiveMs": 8.253745999998046,
+        "exclusiveMs": 8.253745999998046,
+        "launches": 0
+      },
+      "hash.digest": {
+        "calls": 8547,
+        "inclusiveMs": 1.666933000021345,
+        "exclusiveMs": 1.666933000021345,
+        "launches": 0
+      },
+      "$git": {
+        "calls": 2178,
+        "inclusiveMs": 37593.96781600005,
+        "exclusiveMs": 37593.96781600005,
+        "launches": 0
+      }
+    },
+    "hookWallMs": {
+      "beforeAll": 55.93766600000001,
+      "afterEach": 63.58645699999556,
+      "afterAll": 2.4242079999967245
+    },
+    "filesystemCallsMs": 138.1954450000646
+  },
+  "after": {
+    "timingSamples": [
+      {
+        "suite": "default",
+        "run": 1,
+        "seconds": 9.768754208926111,
+        "exit": 0
+      },
+      {
+        "suite": "git",
+        "run": 1,
+        "seconds": 5.28365945792757,
+        "exit": 0
+      },
+      {
+        "suite": "default",
+        "run": 2,
+        "seconds": 9.284011374926195,
+        "exit": 0
+      },
+      {
+        "suite": "git",
+        "run": 2,
+        "seconds": 5.38109933398664,
+        "exit": 0
+      },
+      {
+        "suite": "default",
+        "run": 3,
+        "seconds": 10.110517958062701,
+        "exit": 0
+      },
+      {
+        "suite": "git",
+        "run": 3,
+        "seconds": 5.593796958099119,
+        "exit": 0
+      }
+    ],
+    "medianWallSeconds": {
+      "default": 9.768754208926111,
+      "git": 5.38109933398664
+    },
+    "tests": [
+      {
+        "name": "trusted Git observation covers staged, unstaged, ignored/unusual untracked paths, deletion, and both rename paths",
+        "medianWallMs": 705.68,
+        "profileBodyMs": 741.1340419999999,
+        "trustedGitLaunches": 42,
+        "fixtureHelperGitLaunches": 5,
+        "operations": {
+          "observeGit": {
+            "calls": 6,
+            "ms": 689.1835010000001,
+            "self": 1.2226279999995882,
+            "launches": 42
+          },
+          "fixture": {
+            "calls": 1,
+            "ms": 15.173207999999988,
+            "self": 0.10758299999997689,
+            "launches": 1
+          },
+          "$git": {
+            "calls": 47,
+            "ms": 727.251457,
+            "self": 727.251457,
+            "launches": 0
+          }
+        }
+      },
+      {
+        "name": "ordinary staged and unstaged paths are observed together",
+        "medianWallMs": 283.92,
+        "profileBodyMs": 284.7568329999999,
+        "trustedGitLaunches": 14,
+        "fixtureHelperGitLaunches": 6,
+        "operations": {
+          "observeGit": {
+            "calls": 2,
+            "ms": 221.4833329999999,
+            "self": 0.3808320000002823,
+            "launches": 14
+          },
+          "fixture": {
+            "calls": 1,
+            "ms": 15.173250000000053,
+            "self": 2.4223339999998643,
+            "launches": 1
+          },
+          "$git": {
+            "calls": 20,
+            "ms": 274.62978799999973,
+            "self": 274.62978799999973,
+            "launches": 0
+          }
+        }
+      },
+      {
+        "name": "scope uses exact path equality and observation requires the worktree root",
+        "medianWallMs": 0.65,
+        "profileBodyMs": 0.5085000000001401,
+        "trustedGitLaunches": 0,
+        "fixtureHelperGitLaunches": 0,
+        "operations": {
+          "observeGit": {
+            "calls": 1,
+            "ms": 0.08929200000011406,
+            "self": 0.06108400000016445,
+            "launches": 0
+          }
+        }
+      },
+      {
+        "name": "freshness and exact scope reject substituted root or HEAD independently of paths",
+        "medianWallMs": 0.08,
+        "profileBodyMs": 0.1017500000000382,
+        "trustedGitLaunches": 0,
+        "fixtureHelperGitLaunches": 0,
+        "operations": {}
+      },
+      {
+        "name": "review fingerprint binds worktree bytes and staged identities, including same-path and untracked drift",
+        "medianWallMs": 2.84,
+        "profileBodyMs": 5.4615839999999025,
+        "trustedGitLaunches": 0,
+        "fixtureHelperGitLaunches": 0,
+        "operations": {
+          "observeReviewTarget": {
+            "calls": 5,
+            "ms": 4.5216669999999795,
+            "self": 0.17262499999992542,
+            "launches": 0
+          },
+          "contentDigest": {
+            "calls": 10,
+            "ms": 4.343666000000212,
+            "self": 1.243498000000045,
+            "launches": 0
+          },
+          "hash.update": {
+            "calls": 40,
+            "ms": 0.20691899999906127,
+            "self": 0.20691899999906127,
+            "launches": 0
+          },
+          "hash.digest": {
+            "calls": 30,
+            "ms": 0.31174599999962993,
+            "self": 0.31174599999962993,
+            "launches": 0
+          }
+        }
+      },
+      {
+        "name": "review fingerprint detects tracked bytes hidden from diff, mode/type/deletion changes and rejects widening/HEAD changes",
+        "medianWallMs": 1.45,
+        "profileBodyMs": 1.3756659999999101,
+        "trustedGitLaunches": 0,
+        "fixtureHelperGitLaunches": 0,
+        "operations": {
+          "observeReviewTarget": {
+            "calls": 9,
+            "ms": 0.7055010000001403,
+            "self": 0.03745699999990393,
+            "launches": 0
+          },
+          "contentDigest": {
+            "calls": 14,
+            "ms": 0.6639190000000781,
+            "self": 0.11021000000050662,
+            "launches": 0
+          },
+          "hash.update": {
+            "calls": 36,
+            "ms": 0.019624999999905413,
+            "self": 0.019624999999905413,
+            "launches": 0
+          },
+          "hash.digest": {
+            "calls": 22,
+            "ms": 0.01274800000032883,
+            "self": 0.01274800000032883,
+            "launches": 0
+          }
+        }
+      },
+      {
+        "name": "review target rejects unsupported Git entries and ambiguous file topology",
+        "medianWallMs": 0.64,
+        "profileBodyMs": 0.5149169999999685,
+        "trustedGitLaunches": 0,
+        "fixtureHelperGitLaunches": 0,
+        "operations": {
+          "observeReviewTarget": {
+            "calls": 3,
+            "ms": 0.18100000000004002,
+            "self": 0.0049579999999878055,
+            "launches": 0
+          },
+          "contentDigest": {
+            "calls": 2,
+            "ms": 0.1760420000000522,
+            "self": 0.06587499999977808,
+            "launches": 0
+          }
+        }
+      },
+      {
+        "name": "complete-index and postflight proofs preserve real SHA-256 Git object identities",
+        "medianWallMs": 377.71,
+        "profileBodyMs": 434.81624999999985,
+        "trustedGitLaunches": 17,
+        "fixtureHelperGitLaunches": 11,
+        "operations": {
+          "requirePreparedCommit": {
+            "calls": 1,
+            "ms": 181.73616700000002,
+            "self": 0.23183300000005147,
+            "launches": 8
+          },
+          "requireIndexContent": {
+            "calls": 2,
+            "ms": 147.80175000000008,
+            "self": 0.8448729999997795,
+            "launches": 6
+          },
+          "verifyCommitted": {
+            "calls": 1,
+            "ms": 128.0531669999998,
+            "self": 0.13125099999956547,
+            "launches": 8
+          },
+          "hash.update": {
+            "calls": 6,
+            "ms": 0.012041999999837572,
+            "self": 0.012041999999837572,
+            "launches": 0
+          },
+          "hash.digest": {
+            "calls": 6,
+            "ms": 0.015751000000136628,
+            "self": 0.015751000000136628,
+            "launches": 0
+          },
+          "$git": {
+            "calls": 28,
+            "ms": 430.2577099999987,
+            "self": 430.2577099999987,
+            "launches": 0
+          }
+        }
+      },
+      {
+        "name": "bounded blob proof rejects malformed output and races, and closes/unlinks large-object resources on failure",
+        "medianWallMs": 29.5,
+        "profileBodyMs": 33.63804200000004,
+        "trustedGitLaunches": 0,
+        "fixtureHelperGitLaunches": 0,
+        "operations": {
+          "observeGit": {
+            "calls": 54,
+            "ms": 4.331292999998823,
+            "self": 3.7003760000004604,
+            "launches": 0
+          },
+          "requirePreparedCommit": {
+            "calls": 52,
+            "ms": 24.7371270000001,
+            "self": 0.2193420000014612,
+            "launches": 0
+          },
+          "requireIndexContent": {
+            "calls": 52,
+            "ms": 19.7852060000007,
+            "self": 0.3779500000025564,
+            "launches": 0
+          },
+          "hash.update": {
+            "calls": 192,
+            "ms": 3.5443360000008397,
+            "self": 3.5443360000008397,
+            "launches": 0
+          },
+          "hash.digest": {
+            "calls": 62,
+            "ms": 0.025663000001031833,
+            "self": 0.025663000001031833,
+            "launches": 0
+          }
+        }
+      },
+      {
+        "name": "blob metadata proof bounds batches and deduplicates 160-bit OIDs",
+        "medianWallMs": 12.88,
+        "profileBodyMs": 17.313290999999936,
+        "trustedGitLaunches": 0,
+        "fixtureHelperGitLaunches": 0,
+        "operations": {
+          "observeGit": {
+            "calls": 1,
+            "ms": 0.07437499999991815,
+            "self": 0.058499999999867214,
+            "launches": 0
+          },
+          "requirePreparedCommit": {
+            "calls": 1,
+            "ms": 15.767582999999831,
+            "self": 0.007417000000259577,
+            "launches": 0
+          },
+          "requireIndexContent": {
+            "calls": 1,
+            "ms": 15.630791999999929,
+            "self": 0.4505419999998139,
+            "launches": 0
+          },
+          "hash.update": {
+            "calls": 4097,
+            "ms": 0.2777399999993122,
+            "self": 0.2777399999993122,
+            "launches": 0
+          },
+          "hash.digest": {
+            "calls": 4099,
+            "ms": 0.7291019999991022,
+            "self": 0.7291019999991022,
+            "launches": 0
+          }
+        }
+      },
+      {
+        "name": "complete index proof bounds batches and deduplicates 160-bit OIDs",
+        "medianWallMs": 3.98,
+        "profileBodyMs": 4.122041999999965,
+        "trustedGitLaunches": 0,
+        "fixtureHelperGitLaunches": 0,
+        "operations": {
+          "observeGit": {
+            "calls": 2,
+            "ms": 0.18758299999990413,
+            "self": 0.13946000000009917,
+            "launches": 0
+          },
+          "requirePreparedCommit": {
+            "calls": 1,
+            "ms": 2.9222919999999704,
+            "self": 0.015293000000156098,
+            "launches": 0
+          },
+          "requireIndexContent": {
+            "calls": 1,
+            "ms": 2.7082920000000286,
+            "self": 0.04099999999993997,
+            "launches": 0
+          },
+          "hash.update": {
+            "calls": 59,
+            "ms": 1.82979000000023,
+            "self": 1.82979000000023,
+            "launches": 0
+          },
+          "hash.digest": {
+            "calls": 11,
+            "ms": 0.004541000000017448,
+            "self": 0.004541000000017448,
+            "launches": 0
+          }
+        }
+      },
+      {
+        "name": "blob metadata proof bounds batches and deduplicates 256-bit OIDs",
+        "medianWallMs": 11.75,
+        "profileBodyMs": 13.756249999999909,
+        "trustedGitLaunches": 0,
+        "fixtureHelperGitLaunches": 0,
+        "operations": {
+          "observeGit": {
+            "calls": 1,
+            "ms": 0.06704200000012861,
+            "self": 0.05320599999981823,
+            "launches": 0
+          },
+          "requirePreparedCommit": {
+            "calls": 1,
+            "ms": 12.712332999999944,
+            "self": 0.006623999999419539,
+            "launches": 0
+          },
+          "requireIndexContent": {
+            "calls": 1,
+            "ms": 12.628458000000137,
+            "self": 0.12179200000014134,
+            "launches": 0
+          },
+          "hash.update": {
+            "calls": 4097,
+            "ms": 0.19333700000629506,
+            "self": 0.19333700000629506,
+            "launches": 0
+          },
+          "hash.digest": {
+            "calls": 4099,
+            "ms": 0.5278729999934058,
+            "self": 0.5278729999934058,
+            "launches": 0
+          }
+        }
+      },
+      {
+        "name": "complete index proof bounds batches and deduplicates 256-bit OIDs",
+        "medianWallMs": 4.51,
+        "profileBodyMs": 4.662500000000136,
+        "trustedGitLaunches": 0,
+        "fixtureHelperGitLaunches": 0,
+        "operations": {
+          "observeGit": {
+            "calls": 2,
+            "ms": 0.18533400000001166,
+            "self": 0.1417069999999967,
+            "launches": 0
+          },
+          "requirePreparedCommit": {
+            "calls": 1,
+            "ms": 3.3492919999998776,
+            "self": 0.014083999999684238,
+            "launches": 0
+          },
+          "requireIndexContent": {
+            "calls": 1,
+            "ms": 3.137625000000071,
+            "self": 0.04837500000030559,
+            "launches": 0
+          },
+          "hash.update": {
+            "calls": 59,
+            "ms": 2.0250029999992876,
+            "self": 2.0250029999992876,
+            "launches": 0
+          },
+          "hash.digest": {
+            "calls": 11,
+            "ms": 0.004377000000431508,
+            "self": 0.004377000000431508,
+            "launches": 0
+          }
+        }
+      },
+      {
+        "name": "approved worktree transitions through exact staged bytes/modes/deletions/symlinks to one verified commit",
+        "medianWallMs": 2631.27,
+        "profileBodyMs": 2709.275583,
+        "trustedGitLaunches": 167,
+        "fixtureHelperGitLaunches": 7,
+        "operations": {
+          "observeGit": {
+            "calls": 17,
+            "ms": 1877.7788330000008,
+            "self": 2.949583999999277,
+            "launches": 119
+          },
+          "observeReviewTarget": {
+            "calls": 3,
+            "ms": 1210.4832080000003,
+            "self": 0.08429000000091946,
+            "launches": 75
+          },
+          "contentDigest": {
+            "calls": 6,
+            "ms": 200.182041999999,
+            "self": 0.42495999999960077,
+            "launches": 12
+          },
+          "prepareCommit": {
+            "calls": 1,
+            "ms": 1212.6077919999998,
+            "self": 0.10912600000074235,
+            "launches": 77
+          },
+          "requirePreparedCommit": {
+            "calls": 2,
+            "ms": 668.7663749999997,
+            "self": 0.10683199999948556,
+            "launches": 44
+          },
+          "requireIndexContent": {
+            "calls": 3,
+            "ms": 146.11654099999942,
+            "self": 1.46608199999946,
+            "launches": 9
+          },
+          "verifyCommitted": {
+            "calls": 2,
+            "ms": 469.49874999999975,
+            "self": 0.14420899999913672,
+            "launches": 30
+          },
+          "CommitGit.prepare": {
+            "calls": 1,
+            "ms": 1230.2149999999997,
+            "self": 1.8730829999999514,
+            "launches": 78
+          },
+          "CommitGit.commit": {
+            "calls": 1,
+            "ms": 713.9770829999998,
+            "self": 1.6724580000004607,
+            "launches": 46
+          },
+          "CommitGit.final": {
+            "calls": 1,
+            "ms": 287.2756250000002,
+            "self": 1.116291999999703,
+            "launches": 18
+          },
+          "fixture": {
+            "calls": 1,
+            "ms": 13.379040999999916,
+            "self": 0.03570799999988594,
+            "launches": 1
+          },
+          "hash.update": {
+            "calls": 31,
+            "ms": 0.0702089999999771,
+            "self": 0.0702089999999771,
+            "launches": 0
+          },
+          "hash.digest": {
+            "calls": 25,
+            "ms": 0.04570800000192321,
+            "self": 0.04570800000192321,
+            "launches": 0
+          },
+          "$git": {
+            "calls": 174,
+            "ms": 2686.7981200000017,
+            "self": 2686.7981200000017,
+            "launches": 0
+          }
+        }
+      },
+      {
+        "name": "preparation rejects widened scope and same-path byte drift before staging",
+        "medianWallMs": 0.96,
+        "profileBodyMs": 1.1282920000003287,
+        "trustedGitLaunches": 0,
+        "fixtureHelperGitLaunches": 0,
+        "operations": {
+          "observeReviewTarget": {
+            "calls": 3,
+            "ms": 0.36445699999967474,
+            "self": 0.04008300000077725,
+            "launches": 0
+          },
+          "contentDigest": {
+            "calls": 4,
+            "ms": 0.3205819999993764,
+            "self": 0.07666499999868392,
+            "launches": 0
+          },
+          "prepareCommit": {
+            "calls": 2,
+            "ms": 0.15899999999965075,
+            "self": 0.028043000000252505,
+            "launches": 0
+          },
+          "hash.update": {
+            "calls": 12,
+            "ms": 0.006790999999793712,
+            "self": 0.006790999999793712,
+            "launches": 0
+          },
+          "hash.digest": {
+            "calls": 8,
+            "ms": 0.004914999999527936,
+            "self": 0.004914999999527936,
+            "launches": 0
+          }
+        }
+      },
+      {
+        "name": "prepared content proof rejects real partial/substituted index hidden by stat flags, and changed HEAD",
+        "medianWallMs": 393.56,
+        "profileBodyMs": 409.7983750000003,
+        "trustedGitLaunches": 20,
+        "fixtureHelperGitLaunches": 9,
+        "operations": {
+          "observeGit": {
+            "calls": 1,
+            "ms": 34.15349999999944,
+            "self": 0.06808299999920564,
+            "launches": 2
+          },
+          "requirePreparedCommit": {
+            "calls": 4,
+            "ms": 326.8243760000005,
+            "self": 0.13241500000094675,
+            "launches": 20
+          },
+          "requireIndexContent": {
+            "calls": 2,
+            "ms": 105.42166699999962,
+            "self": 0.09233300000050804,
+            "launches": 6
+          },
+          "fixture": {
+            "calls": 1,
+            "ms": 13.013041000000158,
+            "self": 0.04324999999880674,
+            "launches": 1
+          },
+          "hash.update": {
+            "calls": 5,
+            "ms": 0.005540999998629559,
+            "self": 0.005540999998629559,
+            "launches": 0
+          },
+          "hash.digest": {
+            "calls": 5,
+            "ms": 0.010708000000704487,
+            "self": 0.010708000000704487,
+            "launches": 0
+          },
+          "$git": {
+            "calls": 29,
+            "ms": 401.3669580000005,
+            "self": 401.3669580000005,
+            "launches": 0
+          }
+        }
+      },
+      {
+        "name": "real reject hook is honored and postflight fails closed without cleanup",
+        "medianWallMs": 203.3,
+        "profileBodyMs": 221.77833399999963,
+        "trustedGitLaunches": 9,
+        "fixtureHelperGitLaunches": 8,
+        "operations": {
+          "observeGit": {
+            "calls": 1,
+            "ms": 116.16029199999957,
+            "self": 0.2069179999980406,
+            "launches": 7
+          },
+          "verifyCommitted": {
+            "calls": 1,
+            "ms": 133.34816599999976,
+            "self": 0.020082000000002154,
+            "launches": 8
+          },
+          "fixture": {
+            "calls": 1,
+            "ms": 12.813500000000204,
+            "self": 0.07191799999964132,
+            "launches": 1
+          },
+          "$git": {
+            "calls": 17,
+            "ms": 214.55237600000055,
+            "self": 214.55237600000055,
+            "launches": 0
+          }
+        }
+      },
+      {
+        "name": "real modify hook is honored and postflight fails closed without cleanup",
+        "medianWallMs": 240.35,
+        "profileBodyMs": 243.49779200000012,
+        "trustedGitLaunches": 10,
+        "fixtureHelperGitLaunches": 8,
+        "operations": {
+          "observeGit": {
+            "calls": 1,
+            "ms": 114.30779199999961,
+            "self": 0.19479099999807659,
+            "launches": 7
+          },
+          "verifyCommitted": {
+            "calls": 1,
+            "ms": 146.163458,
+            "self": 0.038917000000765256,
+            "launches": 9
+          },
+          "fixture": {
+            "calls": 1,
+            "ms": 13.120042000000467,
+            "self": 0.036291000000346685,
+            "launches": 1
+          },
+          "$git": {
+            "calls": 18,
+            "ms": 237.12716799999907,
+            "self": 237.12716799999907,
+            "launches": 0
+          }
+        }
+      },
+      {
+        "name": "real ambiguous hook is honored and postflight fails closed without cleanup",
+        "medianWallMs": 240.28,
+        "profileBodyMs": 233.85550000000057,
+        "trustedGitLaunches": 10,
+        "fixtureHelperGitLaunches": 7,
+        "operations": {
+          "observeGit": {
+            "calls": 1,
+            "ms": 108.84108399999968,
+            "self": 0.14641500000107044,
+            "launches": 7
+          },
+          "verifyCommitted": {
+            "calls": 1,
+            "ms": 137.835333,
+            "self": 0.03704100000049948,
+            "launches": 9
+          },
+          "fixture": {
+            "calls": 1,
+            "ms": 13.565749999999753,
+            "self": 0.03833200000008219,
+            "launches": 1
+          },
+          "$git": {
+            "calls": 17,
+            "ms": 227.25108200000068,
+            "self": 227.25108200000068,
+            "launches": 0
+          }
+        }
+      }
+    ],
+    "operationTotals": {
+      "observeGit": {
+        "calls": 90,
+        "inclusiveMs": 3166.843253999998,
+        "exclusiveMs": 9.323583999995947,
+        "launches": 198
+      },
+      "observeReviewTarget": {
+        "calls": 23,
+        "inclusiveMs": 1216.2558330000002,
+        "exclusiveMs": 0.33941300000151386,
+        "launches": 75
+      },
+      "contentDigest": {
+        "calls": 36,
+        "inclusiveMs": 205.68625099999872,
+        "exclusiveMs": 1.9212079999986145,
+        "launches": 12
+      },
+      "prepareCommit": {
+        "calls": 3,
+        "inclusiveMs": 1212.7667919999994,
+        "exclusiveMs": 0.13716900000099486,
+        "launches": 77
+      },
+      "requirePreparedCommit": {
+        "calls": 63,
+        "inclusiveMs": 1236.815545,
+        "exclusiveMs": 0.7338400000014644,
+        "launches": 72
+      },
+      "requireIndexContent": {
+        "calls": 63,
+        "inclusiveMs": 453.230331,
+        "exclusiveMs": 3.442947000002505,
+        "launches": 21
+      },
+      "verifyCommitted": {
+        "calls": 6,
+        "inclusiveMs": 1014.8988739999993,
+        "exclusiveMs": 0.3714999999999691,
+        "launches": 64
+      },
+      "CommitGit.prepare": {
+        "calls": 1,
+        "inclusiveMs": 1230.2149999999997,
+        "exclusiveMs": 1.8730829999999514,
+        "launches": 78
+      },
+      "CommitGit.staged": {
+        "calls": 0,
+        "inclusiveMs": 0,
+        "exclusiveMs": 0,
+        "launches": 0
+      },
+      "CommitGit.commit": {
+        "calls": 1,
+        "inclusiveMs": 713.9770829999998,
+        "exclusiveMs": 1.6724580000004607,
+        "launches": 46
+      },
+      "CommitGit.final": {
+        "calls": 1,
+        "inclusiveMs": 287.2756250000002,
+        "exclusiveMs": 1.116291999999703,
+        "launches": 18
+      },
+      "fixture": {
+        "calls": 7,
+        "inclusiveMs": 96.23783200000054,
+        "exclusiveMs": 2.755415999998604,
+        "launches": 7
+      },
+      "hash.update": {
+        "calls": 8634,
+        "inclusiveMs": 8.19133300000317,
+        "exclusiveMs": 8.19133300000317,
+        "launches": 0
+      },
+      "hash.digest": {
+        "calls": 8378,
+        "inclusiveMs": 1.6931319999962398,
+        "exclusiveMs": 1.6931319999962398,
+        "launches": 0
+      },
+      "$git": {
+        "calls": 350,
+        "inclusiveMs": 5199.234659000001,
+        "exclusiveMs": 5199.234659000001,
+        "launches": 0
+      }
+    },
+    "hookWallMs": {
+      "beforeAll": 68.04750000000001,
+      "afterEach": 26.45250099999862,
+      "afterAll": 2.7332500000002256
+    },
+    "filesystemCallsMs": 67.88330699998693,
+    "settlementTests": [
+      {
+        "name": "final settlement rejects a message-only external amend of the exact postflight commit",
+        "medianWallMs": 0.34,
+        "trustedGitLaunches": 0,
+        "fixtureHelperGitLaunches": 0
+      },
+      {
+        "name": "observed HEAD drift through status permanently retires Commit authority even after the approved HEAD is restored",
+        "medianWallMs": 0.11,
+        "trustedGitLaunches": 0,
+        "fixtureHelperGitLaunches": 0
+      },
+      {
+        "name": "closed preparation failure refreshes final HEAD/index/worktree facts without replacing its original reason",
+        "medianWallMs": 0.14,
+        "trustedGitLaunches": 0,
+        "fixtureHelperGitLaunches": 0
+      },
+      {
+        "name": "postflight commit facts survive an external reset to the approved parent as terminal history uncertainty",
+        "medianWallMs": 0.13,
+        "trustedGitLaunches": 0,
+        "fixtureHelperGitLaunches": 0
+      }
+    ]
+  }
+}

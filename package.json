@@ -8,7 +8,8 @@
     "format:check": "biome format .",
     "check": "bun run format:check && bun run lint && bun run typecheck && bun test",
     "typecheck": "tsc --noEmit",
-    "test": "bun test"
+    "test": "bun test",
+    "test:large-git": "bun test ./test/git-large.integration.ts"
   },
   "dependencies": {
     "@opencode/plugin": "2.0.24",

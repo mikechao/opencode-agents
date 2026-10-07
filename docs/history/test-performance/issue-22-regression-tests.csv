@@ -1,0 +1,48 @@
+phase,test,median_wall_ms,trusted_git_launches,fixture_helper_git_launches
+before,"trusted Git observation covers staged, unstaged, untracked, deletion, and both rename paths",721.23,42,5
+before,ordinary staged and unstaged paths are observed together,291.06,14,6
+before,ignored untracked paths are excluded from ordinary cleanliness,372.16,21,3
+before,scope uses exact path equality and observation requires the worktree root,243.51,15,1
+before,changed HEAD cannot pass; unusual pathnames remain exact,403.79,23,3
+before,freshness and exact scope reject substituted root or HEAD independently of paths,0.16,0,0
+before,"review fingerprint binds worktree bytes and staged identities, including same-path and untracked drift",1079.04,69,3
+before,"review fingerprint detects tracked bytes hidden from diff, mode/type/deletion changes and rejects widening/HEAD changes",1335.77,84,5
+before,review target rejects unsupported Git entries and ambiguous file topology,617.98,38,4
+before,complete-index preparation and final proof preserve SHA-256 Git object identities,2961.33,185,7
+before,"bounded blob proof rejects malformed output and races, and closes/unlinks large-object resources on failure",33.45,0,0
+before,blob metadata proof bounds batches and deduplicates 160-bit OIDs,11.39,0,0
+before,complete index proof bounds batches and deduplicates 160-bit OIDs,5.99,0,0
+before,blob metadata proof bounds batches and deduplicates 256-bit OIDs,12.34,0,0
+before,complete index proof bounds batches and deduplicates 256-bit OIDs,4.16,0,0
+before,approved worktree transitions through exact staged bytes/modes/deletions/symlinks to one verified commit,4185.52,266,6
+before,final settlement rejects a message-only external amend of the exact postflight commit,3759.66,242,9
+before,observed HEAD drift through status permanently retires Commit authority even after the approved HEAD is restored,1604.13,100,6
+before,closed preparation failure refreshes final HEAD/index/worktree facts without replacing its original reason,1752.49,109,7
+before,postflight commit facts survive an external reset to the approved parent as terminal history uncertainty,3095.34,192,8
+before,"commit preparation rejects fresh drift, unrelated staged content, partial or substituted index, and changed HEAD",3023.02,191,9
+before,real reject hook is honored and remains terminal without cleanup or a second commit,2623.51,166,2
+before,real modify hook is honored and remains terminal without cleanup or a second commit,2626.37,167,2
+before,real ambiguous hook is honored and remains terminal without cleanup or a second commit,2628.5,167,1
+after,"trusted Git observation covers staged, unstaged, ignored/unusual untracked paths, deletion, and both rename paths",705.68,42,5
+after,ordinary staged and unstaged paths are observed together,283.92,14,6
+after,scope uses exact path equality and observation requires the worktree root,0.65,0,0
+after,freshness and exact scope reject substituted root or HEAD independently of paths,0.08,0,0
+after,"review fingerprint binds worktree bytes and staged identities, including same-path and untracked drift",2.84,0,0
+after,"review fingerprint detects tracked bytes hidden from diff, mode/type/deletion changes and rejects widening/HEAD changes",1.45,0,0
+after,review target rejects unsupported Git entries and ambiguous file topology,0.64,0,0
+after,complete-index and postflight proofs preserve real SHA-256 Git object identities,377.71,17,11
+after,"bounded blob proof rejects malformed output and races, and closes/unlinks large-object resources on failure",29.5,0,0
+after,blob metadata proof bounds batches and deduplicates 160-bit OIDs,12.88,0,0
+after,complete index proof bounds batches and deduplicates 160-bit OIDs,3.98,0,0
+after,blob metadata proof bounds batches and deduplicates 256-bit OIDs,11.75,0,0
+after,complete index proof bounds batches and deduplicates 256-bit OIDs,4.51,0,0
+after,approved worktree transitions through exact staged bytes/modes/deletions/symlinks to one verified commit,2631.27,167,7
+after,preparation rejects widened scope and same-path byte drift before staging,0.96,0,0
+after,"prepared content proof rejects real partial/substituted index hidden by stat flags, and changed HEAD",393.56,20,9
+after,real reject hook is honored and postflight fails closed without cleanup,203.3,9,8
+after,real modify hook is honored and postflight fails closed without cleanup,240.35,10,8
+after,real ambiguous hook is honored and postflight fails closed without cleanup,240.28,10,7
+after,final settlement rejects a message-only external amend of the exact postflight commit,0.34,0,0
+after,observed HEAD drift through status permanently retires Commit authority even after the approved HEAD is restored,0.11,0,0
+after,closed preparation failure refreshes final HEAD/index/worktree facts without replacing its original reason,0.14,0,0
+after,postflight commit facts survive an external reset to the approved parent as terminal history uncertainty,0.13,0,0
