@@ -27,7 +27,7 @@ import {
   ownedReceiptEvent,
   sessionEventSeq,
   type CycleOutcome,
-  type RepairDecision,
+  type ReviewDecision,
 } from "../../../src/authorize-rpc.ts"
 import {
   activationEvidence,
@@ -57,7 +57,7 @@ const same = (a: unknown, b: unknown) => exactEvidence(a) === exactEvidence(b)
 
 type Presentation =
   | { kind: "pending"; published: PublishedAttempt }
-  | { kind: "repair"; decision: RepairDecision }
+  | { kind: "repair"; decision: ReviewDecision }
   | { kind: "status"; message: string }
 
 const plugin: Definition = {
@@ -159,8 +159,8 @@ const plugin: Definition = {
               }
           ) & { planning: Planning })
         | { kind: "closed" }
-      let repairOwner: { kind: "pending" | "deciding" | "transferred"; decision: RepairDecision } | undefined
-      let repairUsable: ((action: "Repair" | "Stop") => boolean) | undefined
+      let repairOwner: { kind: "pending" | "deciding" | "transferred"; decision: ReviewDecision } | undefined
+      let repairUsable: ((action: "Repair" | "Commit" | "Stop") => boolean) | undefined
       let repairInvalidate: (() => void) | undefined
       let ownership: Ownership = { kind: "waiting", creation, planning: {} }
       const retiredPublications = new Set<string>()
@@ -175,7 +175,7 @@ const plugin: Definition = {
         /^session\.(inbox|message|synthetic|instructions|execution|permissions|agent\.selected|moved|deleted|forked|revert|compaction|shell|skill)/.test(
           event.type,
         ) && !(event.type === "session.instructions.updated" && event.data.text === undefined)
-      const inertReviewEvent = (event: OpenCodeEvent, decision: RepairDecision) =>
+      const inertReviewEvent = (event: OpenCodeEvent, decision: ReviewDecision) =>
         historicalReviewEvent(event, decision) ||
         (event.type === "session.execution.succeeded" &&
           event.durable === undefined &&
@@ -260,7 +260,7 @@ const plugin: Definition = {
         transferActivity = undefined
         if (generation.revoked) return
         if (
-          outcome.kind === "repair" &&
+          outcome.kind !== "terminal" &&
           (outcome.decision.rootSessionID !== rootSessionID ||
             outcome.decision.candidate.root !== baseline.root ||
             outcome.decision.candidate.head !== baseline.head)
@@ -290,7 +290,7 @@ const plugin: Definition = {
         setPresentation({ kind: "repair", decision: outcome.decision })
         setLayoutRevision((value) => value + 1)
       }
-      const repairCurrent = (captured: RepairDecision) => {
+      const repairCurrent = (captured: ReviewDecision) => {
         if (
           generation.revoked ||
           !repairOwner ||
@@ -300,18 +300,23 @@ const plugin: Definition = {
         )
           throw new Error("Repair presentation was retired or moved")
       }
-      const selectRepair = (captured: RepairDecision, action: "Repair" | "Stop") => {
+      const selectRepair = (captured: ReviewDecision, action: "Repair" | "Commit" | "Stop") => {
         if (repairOwner?.kind !== "pending" || repairOwner.decision !== captured || implementing || generation.busy)
           return
         try {
           repairCurrent(captured)
+          if (action !== "Stop" && action !== (captured.result.status === "APPROVED" ? "Commit" : "Repair")) return
           if (!repairSelected() || !repairUsable?.(action)) return
           repairOwner = { kind: "deciding", decision: captured }
           repairInvalidate?.()
           setPresentation({
             kind: "status",
             message:
-              action === "Repair" ? "Repair claimed — implementation and fresh review in progress…" : "Stopping…",
+              action === "Stop"
+                ? "Stopping…"
+                : action === "Commit"
+                  ? "Commit claimed — fresh Committer in progress…"
+                  : "Repair claimed — implementation and fresh review in progress…",
           })
           implementing = true
           void (async () => {
@@ -349,7 +354,9 @@ const plugin: Definition = {
             repairOwner = { kind: "transferred", decision: captured }
             transferActivity = { latest: -1, identities: [] }
             return checkedCycleOutcome(
-              await context.client.rpc(authorizeRpc).decideRepair({ decisionID: captured.id, action }, { location }),
+              await (captured.result.status === "APPROVED"
+                ? context.client.rpc(authorizeRpc).decideCommit({ decisionID: captured.id, action }, { location })
+                : context.client.rpc(authorizeRpc).decideRepair({ decisionID: captured.id, action }, { location })),
             )
           })()
             .finally(() => {
@@ -455,7 +462,7 @@ const plugin: Definition = {
                     </Show>
                   ) : state.kind === "repair" ? (
                     <Show when={repairSelected()}>
-                      <RepairStrip decision={state.decision} />
+                      <ReviewDecisionStrip decision={state.decision} />
                     </Show>
                   ) : (
                     <text wrapMode="char">{state.message}</text>
@@ -607,10 +614,11 @@ const plugin: Definition = {
         event.stopPropagation()
         decide(captured, decision)
       }
-      function RepairStrip(props: { decision: RepairDecision }) {
+      function ReviewDecisionStrip(props: { decision: ReviewDecision }) {
         const captured = props.decision
         const theme = context.theme
-        const allActions = ["Repair", "Stop", "Previous", "Next"] as const
+        const primary = captured.result.status === "APPROVED" ? "Commit" : "Repair"
+        const allActions = [primary, "Stop", "Previous", "Next"] as const
         const [selected, setSelected] = createSignal<(typeof allActions)[number]>("Stop")
         const [page, setPage] = createSignal(0)
         const [width, setWidth] = createSignal(context.renderer.terminalWidth)
@@ -637,7 +645,16 @@ const plugin: Definition = {
             ...(item.location ? [`Location: ${repairProse(item.location)}`] : []),
             ...(item.testGap ? [`Test gap: ${repairProse(item.testGap)}`] : []),
           ]),
-          "Repair stays within the original scope. No Commit authority.",
+          ...(captured.result.status === "APPROVED"
+            ? [
+                `Canonical root: ${repairProse(captured.target.root)}`,
+                `Approved base HEAD: ${captured.target.head}`,
+                `Exact reviewed paths (${captured.target.paths.length}):`,
+                ...captured.target.paths.map(displayPath),
+                `Reviewer: ${repairProse(captured.reviewer.childID)}`,
+                "Commit authorizes one normal commit attempt for this exact approved target. Stop launches no Committer. No push.",
+              ]
+            : ["Repair stays within the original scope. No Commit authority."]),
         ]
         // Use the same native buffer and width method as TextRenderable. Even
         // native char wrapping can retain a cluster wider than the viewport;
@@ -676,7 +693,8 @@ const plugin: Definition = {
             .slice(page() * rows(), (page() + 1) * rows())
             .join("\n")
         const evidenceHeight = () => Math.max(1, lines().slice(page() * rows(), (page() + 1) * rows()).length)
-        const questionText = () => (pages() > 1 ? `Repair or stop? Page ${page() + 1}/${pages()}` : "Repair or stop?")
+        const questionText = () =>
+          pages() > 1 ? `${primary} or stop? Page ${page() + 1}/${pages()}` : `${primary} or stop?`
         const invalidate = () => {
           proof = undefined
           setReady(false)
@@ -751,7 +769,7 @@ const plugin: Definition = {
           commands: [
             {
               bind: "left",
-              title: "Previous Repair option",
+              title: `Previous ${primary} option`,
               run: () => {
                 if (keyboardUsable())
                   setSelected(actions()[(actions().indexOf(selection()) + actions().length - 1) % actions().length]!)
@@ -759,12 +777,12 @@ const plugin: Definition = {
             },
             {
               bind: "right",
-              title: "Next Repair option",
+              title: `Next ${primary} option`,
               run: () => {
                 if (keyboardUsable()) setSelected(actions()[(actions().indexOf(selection()) + 1) % actions().length]!)
               },
             },
-            { bind: "return", title: "Select Repair option", run: () => activate(selection()) },
+            { bind: "return", title: `Select ${primary} option`, run: () => activate(selection()) },
           ],
         }))
         const completedFrame = () => {

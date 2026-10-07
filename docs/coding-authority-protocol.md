@@ -12,11 +12,13 @@ Authorize decision. It transfers the frozen claim to a local server RPC for
 one native Implementer admission. Trusted native result binding and independent
 unchanged-HEAD/exact-path verification must pass before automatic read-only
 Reviewer admission. Trusted review result and exact-target revalidation precede
-terminal completion or a separate trusted human Repair / Stop decision for
-verified CHANGES_REQUESTED. Commit remains a future separately authorized obligation.
+a separate trusted human Commit / Stop decision for verified APPROVED, or
+Repair / Stop for verified CHANGES_REQUESTED. Commit admission and execution
+require their own fresh explicit human grant.
 
 Each eligible root has one permanently one-shot initial implementation CAP.
 Each later Repair requires a distinct explicit human grant and one-shot claim.
+Commit uses a distinct one-shot authority bound to exact verified approval.
 Shared-worktree exclusion spans execution, verification and receipt publication,
 and is released during the human pause. Repeated initial Authorize is rejected.
 
@@ -248,7 +250,8 @@ The installed bounded Implementer role remains distinct from the read-only
 Planner and root. It MUST deny delegation, `execute`, session control and
 equivalent exposed tools. The root retains only read-only tools and Planner delegation;
 the trusted sponsor admits only the exact one implementation invocation.
-General Orchestrator Reviewer authority and all Commit authority remain denied.
+General Orchestrator Reviewer and Committer authority remain denied. Only exact
+trusted invocations receive their separate runtime sponsors.
 No planning conversation is copied
 to the Implementer; its deterministic prompt carries the frozen proposal.
 
@@ -328,8 +331,9 @@ settlement MUST NOT release an unknown/running Reviewer. Unknown child settlemen
 MUST retain exclusion until activation teardown. Exactly one Reviewer attempt is
 allowed per verified implementation cycle; failure MUST NOT launch a replacement,
 retry, repair or another Implementer.
-All terminal outcomes MUST stop before Commit. No persisted review/workflow state
-or transcript recovery grants authority.
+Review MUST NOT execute Commit. Only verified APPROVED MAY expose the separate
+Commit / Stop decision below. No persisted review/workflow state or transcript
+recovery grants authority.
 
 ## Human-authorized Repair / Stop
 
@@ -391,27 +395,83 @@ history. Worker recovery of an already admitted child retains its existing
 semantics and MUST NOT restore admission. No persisted repair count, workflow
 phase, generalized retry machinery or automatic repair is introduced.
 
-## Future separate Commit contract
+## Human-authorized Commit / Stop
 
-Commit authorization, Reviewer-owned executable validation, and commit effects
-are not implemented. The following obligations apply only to future Commit work.
+Reviewer APPROVED MUST NOT imply Commit authority or Commit execution. Initial
+implementation CAP, Repair grants, retained `currentReviews`, receipt text,
+model prose and historical transcripts MUST NOT grant Commit. Only a fresh explicit
+human Commit selection for one exact live verified APPROVED target may grant it.
 
-Reviewed-target commit authority MUST be distinct from intent authority. Its
-candidate MUST bind only the newest live exact trusted APPROVED review,
-its implementation and Reviewer provenance, exact reviewed target or unambiguous digest,
-Reviewer-owned validation, exact prepared paths, relevant Git baseline and
-readable commit intent. It authorizes neither edits nor a substitute target.
-The candidate MUST be frozen and digested, and the fresh trusted human decision
-MUST be bound to that exact candidate.
-Trusted code MUST verify those facts, recheck freshness immediately before the
-effect, consume separate one-use commit authority, perform only the bounded
-commit and verify the resulting Git outcome independently of agent claims.
+After publication-time root/history/settlement and Git target revalidation, trusted
+runtime MUST retain immutable approval evidence behind an opaque decision ID.
+That evidence MUST bind the original frozen proposal/root/HEAD, exact implementation
+identity, changed-path set and unchanged review digest, Reviewer result and
+message/tool/child/result identities, and root history/settlement/event boundary.
+Only the server owns that binding. The TUI presents Commit / Stop using the existing
+composer-top readable-frame decision surface and sends only decision ID/action.
+Stop MUST spend the decision, launch no Committer and issue no Git mutation.
 
-Ambiguous commit completion permits only read-only reconciliation while the
-trusted process remains alive; the consumed capability MUST NOT be replayed.
-Process death ends the run. Later work starts with zero authority, inspects
-current Git reality and requires fresh authorization for any further effect.
-Repair admission, competing governed execution or observed drift MUST retire
-previous current approval eligibility. Historical APPROVED receipts MUST remain
-inert, including when bytes later return to the same fingerprint. Subsystem
-design and host sequencing remain future work in orchestration.
+Commit selection MUST spend the decision synchronously before any await, retire
+retained approval eligibility, create a distinct Commit authority owner, and
+reacquire shared-worktree exclusion before fresh observations. Busy, stale,
+replaced or invalid authority MUST fail permanently closed. Fresh host reads MUST
+recheck root creation/settlement, history, role/location/no-overrides and current
+activation; fresh Git reads MUST prove original canonical root/HEAD and exact
+approved target. Event invalidation and retained approval alone are insufficient.
+These proofs MUST repeat after model preparation immediately before one fresh
+native Committer admission. No continuation, optional model-authored keys,
+background execution, new review or repair may substitute for that child.
+
+Committer MUST be Git-only. Trusted runtime and permissions MUST deny editing,
+arbitrary shell, delegation and all tools except `committer_git`, even when
+configured policy appends allows. The structured tool MUST independently bind
+execution to the exact live consumed Commit owner, root, approved review,
+native call/control, fresh child bootstrap/history and exact published tool input.
+It MUST accept only bounded operations and message text, never arbitrary command
+text, paths, flags, environment, alternate repository/index or workdir.
+
+Preparation MUST stage only the complete server-selected reviewed changed paths,
+including additions/deletions, without rename-based scope expansion or hunk selection.
+Before staging, the exact original ReviewTarget MUST remain fresh. Staging
+intentionally changes its index component: the old digest MUST NOT be reused as
+post-staging equality. Trusted code MUST instead prove the transition from approved
+worktree bytes/types/modes/symlinks/deletions to exact index content and prepared tree.
+All staged paths MUST equal the reviewed paths; unrelated staging, incomplete
+staging, remaining ordinary untracked/unstaged delta, unsupported topology or
+content transformation MUST block Commit. The full approved worktree content and
+prepared tree MUST be checked again immediately before the history side effect.
+Configured clean/process filters MUST fail closed before tool Git operations.
+
+The message is bounded literal argv data; authority binds content, not one immutable
+message. Trusted code MUST spend the commit attempt before spawning exactly one
+normal `git commit` with fixed arguments and normal repository hooks. Amend,
+no-verify, push, rebase, reset, checkout/switch, restore, stash, clean, arbitrary
+Git flags and automatic retry MUST be unavailable. The fixed executable and narrow
+environment MUST exclude inherited alternate Git repository/index/config variables.
+Normal user configuration and hooks are preserved; hooks are external behavior.
+
+Postflight MUST inspect actual Git state even after a nonzero process result.
+Verified success MUST prove one new commit with exactly the original parent,
+exact authorized changed paths, prepared tree/content, matching final index and
+clean ordinary worktree plus unchanged actual approved bytes. Process exit zero
+or Committer prose alone MUST NOT establish success. Hook mutation, nonzero exit,
+interruption, extra history, unexpected final state or unverifiable outcome MUST
+remain terminal. Failure with changed history MUST be reported as ambiguity.
+No retry, amend, reset, restore, cleanup or second commit may follow. Unknown
+process/child settlement MUST retain exclusion until activation teardown.
+
+Observed Git operation facts MUST be stored before returning to interruptible
+model/transport execution. One root-bound factual record MUST be finalized in
+plugin storage, then published once as a non-resuming synthetic root receipt
+after proven settlement. It MUST include the known commit outcome/hash/subject/paths,
+Reviewer provenance and final observed state; failure MUST report a bounded reason,
+known HEAD/index/worktree state and history uncertainty. Publication failure MUST
+be reported without resending; unproven settlement withholds synthetic publication
+while retaining durable facts. Storage failure MUST be explicit. Stored facts MUST
+have no authority loader and MUST NOT restore decisions, workers or commit attempts.
+No persisted Commit phase, attempt counter or recovery workflow is introduced.
+
+Repair, competing governed acquisition, observed drift and teardown MUST retire
+old approval/decisions permanently, even if bytes later match again. A repaired
+implementation MUST receive a new fresh verified APPROVED review before Commit
+is offered. Restart begins with zero Commit authority.

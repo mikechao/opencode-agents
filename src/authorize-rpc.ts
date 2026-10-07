@@ -15,9 +15,13 @@ export type RepairDecision = Readonly<{
   receipts: ReadonlyArray<Readonly<{ id: string; text: string }>>
   reviewer: Readonly<{ messageID: string; toolID: string; childID: string; resultID: string }>
 }>
+export type CommitDecision = Omit<RepairDecision, "result"> &
+  Readonly<{ result: Extract<ReviewResult, { status: "APPROVED" }> }>
+export type ReviewDecision = RepairDecision | CommitDecision
 export type CycleOutcome =
   | { kind: "terminal"; receipt: string }
   | { kind: "repair"; receipt: string; decision: RepairDecision }
+  | { kind: "commit"; receipt: string; decision: CommitDecision }
 
 export function checkedCycleOutcome(value: unknown): CycleOutcome {
   if (!exactKeys(value, ["kind", "receipt"]) && !exactKeys(value, ["kind", "receipt", "decision"]))
@@ -28,9 +32,9 @@ export function checkedCycleOutcome(value: unknown): CycleOutcome {
   )
     throw new Error("Invalid cycle outcome")
   if (value.kind === "terminal") return frozenCopy({ kind: "terminal", receipt: value.receipt })
-  const decision = value.decision as RepairDecision
+  const decision = value.decision as ReviewDecision
   if (
-    value.kind !== "repair" ||
+    (value.kind !== "repair" && value.kind !== "commit") ||
     !exactKeys(decision, [
       "id",
       "rootSessionID",
@@ -71,9 +75,10 @@ export function checkedCycleOutcome(value: unknown): CycleOutcome {
     ) ||
     !exactKeys(decision.reviewer, ["messageID", "toolID", "childID", "resultID"]) ||
     Object.values(decision.reviewer).some((id) => typeof id !== "string" || !id) ||
-    parseReviewResult(JSON.stringify(decision.result)).status !== "CHANGES_REQUESTED"
+    parseReviewResult(JSON.stringify(decision.result)).status !==
+      (value.kind === "commit" ? "APPROVED" : "CHANGES_REQUESTED")
   )
-    throw new Error("Invalid Repair decision")
+    throw new Error("Invalid post-review decision")
   return frozenCopy(value) as CycleOutcome
 }
 
@@ -143,6 +148,7 @@ export const authorizeRpc = Rpc.define({
   id: "opencode-agents",
   methods: {
     authorize: { input: { type: "object" } as const, output: cycleSchema },
+    decideCommit: { input: { type: "object" } as const, output: cycleSchema },
     decideRepair: { input: { type: "object" } as const, output: cycleSchema },
     revise: { input: { type: "object" } as const, output: { type: "null" } as const },
   },

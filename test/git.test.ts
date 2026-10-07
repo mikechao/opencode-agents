@@ -14,6 +14,7 @@ import {
 } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
+import { CommitGit } from "../src/committer-git.ts"
 import * as gitModule from "../src/git.ts"
 import {
   observeGit,
@@ -232,3 +233,88 @@ test("review target rejects unsupported Git entries and ambiguous file topology"
   expect(() => observeReviewTarget(root, observeGit(root))).toThrow("Unsupported review worktree entry")
   expect(() => observeReviewTarget("/does-not-exist", snapshot)).toThrow()
 })
+
+test("approved worktree transitions through exact staged bytes/modes/deletions/symlinks to one verified commit", () => {
+  const root = fixture()
+  const head = observeGit(root).head
+  unlinkSync(path.join(root, "old.txt"))
+  writeFileSync(path.join(root, "new.txt"), "new approved executable\n")
+  chmodSync(path.join(root, "new.txt"), 0o755)
+  symlinkSync("new.txt", path.join(root, "link.txt"))
+  const target = observeReviewTarget(root, observeGit(root))
+  const owner = new CommitGit(target)
+  owner.execute({ operation: "prepare" }, () => {})
+  expect(() => requireReviewTarget(observeReviewTarget(root, observeGit(root)), target)).toThrow() // Staging changes original digest.
+  expect(owner.execute({ operation: "staged" }, () => {})).toContain("new approved executable")
+  expect(
+    owner.execute(
+      { operation: "commit", message: "Implement approved content\n\nLiteral --amend --no-verify $(touch nope)" },
+      () => {},
+    ),
+  ).toContain("Commit succeeded")
+  const final = observeGit(root)
+  expect(final.paths).toEqual([])
+  expect(final.head).not.toBe(head)
+  expect(git(root, "rev-parse", "HEAD^")).toBe(head)
+  expect(git(root, "show", "HEAD:new.txt")).toBe("new approved executable")
+  expect(git(root, "show", "HEAD:link.txt")).toBe("new.txt")
+  expect(git(root, "ls-tree", "HEAD")).toContain("100755")
+  expect(git(root, "ls-tree", "HEAD")).not.toContain("old.txt")
+  chmodSync(path.join(root, "new.txt"), 0o644)
+  expect(owner.final()).toContain("did not reach a verified successful")
+})
+
+test("commit preparation rejects fresh drift, unrelated staged content, partial or substituted index, and changed HEAD", () => {
+  const root = fixture()
+  writeFileSync(path.join(root, "old.txt"), "approved\n")
+  const target = observeReviewTarget(root, observeGit(root))
+  writeFileSync(path.join(root, "outside.txt"), "outside\n")
+  git(root, "add", "outside.txt")
+  expect(() => gitModule.prepareCommit(target)).toThrow("Review target changed")
+  git(root, "reset", "-q", "HEAD", "--", "outside.txt")
+  unlinkSync(path.join(root, "outside.txt"))
+  writeFileSync(path.join(root, "old.txt"), "drift\n")
+  expect(() => gitModule.prepareCommit(target)).toThrow("Review target changed")
+  writeFileSync(path.join(root, "old.txt"), "approved\n")
+  const prepared = gitModule.prepareCommit(target)
+  git(root, "reset", "-q", "HEAD", "--", "old.txt")
+  expect(() => gitModule.requirePreparedCommit(prepared)).toThrow("Staged paths")
+  writeFileSync(path.join(root, "old.txt"), "substituted\n")
+  git(root, "add", "old.txt")
+  writeFileSync(path.join(root, "old.txt"), "approved\n")
+  git(root, "update-index", "--assume-unchanged", "old.txt")
+  expect(() => gitModule.requirePreparedCommit(prepared)).toThrow("staged content differs from approved")
+  git(root, "update-index", "--no-assume-unchanged", "old.txt")
+  git(root, "add", "old.txt")
+  gitModule.requirePreparedCommit(prepared)
+  git(root, "commit", "-qm", "External commit")
+  expect(() => gitModule.requirePreparedCommit(prepared)).toThrow("HEAD changed")
+})
+
+for (const hook of ["reject", "modify", "ambiguous"] as const) {
+  test(`real ${hook} hook is honored and remains terminal without cleanup or a second commit`, () => {
+    const root = fixture()
+    writeFileSync(path.join(root, "old.txt"), "approved\n")
+    const target = observeReviewTarget(root, observeGit(root))
+    const owner = new CommitGit(target)
+    owner.execute({ operation: "prepare" }, () => {})
+    const hookName = hook === "ambiguous" ? "post-commit" : "pre-commit"
+    writeFileSync(
+      path.join(root, ".git", "hooks", hookName),
+      hook === "reject"
+        ? "#!/bin/sh\nexit 1\n"
+        : hook === "modify"
+          ? "#!/bin/sh\nprintf 'hook modified\\n' > old.txt\ngit add -- old.txt\n"
+          : "#!/bin/sh\ngit -c core.hooksPath=/dev/null commit --allow-empty -qm 'hook extra commit'\n",
+    )
+    chmodSync(path.join(root, ".git", "hooks", hookName), 0o755)
+    const receipt = owner.execute({ operation: "commit", message: "Implement reviewed change" }, () => {})
+    expect(receipt).toContain("did not reach a verified successful")
+    const headAfter = observeGit(root).head
+    expect(headAfter === target.head).toBe(hook === "reject")
+    expect(() => owner.execute({ operation: "commit", message: "Retry" }, () => {})).toThrow("spent")
+    expect(observeGit(root).head).toBe(headAfter)
+    if (hook === "reject") expect(git(root, "diff", "--cached", "--name-only")).toBe("old.txt")
+    if (hook === "modify") expect(git(root, "show", "HEAD:old.txt")).toBe("hook modified")
+  })
+}

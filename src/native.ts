@@ -46,6 +46,7 @@ import {
   type RepairDecision,
 } from "./authorize-rpc.ts"
 import { reviewerGitName, reviewerGitArguments } from "./reviewer-git.ts"
+import { CommitGit, committerGitName, decodeCommitterInput } from "./committer-git.ts"
 
 const reviewerTool = (name: string) => directRootTool(name) || name === reviewerGitName
 
@@ -57,6 +58,10 @@ export const sponsorRules = [
 export const reviewerSponsorRules = [
   { action: "*", resource: "*", effect: "deny" },
   { action: "subagent", resource: "reviewer", effect: "allow" },
+] as const
+export const committerSponsorRules = [
+  { action: "*", resource: "*", effect: "deny" },
+  { action: "subagent", resource: "committer", effect: "allow" },
 ] as const
 const same = (a: unknown, b: unknown) => exactEvidence(a) === exactEvidence(b)
 const fail = (message: string) => new Tool.Error({ message: `CAP admission: ${message}` })
@@ -204,7 +209,46 @@ class RepairClaim extends NativeExecution<VerifiedImplementation["claim"]> {
     )
   }
 }
-type ExecutionOwner = NativeCap | RepairClaim
+class CommitClaim extends NativeExecution<VerifiedImplementation["claim"]> {
+  readonly arguments: Readonly<{ agent: "committer"; description: string; prompt: string }>
+  readonly git: CommitGit
+  toolFailure?: string
+  nativeText?: string
+  constructor(
+    readonly decisionID: string,
+    readonly evidence: VerifiedReview,
+  ) {
+    super()
+    if (evidence.result.status !== "APPROVED") throw new Error("Commit requires verified APPROVED evidence")
+    const { claim, target } = evidence.implementation
+    this.git = new CommitGit(target)
+    this.arguments = frozenCopy({
+      agent: "committer",
+      description: "Commit the approved implementation",
+      prompt: [
+        "You are a fresh Committer for one explicit human Commit decision. Use only committer_git.",
+        "Inspect status, diff and recent history; prepare the complete server-selected paths; inspect staged; choose a concise accurate imperative message; request commit once; inspect result and finish.",
+        "Never edit, delegate, use shell, widen scope, retry, amend, use no-verify, reset, restore, clean, or push. A failed/ambiguous tool result is terminal. Do not invent issue references or metadata.",
+        `Frozen proposal: ${JSON.stringify(claim.candidate.proposal)}`,
+        `Approved target: ${JSON.stringify(target)}`,
+        `Verified Reviewer: ${JSON.stringify(evidence.reviewer)}`,
+        `Verified review: ${JSON.stringify(evidence.result)}`,
+      ].join("\n"),
+    })
+    this.install(
+      claim,
+      Object.freeze({
+        id: `msg_${randomUUID()}`,
+        text: [
+          "Propose exactly one foreground native subagent call with exactly these arguments:",
+          JSON.stringify(this.arguments),
+          "Do not add keys, reuse a session, change values, or retry. After its result finish with prose. Commit authority belongs only to the trusted structured tool.",
+        ].join("\n"),
+      }),
+    )
+  }
+}
+type ExecutionOwner = NativeCap | RepairClaim | CommitClaim
 type ReviewOutcome =
   | { kind: "verified"; evidence: VerifiedReview }
   | { kind: "unverified"; cause: Cause.Cause<unknown> }
@@ -230,6 +274,7 @@ export function nativeAdmission(context: Context) {
   const reviews = new Map<string, ReviewAttempt>()
   const workers = new Map<string, ExecutionOwner>()
   const pending = new Map<string, Readonly<{ id: string; evidence: VerifiedReview }>>()
+  const pendingCommits = new Map<string, Readonly<{ id: string; evidence: VerifiedReview }>>()
   const currentReviews = new Map<string, VerifiedReview>()
   const children = new Map<string, object>()
   const contenders = new Map<string, object>()
@@ -275,6 +320,7 @@ export function nativeAdmission(context: Context) {
   const acquire = (cap: ExecutionOwner) => {
     if (executing) throw new Error("Another root owns worktree implementation exclusion")
     pending.clear()
+    pendingCommits.clear()
     currentReviews.clear()
     executing = { cap }
   }
@@ -364,6 +410,7 @@ export function nativeAdmission(context: Context) {
     if (revoked) throw new Error("Server CAP activation was revoked")
   }
   const actor = Agent.ID.make(`cap_sponsor_${randomUUID()}`)
+  const committerActor = Agent.ID.make(`commit_sponsor_${randomUUID()}`)
   const reviewerActor = Agent.ID.make(`review_sponsor_${randomUUID()}`)
   // ConfigAgentPlugin runs after external plugins and appends global/agent
   // rules. Narrow even configured allows, without ever elevating a host deny.
@@ -384,6 +431,16 @@ export function nativeAdmission(context: Context) {
           event.resources[0] !== "reviewer" ||
           event.effect !== "allow")
       )
+        event.effect = "deny"
+      if (
+        event.agent === committerActor &&
+        (event.action !== "subagent" ||
+          event.resources.length !== 1 ||
+          event.resources[0] !== "committer" ||
+          event.effect !== "allow")
+      )
+        event.effect = "deny"
+      if (event.agent === "committer" && (event.action !== committerGitName || event.effect !== "allow"))
         event.effect = "deny"
       if (event.agent === "reviewer" && (!reviewerTool(event.action) || event.effect !== "allow")) event.effect = "deny"
     })
@@ -455,14 +512,14 @@ export function nativeAdmission(context: Context) {
     return parts[0]
   }
   const argumentsFor = (cap: ExecutionOwner) =>
-    cap instanceof RepairClaim ? cap.arguments : nativeArguments(cap.claim.candidate)
+    cap instanceof RepairClaim || cap instanceof CommitClaim ? cap.arguments : nativeArguments(cap.claim.candidate)
   const requireArguments = (input: unknown, cap: ExecutionOwner) => {
     if (!exactKeys(input, ["agent", "description", "prompt"]) || !same(input, argumentsFor(cap)))
       throw new Error("Native arguments differ from frozen contract")
   }
-  const repairFresh = (cap: RepairClaim) => {
+  const reviewedFresh = (cap: RepairClaim | CommitClaim) => {
     local(cap)
-    if (executing?.cap !== cap) throw new Error("Repair claim lost exclusion")
+    if (executing?.cap !== cap) throw new Error("Reviewed execution claim lost exclusion")
     const { claim, target } = cap.evidence.implementation
     requireInScope(
       observeGit(claim.location.directory!, baseline(claim)),
@@ -492,6 +549,26 @@ export function nativeAdmission(context: Context) {
   const before = (event: ToolHooks["execute.before"]) =>
     Effect.gen(function* () {
       yield* attempt(live)
+      if (event.agent === "committer" && event.tool !== committerGitName) {
+        retireCommitCaller(event.sessionID, "Committer requested a forbidden tool")
+        return yield* Effect.fail(fail("Committer may use only committer_git"))
+      }
+      if (event.tool === committerGitName) {
+        yield* commitToolOwner(event.input, event).pipe(
+          Effect.onError(() =>
+            Effect.sync(() => retireCommitCaller(event.sessionID, "Committer tool admission failed")),
+          ),
+        )
+        return
+      }
+      if (
+        event.input &&
+        typeof event.input === "object" &&
+        "agent" in event.input &&
+        event.input.agent === "committer" &&
+        !(workers.get(event.sessionID) instanceof CommitClaim)
+      )
+        return yield* Effect.fail(fail("No explicitly authorized Committer call"))
       if (event.agent === "reviewer" && !reviewerTool(event.tool))
         return yield* Effect.fail(fail("Reviewer is read-only"))
       if (event.tool === reviewerGitName) {
@@ -787,6 +864,14 @@ export function nativeAdmission(context: Context) {
           if (!owner) return yield* Effect.fail(fail("Reviewer has no implementation owner"))
           return yield* executeReview(original, prepare, input, invocation, review, owner)
         }
+        if (
+          input &&
+          typeof input === "object" &&
+          "agent" in input &&
+          input.agent === "committer" &&
+          !(workers.get(invocation.sessionID) instanceof CommitClaim)
+        )
+          return yield* Effect.fail(fail("No explicitly authorized Committer call"))
         if (input && typeof input === "object" && "agent" in input && input.agent === "reviewer")
           return yield* Effect.fail(fail("No reserved Reviewer call"))
         const cap = workers.get(invocation.sessionID) ?? caps.get(invocation.sessionID)
@@ -819,7 +904,8 @@ export function nativeAdmission(context: Context) {
         return yield* Effect.gen(function* () {
           const history = yield* context.session.context({ sessionID: invocation.sessionID })
           yield* attempt(() => {
-            if (cap instanceof RepairClaim) reviewBoundary(cap.evidence, history, cap.control.id)
+            if (cap instanceof RepairClaim || cap instanceof CommitClaim)
+              reviewBoundary(cap.evidence, history, cap.control.id)
             actualCall(cap, history, call, "running")
             requireArguments(input, cap)
           })
@@ -828,7 +914,9 @@ export function nativeAdmission(context: Context) {
           // exclusion, without changing this root's accepted-claim contract.
           const effectiveInput = yield* prepare(input)
           const latest =
-            cap instanceof RepairClaim ? yield* context.session.context({ sessionID: invocation.sessionID }) : undefined
+            cap instanceof RepairClaim || cap instanceof CommitClaim
+              ? yield* context.session.context({ sessionID: invocation.sessionID })
+              : undefined
           const root = yield* context.session.get({ sessionID: invocation.sessionID })
           // All awaited reads precede the final synchronous freshness/consume barrier.
           const lease = yield* attempt(() => {
@@ -837,13 +925,13 @@ export function nativeAdmission(context: Context) {
             requireArguments(input, cap)
             if (!candidateIntact(cap.claim.candidate)) throw new Error("Frozen claim integrity changed")
             if (executing?.cap !== cap) throw new Error("Root does not own worktree implementation exclusion")
-            if (cap instanceof RepairClaim) {
-              if (!sameSettlement(root, cap.evidence.boundary)) throw new Error("Repair root settlement changed")
+            if (cap instanceof RepairClaim || cap instanceof CommitClaim) {
+              if (!sameSettlement(root, cap.evidence.boundary)) throw new Error("Reviewed root settlement changed")
               if (latest) {
                 reviewBoundary(cap.evidence, latest, cap.control.id)
                 actualCall(cap, latest, call, "running")
               }
-              repairFresh(cap)
+              reviewedFresh(cap)
             } else requireFresh(observeGit(cap.claim.location.directory!, baseline(cap.claim)), baseline(cap.claim))
             cap.consume(call)
             return executing
@@ -854,13 +942,21 @@ export function nativeAdmission(context: Context) {
           // the real parent/source IDs, and effective policy before creating a child.
           const result = yield* original(effectiveInput, {
             ...invocation,
-            agent: actor,
+            agent: cap instanceof CommitClaim ? committerActor : actor,
             progress: (update) =>
               Effect.sync(() => bindFreshChild(execution, update.sessionID, call.sessionID)).pipe(
                 Effect.andThen(() => invocation.progress(update)),
               ),
           })
           yield* attempt(() => {
+            if (
+              cap instanceof CommitClaim &&
+              (!exactKeys(result.output, ["sessionID", "status", "output"]) ||
+                result.metadata?.sessionID !== result.output?.sessionID ||
+                result.metadata?.status !== "completed")
+            )
+              throw new Error("Committer native completion mismatch")
+            if (cap instanceof CommitClaim) cap.nativeText = result.output?.output
             cap.receipt(result)
             bindFreshChild(execution, cap.childID, call.sessionID)
           })
@@ -1224,10 +1320,10 @@ export function nativeAdmission(context: Context) {
           yield* attempt(() => {
             rootIdentity(cap.claim, root)
             local(cap)
-            if (cap instanceof RepairClaim) {
+            if (cap instanceof RepairClaim || cap instanceof CommitClaim) {
               if (!sameSettlement(root, cap.evidence.boundary))
                 throw new Error("Repair root is not the reviewed settled root")
-              repairFresh(cap)
+              reviewedFresh(cap)
             } else {
               acquire(cap)
               requireFresh(observeGit(cap.claim.location.directory!, baseline(cap.claim)), baseline(cap.claim))
@@ -1241,7 +1337,7 @@ export function nativeAdmission(context: Context) {
               if (!sameSettlement(latestRoot, cap.evidence.boundary))
                 throw new Error("Repair root changed during preparation")
               reviewBoundary(cap.evidence, history, cap.control.id)
-              repairFresh(cap)
+              reviewedFresh(cap)
             })
           }
           const { id, text } = cap.control
@@ -1372,26 +1468,25 @@ export function nativeAdmission(context: Context) {
           reviewBoundaries.set(rootSessionID, { rootSessionID, rootEventSeq: evidence.boundary.rootEventSeq })
           executing = undefined
           if (evidence.result.status === "APPROVED") currentReviews.set(rootSessionID, evidence)
-          if (evidence.result.status !== "CHANGES_REQUESTED") return terminal(combined)
+          if (evidence.result.status === "INCONCLUSIVE") return terminal(combined)
           const decision = Object.freeze({ id: randomUUID(), evidence })
-          pending.set(decision.id, decision)
-          return {
-            kind: "repair",
-            receipt: combined,
-            decision: frozenCopy({
-              id: decision.id,
-              rootSessionID,
-              rootIdleID: evidence.boundary.rootIdleID,
-              rootEventSeq: evidence.boundary.rootEventSeq,
-              candidate: implementation.claim.candidate,
-              target: evidence.implementation.target,
-              result: evidence.result,
-              reviewer: evidence.reviewer,
-              receipts: [...receipts]
-                .filter(([, receipt]) => receipt.rootSessionID === rootSessionID)
-                .map(([id, receipt]) => ({ id, text: receipt.text })),
-            }),
-          }
+          if (evidence.result.status === "APPROVED") pendingCommits.set(decision.id, decision)
+          else pending.set(decision.id, decision)
+          const presented = frozenCopy({
+            id: decision.id,
+            rootSessionID,
+            rootIdleID: evidence.boundary.rootIdleID,
+            rootEventSeq: evidence.boundary.rootEventSeq,
+            candidate: implementation.claim.candidate,
+            target: evidence.implementation.target,
+            reviewer: evidence.reviewer,
+            receipts: [...receipts]
+              .filter(([, receipt]) => receipt.rootSessionID === rootSessionID)
+              .map(([id, receipt]) => ({ id, text: receipt.text })),
+          })
+          return evidence.result.status === "APPROVED"
+            ? { kind: "commit", receipt: combined, decision: frozenCopy({ ...presented, result: evidence.result }) }
+            : { kind: "repair", receipt: combined, decision: frozenCopy({ ...presented, result: evidence.result }) }
         })
       }).pipe(
         Effect.ensuring(
@@ -1405,6 +1500,355 @@ export function nativeAdmission(context: Context) {
         ),
       )
     }).pipe(Effect.catchCause((cause) => Effect.succeed(terminal(unverified(cause)))))
+  const retireCommitCaller = (sessionID: string, reason: string) => {
+    const cap = executing?.cap
+    if (
+      cap instanceof CommitClaim &&
+      executing?.native?.child.kind === "exact" &&
+      executing.native.child.childID === sessionID
+    ) {
+      cap.toolFailure = reason
+      cap.git.close()
+      cap.close()
+    }
+  }
+  const commitChild = (cap: CommitClaim, child: Session.Info, history: readonly SessionMessage.Info[]) => {
+    const lease = executing
+    if (
+      lease?.cap !== cap ||
+      lease.native?.child.kind !== "exact" ||
+      child.id !== lease.native.child.childID ||
+      child.parentID !== cap.rootSessionID ||
+      child.agent !== "committer" ||
+      child.fork ||
+      child.revert ||
+      child.time.archived ||
+      !same(snapshotLocation(child.location), cap.claim.location) ||
+      !emptyPermissions(child.permissions)
+    )
+      throw new Error("Exact fresh Committer identity changed")
+    const users = history.filter((message) => message.type === "user")
+    if (
+      users.length !== 1 ||
+      history[0] !== users[0] ||
+      users[0]?.text !== nativeBootstrap(cap.arguments.prompt) ||
+      [users[0]?.files, users[0]?.agents, users[0]?.skills].some((items) => items && items.length) ||
+      history.some((message) => !["user", "assistant", "idle", "model-switched"].includes(message.type)) ||
+      history.some(
+        (message) =>
+          message.type === "assistant" &&
+          (message.agent !== "committer" ||
+            message.error ||
+            message.content.some(
+              (part) => part.type === "tool" && (part.name !== committerGitName || part.executed === true),
+            )),
+      )
+    )
+      throw new Error("Committer bootstrap/history changed or forbidden tool appeared")
+  }
+  const commitGate = (cap: CommitClaim) => {
+    local(cap)
+    if (cap.phase !== "consumed" || executing?.cap !== cap || executing.native?.child.kind !== "exact")
+      throw new Error("Commit tool lost live consumed authority or exact child")
+  }
+  const commitToolOwner = (
+    input: unknown,
+    invocation: Pick<Tool.Context, "sessionID" | "agent" | "messageID" | "id">,
+  ) =>
+    Effect.gen(function* () {
+      const cap = yield* attempt(() => {
+        live()
+        decodeCommitterInput(input)
+        const cap = executing?.cap
+        if (
+          !(cap instanceof CommitClaim) ||
+          invocation.agent !== "committer" ||
+          executing?.native?.child.kind !== "exact" ||
+          executing.native.child.childID !== invocation.sessionID
+        )
+          throw new Error("Caller is not the admitted Committer")
+        commitGate(cap)
+        return cap
+      })
+      const rootHistory = yield* context.session.context({ sessionID: Session.ID.make(cap.claim.rootSessionID) })
+      const root = yield* context.session.get({ sessionID: Session.ID.make(cap.claim.rootSessionID) })
+      const history = yield* context.session.context({ sessionID: invocation.sessionID })
+      const child = yield* context.session.get({ sessionID: invocation.sessionID })
+      return yield* attempt(() => {
+        commitGate(cap)
+        rootIdentity(cap.claim, root)
+        if (DateTime.toEpochMillis(root.time.created) !== cap.evidence.boundary.created)
+          throw new Error("Commit root creation changed")
+        reviewBoundary(cap.evidence, rootHistory, cap.control.id)
+        actualCall(cap, rootHistory, cap.reservation, "running")
+        commitChild(cap, child, history)
+        const messages = history.filter((message) => message.id === invocation.messageID)
+        const message = messages[0]
+        const parts =
+          message?.type === "assistant"
+            ? message.content.filter((part) => part.type === "tool" && part.id === invocation.id)
+            : []
+        const part = parts[0]
+        if (
+          messages.length !== 1 ||
+          parts.length !== 1 ||
+          part?.type !== "tool" ||
+          part.name !== committerGitName ||
+          part.state.status !== "running" ||
+          !same(part.state.input, input)
+        )
+          throw new Error("Committer tool input/caller is missing or ambiguous")
+        return cap
+      })
+    }).pipe(Effect.mapError((error) => (error instanceof Tool.Error ? error : fail(String(error)))))
+  const commitReceipt = (cap: CommitClaim, facts: string) =>
+    [
+      facts,
+      `Approved Reviewer provenance: ${JSON.stringify(cap.evidence.reviewer)}`,
+      `Committer provenance: ${JSON.stringify({ decisionID: cap.decisionID, call: executing?.cap === cap ? executing.native?.call : undefined, child: executing?.cap === cap ? executing.native?.child : undefined })}`,
+      `Approved target: ${JSON.stringify(cap.evidence.implementation.target)}`,
+    ].join("\n")
+  const executeCommitterGit = (input: unknown, invocation: Tool.Context) =>
+    Effect.uninterruptibleMask((restore) =>
+      Effect.gen(function* () {
+        const cap = yield* restore(commitToolOwner(input, invocation))
+        const operation = decodeCommitterInput(input).operation
+        const content = yield* attempt(() => cap.git.execute(input, () => commitGate(cap)))
+        if (operation === "commit") {
+          // Once history may have changed, retain observed facts before handing
+          // control back to an interruptible model/transport/native completion.
+          const receipt = commitReceipt(cap, content)
+          yield* context.storage
+            .set(`commit-receipt:v1:${cap.decisionID}`, {
+              rootSessionID: cap.evidence.implementation.claim.rootSessionID,
+              receipt,
+            })
+            .pipe(Effect.mapError((error) => fail(`Commit facts storage failed; no retry: ${String(error)}`)))
+        }
+        return { content }
+      }),
+    ).pipe(
+      Effect.onError(() =>
+        Effect.sync(() => retireCommitCaller(invocation.sessionID, "Committer tool execution failed")),
+      ),
+      Effect.onInterrupt(() =>
+        Effect.sync(() => retireCommitCaller(invocation.sessionID, "Committer tool execution interrupted")),
+      ),
+    )
+  const decideCommit = (input: unknown) =>
+    Effect.gen(function* () {
+      const selected = yield* attempt(() => {
+        live()
+        if (
+          !exactKeys(input, ["decisionID", "action"]) ||
+          typeof input.decisionID !== "string" ||
+          (input.action !== "Commit" && input.action !== "Stop")
+        )
+          throw new Error("Malformed Commit selection")
+        const decision = pendingCommits.get(input.decisionID)
+        if (!decision) throw new Error("Commit decision is stale, spent, or unavailable")
+        pendingCommits.delete(decision.id) // Human grant spent synchronously before any await.
+        const rootID = decision.evidence.implementation.claim.rootSessionID
+        if (currentReviews.get(rootID) !== decision.evidence || decision.evidence.result.status !== "APPROVED")
+          throw new Error("Commit decision no longer owns exact APPROVED evidence")
+        currentReviews.delete(rootID)
+        return { decision, action: input.action }
+      })
+      const { decision, action } = selected
+      const rootID = Session.ID.make(decision.evidence.implementation.claim.rootSessionID)
+      if (action === "Stop") {
+        const receipt =
+          "Stopped by human decision after APPROVED. No Committer was launched and no Git mutation was issued."
+        yield* publishReceipt(rootID, receipt)
+        return terminal(receipt)
+      }
+      const cap = new CommitClaim(decision.id, decision.evidence)
+      return yield* Effect.gen(function* () {
+        let settled = false
+        let wakeAttempted = false
+        const outcome = yield* Effect.gen(function* () {
+          yield* attempt(() => {
+            acquire(cap)
+            workers.set(rootID, cap)
+            reviews.delete(rootID)
+            reviewedFresh(cap)
+          })
+          const history = yield* context.session.context({ sessionID: rootID })
+          const root = yield* context.session.get({ sessionID: rootID })
+          yield* attempt(() => {
+            local(cap)
+            rootIdentity(cap.claim, root)
+            if (!sameSettlement(root, cap.evidence.boundary)) throw new Error("Commit root settlement changed")
+            reviewBoundary(cap.evidence, history)
+            if ((latestActivity.get(rootID) ?? -1) > cap.evidence.boundary.rootEventSeq)
+              throw new Error("Commit review history/activity superseded")
+            reviewedFresh(cap)
+          })
+          wakeAttempted = true
+          const wake = yield* context.session.synthetic({
+            sessionID: rootID,
+            id: SessionMessage.ID.make(cap.control.id),
+            text: cap.control.text,
+            delivery: "steer",
+            resume: true,
+          })
+          yield* attempt(() => {
+            local(cap)
+            if (
+              wake.id !== cap.control.id ||
+              wake.sessionID !== rootID ||
+              wake.type !== "synthetic" ||
+              wake.delivery !== "steer" ||
+              wake.payload.text !== cap.control.text
+            )
+              throw new Error("Commit wake admission changed")
+          })
+        }).pipe(Effect.exit)
+        if (Exit.isFailure(outcome)) cap.close()
+        const completion = yield* Effect.gen(function* () {
+          if (!wakeAttempted) {
+            settled = true
+            if (Exit.isFailure(outcome)) throw Cause.squash(outcome.cause)
+            throw new Error("Commit wake was not admitted")
+          }
+          yield* context.session.wait({ sessionID: rootID }).pipe(
+            Effect.onInterrupt(() =>
+              Effect.sync(() => {
+                cap.close()
+                cap.git.close()
+              }),
+            ),
+          )
+          const lease = executing?.cap === cap ? executing : undefined
+          if (!lease?.native) {
+            settled = true
+            throw new Error("No Committer entered")
+          }
+          const childID = yield* attempt(() => {
+            if (lease.native?.child.kind !== "exact") throw new Error("Committer settlement identity unknown")
+            return Session.ID.make(lease.native.child.childID)
+          })
+          yield* context.session.wait({ sessionID: childID }).pipe(
+            Effect.onInterrupt(() =>
+              Effect.sync(() => {
+                cap.close()
+                cap.git.close()
+              }),
+            ),
+          )
+          const child = yield* context.session.get({ sessionID: childID })
+          const childHistory = yield* context.session.context({ sessionID: childID })
+          const rootHistory = yield* context.session.context({ sessionID: rootID })
+          const root = yield* context.session.get({ sessionID: rootID })
+          yield* attempt(() => {
+            local(cap)
+            rootIdentity(cap.claim, root)
+            commitChild(cap, child, childHistory)
+            if (!child.time.idle || !["succeeded", "failed", "interrupted"].includes(child.outcome ?? ""))
+              throw new Error("Committer settlement unproven")
+            settled = true
+            if (Exit.isFailure(outcome)) throw Cause.squash(outcome.cause)
+            if (
+              cap.toolFailure ||
+              cap.phase !== "consumed" ||
+              !cap.result ||
+              cap.childID !== childID ||
+              child.outcome !== "succeeded" ||
+              root.outcome !== "succeeded"
+            )
+              throw new Error(cap.toolFailure ?? "Committer completion was unverified")
+            const assistants = childHistory.filter((message) => message.type === "assistant")
+            const final = assistants.at(-1)
+            const terminals = assistants.filter((message) => message.finish === "stop")
+            if (
+              !final ||
+              terminals.length !== 1 ||
+              terminals[0] !== final ||
+              childHistory.at(-1)?.type !== "idle" ||
+              childHistory.some((message) => message.type === "idle" && message.outcome !== "succeeded") ||
+              assistants.some((message) =>
+                message.content.some(
+                  (part) => part.type === "tool" && !["completed", "error"].includes(part.state.status),
+                ),
+              ) ||
+              final.content
+                .filter((part) => part.type === "text")
+                .map((part) => part.text)
+                .join("") !== cap.nativeText
+            )
+              throw new Error("Committer terminal native result/history mismatch")
+            reviewBoundary(cap.evidence, rootHistory, cap.control.id)
+            const part = actualCall(cap, rootHistory, cap.reservation, "completed")
+            if (
+              part.state.status !== "completed" ||
+              part.state.metadata?.sessionID !== childID ||
+              part.state.metadata?.status !== "completed"
+            )
+              throw new Error("Committer published completion mismatch")
+          })
+        }).pipe(Effect.exit)
+        const facts = cap.git.final()
+        const receipt = commitReceipt(
+          cap,
+          Exit.isFailure(completion)
+            ? `Commit did not reach a verified successful terminal state.\nNative completion unverified: ${String(Cause.squash(completion.cause)).slice(0, 2000)}\nObserved Git operation facts:\n${facts}`
+            : facts,
+        )
+        cap.git.close()
+        cap.close()
+        // Facts are persisted once, without any loader or authority recovery path.
+        // Keep exclusion through durable publication; failure cannot resend a wake.
+        const receiptID = `msg_${randomUUID()}`
+        receipts.set(receiptID, Object.freeze({ rootSessionID: rootID, text: receipt }))
+        return yield* context.storage
+          .set(`commit-receipt:v1:${decision.id}`, { rootSessionID: rootID, id: receiptID, receipt })
+          .pipe(
+            Effect.andThen(() =>
+              settled && wakeAttempted
+                ? context.session
+                    .synthetic({ ...receiptInput(rootID, receipt), id: SessionMessage.ID.make(receiptID) })
+                    .pipe(
+                      Effect.as(terminal(receipt)),
+                      Effect.catchCause((cause) =>
+                        Effect.succeed(
+                          terminal(
+                            `${receipt}\nDurable facts stored; root receipt publication unavailable: ${String(Cause.squash(cause))}`,
+                          ),
+                        ),
+                      ),
+                    )
+                : Effect.succeed(
+                    terminal(
+                      `${receipt}\nDurable facts stored; root publication withheld without proven execution settlement.`,
+                    ),
+                  ),
+            ),
+            Effect.catchCause((cause) =>
+              Effect.succeed(terminal(`${receipt}\nDurable receipt storage failed: ${String(Cause.squash(cause))}`)),
+            ),
+            Effect.ensuring(
+              Effect.sync(() => {
+                if (settled && cap.git.processSettled && executing?.cap === cap) executing = undefined
+              }),
+            ),
+          )
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            cap.close()
+            cap.git.close()
+            if (executing?.cap === cap && !executing.native) executing = undefined
+          }),
+        ),
+      )
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.succeed(
+          terminal(`Commit admission was unverified; no retry was issued.\nReason: ${String(Cause.squash(cause))}`),
+        ),
+      ),
+    )
+
   const decideRepair = (input: unknown) =>
     Effect.gen(function* () {
       const selected = yield* attempt(() => {
@@ -1435,7 +1879,7 @@ export function nativeAdmission(context: Context) {
           acquire(cap) // No queue/retry, and observations must follow acquisition.
           workers.set(rootID, cap)
           reviews.delete(rootID)
-          repairFresh(cap)
+          reviewedFresh(cap)
         })
         return yield* runCycle(cap)
       }).pipe(
@@ -1467,6 +1911,11 @@ export function nativeAdmission(context: Context) {
           : Effect.fail(fail("Reviewer terminal notification lacks a trusted session-log position")),
       )
     }
+    if (
+      /^session\.(permissions|agent\.selected|moved|deleted|forked|revert|compaction|instructions)/.test(event.type) &&
+      !(event.type === "session.instructions.updated" && event.data.text === undefined)
+    )
+      retireCommitCaller(id, "Admitted Committer policy/location/history was superseded")
     const boundary = reviewBoundaries.get(id)
     if (boundary && historicalReviewEvent(event, boundary)) return
     if (
@@ -1494,7 +1943,10 @@ export function nativeAdmission(context: Context) {
       latestActivity.set(id, Math.max(latestActivity.get(id) ?? -1, seq))
     }
     const owner = workers.get(id)
-    if (owner instanceof RepairClaim && (owner.phase === "available" || owner.phase === "reserved")) {
+    if (
+      owner instanceof CommitClaim ||
+      (owner instanceof RepairClaim && (owner.phase === "available" || owner.phase === "reserved"))
+    ) {
       const control = owner.control
       const item = event.data.item as { type?: unknown; payload?: { text?: unknown } } | undefined
       const ownControl =
@@ -1513,6 +1965,8 @@ export function nativeAdmission(context: Context) {
     }
     for (const [key, decision] of pending)
       if (decision.evidence.implementation.claim.rootSessionID === id) pending.delete(key)
+    for (const [key, decision] of pendingCommits)
+      if (decision.evidence.implementation.claim.rootSessionID === id) pendingCommits.delete(key)
     currentReviews.delete(id)
   }
   const currentApproval = (rootID: string) => {
@@ -1542,6 +1996,7 @@ export function nativeAdmission(context: Context) {
     for (const cap of workers.values()) cap.teardown()
     workers.clear()
     pending.clear()
+    pendingCommits.clear()
     currentReviews.clear()
     receipts.clear()
     settledRoots.clear()
@@ -1562,6 +2017,8 @@ export function nativeAdmission(context: Context) {
     execute,
     authorize,
     decideRepair,
+    decideCommit,
+    executeCommitterGit,
     revise,
     teardown,
     eventReceived,
@@ -1569,6 +2026,7 @@ export function nativeAdmission(context: Context) {
     sponsorPermission,
     actor,
     reviewerActor,
+    committerActor,
     caps,
   }
 }

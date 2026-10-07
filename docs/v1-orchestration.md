@@ -16,6 +16,7 @@ selected read-only OpenCode source checkout.
 | Explorer | Read/glob/grep investigation for Planner, plus native websearch for focused questions that materially depend on current/external evidence; returns advisory findings. Cannot delegate, implement, publish a Plan or authorize work. |
 | Implementer | Fresh native `authorized_implementer` child for each distinct one-shot human grant (initial Authorize or later Repair). Editing, testing and development shell capability are bounded by the frozen proposal; delegation, session control and reserved history effects are prohibited. |
 | Reviewer | Fresh read-only native sibling, independent of Implementer. Inspect the verified implementation using read/glob/grep and bounded `reviewer_git`; return review evidence without repair or Commit authority. |
+| Committer | Fresh native sibling admitted only after an explicit Commit decision. Use only bounded `committer_git`; choose a message and request one trusted normal commit attempt. |
 
 The [TUI entry](../.opencode/plugins/opencode-agents/tui.tsx) owns root creation
 correlation, Plan publication lifecycle, retained Plan presentation and the local
@@ -56,7 +57,14 @@ original Git baseline → fresh Orchestrator root
 → implementation receipt → automatic fresh read-only Reviewer
 → trusted review provenance/result verification + post-settlement target revalidation
 → factual review receipt → release exclusion
-   APPROVED / INCONCLUSIVE / unverified → STOP before Commit
+   INCONCLUSIVE / unverified → STOP before Commit
+   verified APPROVED → live trusted Commit / Stop decision
+     Stop → retire decision, no Committer or Git mutation
+     Commit → spend decision → distinct Commit owner → reacquire exclusion
+       → fresh host/Git approval verification → fresh Committer
+       → trusted exact complete staging → prepared index/tree proof
+       → spend one commit attempt → normal commit with hooks
+       → trusted postflight + settlement → durable terminal facts/root receipt
    verified CHANGES_REQUESTED → live trusted Repair / Stop decision
      Stop → retire decision, no worker → end before Commit
      Repair → spend decision → distinct one-shot claim → reacquire exclusion
@@ -66,8 +74,8 @@ original Git baseline → fresh Orchestrator root
 
 Cancel sends no authorization claim and no execution wake. A stable dirty
 baseline permits planning-only publication, without Authorize controls. Failure
-ends the attempt without reopening authority. Committer and Commit authorization
-are not implemented; Reviewer approval cannot authorize a commit.
+ends the attempt without reopening authority. Reviewer approval supplies evidence
+for a separate explicit Commit decision; it never authorizes a commit.
 
 ## Planning and publication
 
@@ -194,7 +202,8 @@ wake, Planner, verification or publication failure closes the attempt; no failur
 restores a superseded candidate or automatically retries planning.
 
 Authorization of the latest verified Plan uses the existing Implementer and
-Reviewer handoff, verification and receipt behavior unchanged, ending before Commit.
+Reviewer handoff and verification unchanged, followed by the separate human
+Commit / Stop decision only on fresh verified APPROVED.
 
 ## Native implementation admission and verification
 
@@ -323,9 +332,78 @@ no-op repairs. Old control/call/child/result identities are inert. Another verif
 `CHANGES_REQUESTED` creates another decision; each cycle requires a new human grant.
 No persisted repair counter, workflow phase, queue or scheduler exists.
 
-Only the newest live exact trusted `APPROVED` target is current evidence for future
+Only the newest live exact trusted `APPROVED` target is current evidence for
 separate Commit authorization. Drift or another governed lease retires it;
-historical receipts cannot revive it. Committer remains unimplemented.
+historical receipts cannot revive it.
+
+## Human-authorized commit
+
+At the final publication-time verified APPROVED branch, `nativeAdmission` retains
+`VerifiedReview` in `currentReviews` as evidence and creates an opaque pending
+Commit decision. Its immutable binding includes the original candidate/root/HEAD,
+implementation and exact target, parsed review and Reviewer identities, root
+history digest/length, creation/idle epochs, exact idle ID and durable event sequence.
+Neither the evidence map nor the review receipt grants authority.
+
+The TUI shares the existing local post-review composer-top composition, paging,
+readable-frame checks and stale callback handling with Repair. APPROVED presents
+Commit / Stop, reviewed paths/root/base HEAD and Reviewer provenance. The client
+sends only decision ID/action to `decideCommit`; it cannot supply or reconstruct
+approval evidence. Stop retires the decision without a worker or Git mutation.
+
+Commit spends the pending decision before any await and installs a distinct
+`CommitClaim`, leaving implementation CAP and Repair claims spent. It reacquires
+exclusion and rechecks live root/history/settlement plus exact Git target before
+waking Orchestrator. The exact three-key foreground call is checked again after
+model preparation at native entry, then sponsored by a Committer-only actor.
+The pinned host creates a fresh child and reports identity before prompting.
+Committer uses the same declarative `/agent-models` roster as other managed roles.
+
+`committer_git` accepts status, diff, five recent history subjects, prepare,
+staged, commit(message), and result. Diff before preparation covers tracked
+content; staged inspection covers the complete prepared change including additions.
+Only the exact current admitted child may execute it. Each tool execution freshly
+reads root/child/history, proves bootstrap/native call and published tool input,
+and synchronously rechecks activation/owner before operations. Role permissions
+and tool hooks deny every other capability, including shell and delegation,
+regardless of appended configuration allows. Admission or operation failure closes
+that authority; restoring bytes cannot revive it.
+
+`git.ts` reuses the review file fingerprint entries without weakening the original
+ReviewTarget digest. Preparation verifies that original digest, retains its actual
+worktree entries, stages the complete reviewed path set with literal no-rename
+identity, then proves exact staged path equality and raw blob/mode/symlink/deletion
+correspondence. All approved content, including unchanged tracked files, must match
+the index; no ordinary unstaged/untracked delta may remain. One bounded batch blob
+read avoids a subprocess per file. Unsupported index entries, clean/process filters
+and transformed bytes fail closed. The resulting exact index tree is retained in
+activation memory; staging intentionally changes the original review digest.
+
+Immediately before commit, trusted code repeats the full prepared proof and live
+owner gate, spends the attempt, then directly invokes fixed argv `git commit` once.
+Message text is literal bounded data. The system Git executable and narrow environment
+exclude inherited Git/loader overrides, alternate indexes/repositories, external
+diff helpers and lazy fetching, while retaining normal user configuration and
+repository hooks. No amend, no-verify, push, other Git mutation or retry is exposed.
+
+Postflight runs regardless of exit status. Success requires exactly one new commit
+with the original sole parent, exact no-rename changed paths and prepared tree,
+a matching final index, clean ordinary Git state and unchanged approved actual
+worktree entries. Hook rejection/mutation, process failure with changed history,
+extra commits, drift or inconclusive observations stop without another mutation.
+Final state is checked again after native child settlement. Unknown child or
+commit-process settlement keeps exclusion until teardown.
+
+Git operation facts are stored without interruption under the unique root-bound
+`commit-receipt:v1:<decisionID>` key before returning control to the model. Native
+settlement finalizes that same factual record and publishes one non-resuming
+synthetic root receipt; there is only one root publication. Success includes hash, observed subject,
+exact paths, Reviewer provenance and clean final state. Failure includes reason,
+known HEAD/changed/staged state and history uncertainty. Lost publication is reported
+without resending; unknown settlement retains durable facts without steering an
+active loop. Storage failures are explicit. No code loads these facts as authority;
+restart loses pending decisions and attempts. There is no persisted Commit phase,
+attempt counter, queue or recovery machinery.
 
 ## Receipts, exclusion and STOP
 
@@ -352,7 +430,7 @@ implementation, verification, review, revalidation and receipt publication. Root
 idle or closed CAP alone cannot release it: exact native child settlement must be
 proven. Failed/interrupted exact settlement can release exclusion without verified
 success; unknown or ambiguous child settlement holds it until server teardown.
-Verified `CHANGES_REQUESTED` releases exclusion during the human pause, after
+Verified `APPROVED` and `CHANGES_REQUESTED` release exclusion during the human pause, after
 factual publication. Repair reacquires it before freshness observation and holds
 it through the next implementation/review/publication. Unknown post-entry
 settlement retains exclusion. Other roots may retain pending Plans, but
@@ -361,12 +439,13 @@ authorization still requires fresh Git evidence.
 Failure, refusal, wake ambiguity, invalid result, drift and teardown never reopen
 authority or issue a replacement. Plugin teardown revokes local slots and retained
 executor closures. Restart begins without claims; transcripts and durable records
-cannot restore authority. Every terminal path ends before Commit.
+cannot restore authority. Commit outcomes are terminal after their one attempt;
+all other terminal paths issue no Commit.
 
 ## Configuration and validation
 
 `/agent-models`, also in the command palette, stores personal model/variant
-preferences for Planner, Explorer, Implementer and Reviewer in OpenCode-owned
+preferences for Planner, Explorer, Implementer, Reviewer and Committer in OpenCode-owned
 plugin storage, keyed by directory and workspace identity. Public HTTP RPC
 routing selects a directory; workspace-aware keys do not establish HTTP workspace
 routing support. Reset exposes normal agent configuration/parent inheritance.
@@ -375,7 +454,7 @@ Unavailable saved selections fail trusted preparation without fallback.
 Preferences affect fresh native child calls only. Trusted code first checks the
 original three-key contract, then adds the selection to the executor copy.
 Preparation completes before Planner admission is spent, Implementer authority
-is consumed or Reviewer enters native execution. Preferences are configuration,
+is consumed or Reviewer/Committer enters native execution. Preferences are configuration,
 not CAP or scope authority; existing children retain their selections.
 
 Automated checks use trusted host/transport/Git-observer/TUI doubles for orchestration
@@ -403,5 +482,9 @@ Run `bun run check`, then `git diff --check`, for repository validation.
   writers or exhaustively detect concealed shell effects.
 - Synthetic Plan/receipt publication is model-facing pending input. A supported
   native display-only transcript API remains a host gap.
-- Separate Commit authorization, Committer and Reviewer-owned executable validation
-  remain future work. Read-only review does not grant any of them.
+- Reviewer-owned executable validation remains future work. Read-only review
+  does not grant executable validation or Commit authority.
+- Git output is bounded; unsupported filters/topology or oversized observations
+  fail closed. Fixed hook PATH may need manual dogfood with repository hooks.
+- Normal hooks and same-user external writers remain outside OS sandbox guarantees;
+  observed mutation/ambiguity is terminal and never repaired automatically.

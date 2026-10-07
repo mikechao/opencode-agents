@@ -9,6 +9,7 @@ import { NativeCap, type Generation } from "../src/cap.ts"
 import * as attemptModule from "../src/attempt.ts"
 import * as gitModule from "../src/git.ts"
 import { observeGit, type GitSnapshot } from "../src/git.ts"
+import { CommitGit } from "../src/committer-git.ts"
 import { reviewerGitInput, reviewerGitName } from "../src/reviewer-git.ts"
 import { makeCandidate, parseProposal, renderPlan } from "../src/proposal.ts"
 import {
@@ -262,6 +263,7 @@ type FakeOptions = {
   decision?: boolean | undefined
   onAuthorize?: (claim: any) => Promise<string | CycleOutcome>
   onRepair?: (input: any) => Promise<CycleOutcome>
+  onCommit?: (input: any) => Promise<CycleOutcome>
   onDecision?: () => void
   onWait?: (sessionID: string) => void | Promise<void>
   onGet?: (sessionID: string) => void
@@ -329,6 +331,7 @@ function fake(root: string, options: FakeOptions = {}) {
   const calls = {
     claims: [] as any[],
     repairs: [] as any[],
+    commits: [] as any[],
     decided: [] as string[],
     synthetic: [] as any[],
     receipts: [] as any[],
@@ -476,6 +479,10 @@ function fake(root: string, options: FakeOptions = {}) {
             kind: "terminal",
             receipt: `Implementation gate complete: HEAD ${input.candidate.head} unchanged. Resulting paths (0): (none). STOP before Reviewer / Commit.`,
           }
+        },
+        decideCommit: async (input: any) => {
+          calls.commits.push(structuredClone(input))
+          return options.onCommit ? await options.onCommit(input) : { kind: "terminal", receipt: "Stopped" }
         },
         decideRepair: async (input: any) => {
           calls.repairs.push(structuredClone(input))
@@ -4333,7 +4340,7 @@ snapshotTest(
 
 // Native admission uses host doubles and the same test-scoped Git observer.
 // No real repositories, native child imports, or production injection seams.
-import { Cause, DateTime, Effect, Exit, Schema, Stream } from "effect"
+import { Cause, DateTime, Effect, Exit, Fiber, Schema, Stream } from "effect"
 import { Tool as NativeTool } from "@opencode/schema/tool"
 import { Model as NativeModel } from "@opencode/schema/model"
 import { agentModels, preferenceKey, parseSelection, type Role } from "../src/agent-models.ts"
@@ -4448,6 +4455,7 @@ function serverFake(root: string, _observer: SnapshotObserver, workspaceID?: str
     receipts: [] as any[],
     // Review records are separate so existing Implementer admission assertions
     // continue to prove that boundary; review tests inspect both sets explicitly.
+    storedReceipts: new Map<string, any>(),
     reviewWakes: [] as any[],
     reviewOriginals: [] as any[],
     reviewEntries: [] as any[],
@@ -4499,6 +4507,7 @@ function serverFake(root: string, _observer: SnapshotObserver, workspaceID?: str
   const context = {
     location,
     storage: {
+      set: (key: string, value: any) => Effect.sync(() => f.storedReceipts.set(key, structuredClone(value))),
       get: (key: string) =>
         Effect.try({
           try: () => {
@@ -4624,6 +4633,18 @@ function serverFake(root: string, _observer: SnapshotObserver, workspaceID?: str
         { action: "subagent", resource: "reviewer", effect: "allow" },
       ]
     })
+    editor.update(admission.committerActor, (agent: any) => {
+      agent.permissions = [
+        { action: "*", resource: "*", effect: "deny" },
+        { action: "subagent", resource: "committer", effect: "allow" },
+      ]
+    })
+    editor.update("committer", (agent: any) => {
+      agent.permissions = [
+        { action: "*", resource: "*", effect: "deny" },
+        { action: "committer_git", resource: "*", effect: "allow" },
+      ]
+    })
     editor.update("reviewer", (agent: any) => {
       agent.permissions = [
         { action: "*", resource: "*", effect: "deny" },
@@ -4647,7 +4668,9 @@ function serverFake(root: string, _observer: SnapshotObserver, workspaceID?: str
             ? "ses_planner"
             : reviewing
               ? "ses_review"
-              : "ses_child"
+              : input.agent === "committer"
+                ? "ses_committer"
+                : "ses_child"
           : `${invocation.sessionID}-${input.agent}`
       const roleNumber = (reviewing ? f.reviewOriginals : originals).filter(
         (entry) => entry.input.agent === input.agent && entry.context.sessionID === invocation.sessionID,
@@ -6853,7 +6876,7 @@ snapshotTest(
       }
       const outcome = await f.authorize()
       expect(outcome).toBe(
-        `Implementation gate completed successfully.\nHEAD ${HEAD} remained unchanged.\nResulting paths (1): "old.txt".\nReview APPROVED.\nImplementation satisfies the proposal.\nReview target remained unchanged at verification. Review grants no mutation or Commit authority.\nThis attempt ended before Commit.`,
+        `Implementation gate completed successfully.\nHEAD ${HEAD} remained unchanged.\nResulting paths (1): "old.txt".\nReview APPROVED.\nImplementation satisfies the proposal.\nReview target remained unchanged at verification. Review grants no mutation or Commit authority.\nNo Commit has been authorized. Any Commit requires a separate live Commit / Stop decision. Approval and receipts grant no authority.`,
       )
       expect(f.receipts).toHaveLength(2)
       expect(outcome).toBe(f.receipts.map((receipt) => receipt.text).join("\n"))
@@ -7101,7 +7124,7 @@ snapshotTest(
   },
 )
 
-test("Effect server keeps Authorize and model settings RPCs separate with two narrow sponsors and a native wrapper", async () => {
+test("Effect server keeps Authorize and model settings RPCs separate with three narrow sponsors and a native wrapper", async () => {
   const host = sponsorHost(),
     hooks: any[] = [],
     added: any[] = [],
@@ -7141,17 +7164,18 @@ test("Effect server keeps Authorize and model settings RPCs separate with two na
         yield* serverPlugin.effect(context)
         expect(native.input).toBe(schema)
         expect(native.execute).not.toBe(execute)
-        expect(added).toHaveLength(1)
-        expect(added[0]).toMatchObject({ name: reviewerGitName, options: { codemode: false } })
-        expect(added[0].input).toBe(reviewerGitInput)
+        expect(added).toHaveLength(2)
+        expect(added[0]).toMatchObject({ name: "committer_git", options: { codemode: false } })
+        expect(added[1]).toMatchObject({ name: reviewerGitName, options: { codemode: false } })
+        expect(added[1].input).toBe(reviewerGitInput)
         expect(rpcs).toHaveLength(2)
         expect(rpcs[0].definition).toBe(authorizeRpc)
-        expect(Object.keys(rpcs[0].handlers)).toEqual(["authorize", "decideRepair", "revise"])
+        expect(Object.keys(rpcs[0].handlers)).toEqual(["authorize", "decideCommit", "decideRepair", "revise"])
         expect(rpcs[1].definition.id).toBe("opencode-agents.models")
         expect(Object.keys(rpcs[1].handlers)).toEqual(["list", "set", "reset"])
         expect(hooks.map((item) => item.name)).toEqual(["execute.before"])
         const editors = [...host.roles().values()]
-        expect(editors).toHaveLength(2)
+        expect(editors).toHaveLength(3)
         expect(editors[0]).toMatchObject({
           hidden: true,
           mode: "subagent",
@@ -7307,7 +7331,7 @@ snapshotTest(
     expect(implementation.text).not.toContain("Implementation satisfies the proposal.")
     expect(implementation.text).not.toContain("Review grants no mutation or Commit authority")
     expect(review.text).toBe(
-      "Review APPROVED.\nImplementation satisfies the proposal.\nReview target remained unchanged at verification. Review grants no mutation or Commit authority.\nThis attempt ended before Commit.",
+      "Review APPROVED.\nImplementation satisfies the proposal.\nReview target remained unchanged at verification. Review grants no mutation or Commit authority.\nNo Commit has been authorized. Any Commit requires a separate live Commit / Stop decision. Approval and receipts grant no authority.",
     )
     expect(review.text).not.toContain(HEAD)
     expect(review.text).not.toContain("Resulting paths")
@@ -9259,7 +9283,7 @@ snapshotTest(
     f.state.reviewOutput = JSON.stringify({ status: "APPROVED", summary: "Fixed", findings: [] })
     // The next repair is byte-identical; it must still get a new review.
     const approved = await chooseRepair(f, second.decision.id)
-    expect(approved.kind).toBe("terminal")
+    expect(approved.kind).toBe("commit")
     expect(approved.receipt).toContain("Review APPROVED")
     expect(f.originals.map((entry) => entry.context.messageID)).toHaveLength(3)
     expect(new Set(f.originals.map((entry) => entry.context.messageID)).size).toBe(3)
@@ -10523,3 +10547,478 @@ snapshotTest("Repair navigation during decision reads retires the callback befor
   initial.dispose()
   review.dispose()
 })
+
+async function pendingCommit(f: ReturnType<typeof serverFake>, observer: SnapshotObserver) {
+  f.state.run = async () => {
+    await f.dispatch()
+    observer.configure(f.candidate.root, HEAD, ["old.txt"])
+  }
+  const outcome = await f.authorizeOutcome()
+  expect(outcome.kind).toBe("commit")
+  if (outcome.kind !== "commit") throw new Error(outcome.receipt)
+  return outcome
+}
+const chooseCommit = (f: ReturnType<typeof serverFake>, decisionID: string, action: "Commit" | "Stop" = "Commit") =>
+  Effect.runPromise(f.admission.decideCommit({ decisionID, action }))
+
+snapshotTest(
+  "APPROVED is evidence only: explicit Stop creates no Committer and spends its separate decision",
+  async (observer) => {
+    const f = serverFake(snapshotFixture(observer), observer)
+    const approved = await pendingCommit(f, observer)
+    expect(f.originals.map((entry) => entry.input.agent)).toEqual(["authorized_implementer"])
+    expect(f.admission.currentApproval("ses_parent")?.reviewer).toEqual(approved.decision.reviewer)
+    expect(checkedCycleOutcome(approved)).toEqual(approved)
+    const stopped = await chooseCommit(f, approved.decision.id, "Stop")
+    expect(stopped.kind).toBe("terminal")
+    expect(stopped.receipt).toContain("No Committer was launched")
+    expect(observeGit(f.candidate.root).head).toBe(HEAD)
+    expect(f.originals).toHaveLength(1)
+    expect(f.admission.currentApproval("ses_parent")).toBeUndefined()
+    expect((await chooseCommit(f, approved.decision.id)).receipt).toContain("stale, spent")
+    expect((await chooseRepair(f, approved.decision.id)).receipt).toContain("stale, spent")
+  },
+)
+
+snapshotTest(
+  "Commit revalidates exact target, HEAD, root, settlement, history and activation without event delivery",
+  async (observer) => {
+    for (const drift of [
+      "content",
+      "paths",
+      "head",
+      "location",
+      "settlement",
+      "created",
+      "history",
+      "permissions",
+      "event",
+      "activation",
+      "teardown",
+    ] as const) {
+      const f = serverFake(snapshotFixture(observer), observer)
+      const approved = await pendingCommit(f, observer)
+      if (drift === "content") observer.targetDigests.set(f.candidate.root, "b".repeat(64))
+      if (drift === "paths") observer.configure(f.candidate.root, HEAD, ["old.txt", "outside.txt"])
+      if (drift === "head") observer.configure(f.candidate.root, "2".repeat(40), ["old.txt"])
+      if (drift === "location") f.sessions.ses_parent.location.directory += "/other"
+      if (drift === "settlement") f.sessions.ses_parent.time.idle++
+      if (drift === "created") f.sessions.ses_parent.time.created++
+      if (drift === "history") f.histories.ses_parent[0].text += " changed"
+      if (drift === "permissions") f.sessions.ses_parent.permissions = [{ action: "*", resource: "*", effect: "allow" }]
+      if (drift === "event")
+        f.admission.eventReceived({
+          id: "evt_unrelated-input",
+          type: "session.synthetic",
+          data: { sessionID: "ses_parent", text: "Approval receipt copy" },
+        })
+      if (drift === "activation") f.context.location.directory += "/other"
+      if (drift === "teardown") f.admission.teardown()
+      // Refusal path must not accidentally dispatch an old Implementer after rejection.
+      f.state.run = async () => {}
+      const result = await chooseCommit(f, approved.decision.id)
+      expect(result.kind).toBe("terminal")
+      expect(result.receipt).toContain("unverified")
+      expect(f.originals).toHaveLength(1)
+      expect(f.wakes).toHaveLength(1)
+      expect((await chooseCommit(f, approved.decision.id)).receipt).toContain(
+        drift === "teardown" ? "revoked" : "stale, spent",
+      )
+    }
+  },
+)
+
+snapshotTest(
+  "one explicit Commit launches one fresh child; structured calls bind exact live child and cannot widen capability",
+  async (observer) => {
+    const f = serverFake(snapshotFixture(observer), observer)
+    const approved = await pendingCommit(f, observer)
+    const selected = parseSelection({ providerID: "test", id: "chosen", variant: "high" })
+    f.modelPreferences.set(preferenceKey(f.context.location, "committer"), selected)
+    const operation = spyOn(CommitGit.prototype, "execute").mockImplementation((_input, gate) => {
+      gate()
+      return "Trusted prepared facts"
+    })
+    const final = spyOn(CommitGit.prototype, "final").mockReturnValue(
+      "Commit succeeded.\nCommit: " + "2".repeat(40) + "\nFinal staged/worktree state: clean.",
+    )
+    f.state.run = async () => {
+      await f.dispatch(JSON.parse(f.wakes.at(-1).text.split("\n")[1]))
+    }
+    f.state.onNative = async () => {
+      const invocation = {
+        sessionID: "ses_committer",
+        agent: "committer",
+        messageID: "commit-operation",
+        id: "git-commit",
+      } as any
+      const part = {
+        type: "tool",
+        id: invocation.id,
+        name: "committer_git",
+        state: { status: "running", input: { operation: "prepare" } },
+      }
+      f.histories.ses_committer.splice(1, 0, {
+        type: "assistant",
+        id: invocation.messageID,
+        agent: "committer",
+        model,
+        content: [part],
+      })
+      await Effect.runPromise(f.admission.before({ ...invocation, tool: "committer_git", input: part.state.input }))
+      await Effect.runPromise(f.admission.executeCommitterGit(part.state.input, invocation))
+      expect(operation).toHaveBeenCalledTimes(1)
+      await expect(
+        Effect.runPromise(
+          f.admission.executeCommitterGit(part.state.input, { ...invocation, sessionID: "ses_review" }),
+        ),
+      ).rejects.toThrow("admitted Committer")
+    }
+    try {
+      const receipt = await chooseCommit(f, approved.decision.id)
+      expect(receipt.receipt).toContain("Commit succeeded")
+      expect(f.originals.map((entry) => entry.input.agent)).toEqual(["authorized_implementer", "committer"])
+      expect(f.originals[1].input.model).toBe("test/chosen#high")
+      expect(f.sessions.ses_committer.parentID).toBe("ses_parent")
+      expect(f.sessions.ses_committer.agent).toBe("committer")
+      expect(f.storedReceipts.get(`commit-receipt:v1:${approved.decision.id}`).receipt).toBe(receipt.receipt)
+      expect(f.receipts.at(-1).text).toBe(receipt.receipt)
+      expect(receipt.receipt).toContain(JSON.stringify(approved.decision.reviewer))
+      expect((await chooseCommit(f, approved.decision.id)).receipt).toContain("stale, spent")
+      expect(f.originals).toHaveLength(2)
+      const restarted = nativeAdmission(f.context)
+      expect(
+        (await Effect.runPromise(restarted.decideCommit({ decisionID: approved.decision.id, action: "Commit" })))
+          .receipt,
+      ).toContain("stale, spent")
+    } finally {
+      operation.mockRestore()
+      final.mockRestore()
+    }
+  },
+)
+
+snapshotTest(
+  "Committer permission narrowing and tool admission reject shell, delegation, unauthorized calls and child drift",
+  async (observer) => {
+    for (const failure of [
+      "shell",
+      "delegate",
+      "bootstrap",
+      "parent",
+      "location",
+      "late-location",
+      "permissions",
+      "input",
+    ] as const) {
+      const f = serverFake(snapshotFixture(observer), observer)
+      const approved = await pendingCommit(f, observer)
+      const operation = spyOn(CommitGit.prototype, "execute")
+      f.host.appendConfig([{ action: "*", resource: "*", effect: "allow" }])
+      expect(await Effect.runPromise(f.host.evaluate("committer", "shell", ["git commit"]))).toBe("deny")
+      f.state.run = async () => {
+        await f.dispatch(JSON.parse(f.wakes.at(-1).text.split("\n")[1]))
+      }
+      f.state.onNative = async () => {
+        const invocation = {
+          sessionID: "ses_committer",
+          agent: "committer",
+          messageID: "bad-operation",
+          id: "bad-call",
+        } as any
+        const input = { operation: "prepare" }
+        f.histories.ses_committer.splice(1, 0, {
+          type: "assistant",
+          id: invocation.messageID,
+          agent: "committer",
+          model,
+          content: [{ type: "tool", id: invocation.id, name: "committer_git", state: { status: "running", input } }],
+        })
+        if (failure === "bootstrap") f.histories.ses_committer[0].text += " changed"
+        if (failure === "parent") f.sessions.ses_committer.parentID = "other"
+        if (failure === "location") f.sessions.ses_committer.location.directory += "/other"
+        if (failure === "late-location")
+          f.state.onRead = (kind, id) => {
+            if (kind === "get" && id === "ses_parent") f.sessions.ses_committer.location.directory += "/other"
+          }
+        if (failure === "permissions")
+          f.sessions.ses_committer.permissions = [{ action: "*", resource: "*", effect: "allow" }]
+        await expect(
+          Effect.runPromise(
+            f.admission.before({
+              ...invocation,
+              tool: failure === "shell" ? "shell" : failure === "delegate" ? "subagent" : "committer_git",
+              input: failure === "input" ? { operation: "prepare", paths: ["other"] } : input,
+            }),
+          ),
+        ).rejects.toThrow()
+      }
+      try {
+        const result = await chooseCommit(f, approved.decision.id)
+        expect(result.receipt).toContain("did not reach a verified successful")
+        expect(operation).not.toHaveBeenCalled()
+        expect((await chooseCommit(f, approved.decision.id)).receipt).toContain("stale, spent")
+      } finally {
+        operation.mockRestore()
+      }
+    }
+  },
+)
+
+snapshotTest(
+  "Commit and Stop share the trusted readable decision surface and send only their opaque selector/action",
+  async (observer) => {
+    for (const action of ["Commit", "Stop"] as const) {
+      const root = snapshotFixture(observer),
+        f = fake(root)
+      const prior = tuiRepairOutcome(root)
+      const approved = {
+        kind: "commit" as const,
+        receipt: "Review APPROVED",
+        decision: {
+          ...prior.decision,
+          id: "live-commit",
+          result: { status: "APPROVED" as const, summary: "Approved", findings: [] as [] },
+        },
+      }
+      f.options.onAuthorize = async () => {
+        f.inboxes.parent.splice(0)
+        return approved
+      }
+      f.options.onCommit = async () => ({
+        kind: "terminal",
+        receipt: action === "Commit" ? "Commit succeeded" : "Stopped by human",
+      })
+      const cleanup = await activate(f),
+        initial = mount(f)
+      initial.click(0)
+      await settleUntil(() => f.slots.length === 2)
+      const decision = mount(f, "parent", false)
+      decision.click(action === "Commit" ? 0 : 1)
+      expect(f.calls.commits).toEqual([])
+      readyRepairFrame(f)
+      decision.click(action === "Commit" ? 0 : 1)
+      await settleUntil(() => f.slots.at(-1).removed)
+      expect(f.calls.commits).toEqual([{ decisionID: "live-commit", action }])
+      expect(f.calls.repairs).toEqual([])
+      initial.click(0)
+      decision.click(0)
+      decision.click(1)
+      expect(f.calls.commits).toHaveLength(1)
+      cleanup()
+      initial.dispose()
+      decision.dispose()
+    }
+  },
+)
+
+snapshotTest(
+  "stale Commit UI decisions, lost responses, and invalidated review events cannot be replayed",
+  async (observer) => {
+    for (const failure of ["event", "surface", "lost-response"] as const) {
+      const root = snapshotFixture(observer),
+        f = fake(root)
+      const prior = tuiRepairOutcome(root)
+      f.options.onAuthorize = async () => {
+        f.inboxes.parent.splice(0)
+        return {
+          kind: "commit",
+          receipt: "Review APPROVED",
+          decision: { ...prior.decision, result: { status: "APPROVED", summary: "Approved", findings: [] } },
+        }
+      }
+      f.options.onCommit = async () => {
+        throw new Error("lost Commit response")
+      }
+      const cleanup = await activate(f),
+        initial = mount(f)
+      initial.click(0)
+      await settleUntil(() => f.slots.length === 2)
+      const decision = mount(f, "parent", false)
+      readyRepairFrame(f)
+      if (failure === "event")
+        f.emit({ id: "evt_new-input", type: "session.synthetic", data: { sessionID: "parent", text: "New input" } })
+      if (failure === "surface") decision.buttons[0].width = 1
+      decision.click(0)
+      if (failure === "lost-response") await settleUntil(() => f.calls.toasts.length > 0)
+      decision.click(0)
+      decision.click(1)
+      expect(f.calls.commits).toHaveLength(failure === "lost-response" ? 1 : 0)
+      expect(f.calls.repairs).toEqual([])
+      cleanup()
+      initial.dispose()
+      decision.dispose()
+    }
+  },
+)
+
+snapshotTest("non-approved results and naked role/tool calls never create Commit authority", async (observer) => {
+  for (const status of ["CHANGES_REQUESTED", "INCONCLUSIVE"] as const) {
+    const f = serverFake(snapshotFixture(observer), observer)
+    f.state.reviewOutput = JSON.stringify(
+      status === "CHANGES_REQUESTED" ? repairFindings : { status, summary: "Unavailable", findings: [] },
+    )
+    f.state.run = async () => {
+      await f.dispatch()
+    }
+    const outcome = await f.authorizeOutcome()
+    expect(outcome.kind).toBe(status === "CHANGES_REQUESTED" ? "repair" : "terminal")
+    const id = outcome.kind === "repair" ? outcome.decision.id : "fabricated"
+    expect((await chooseCommit(f, id)).receipt).toContain("stale, spent")
+    await expect(f.dispatch({ agent: "committer", description: "Unauthorized", prompt: "Commit" })).rejects.toThrow(
+      "explicitly authorized",
+    )
+    await expect(
+      Effect.runPromise(
+        f.admission.executeCommitterGit({ operation: "commit", message: "Unauthorized" }, {
+          sessionID: "ses_review",
+          agent: "committer",
+        } as any),
+      ),
+    ).rejects.toThrow("admitted Committer")
+    expect(f.originals).toHaveLength(1)
+  }
+})
+
+snapshotTest(
+  "Commit facts survive RPC interruption after the Git effect; retained tool/executor closures cannot mutate again",
+  async (observer) => {
+    const f = serverFake(snapshotFixture(observer), observer)
+    const approved = await pendingCommit(f, observer)
+    const facts =
+      "Commit succeeded.\nCommit: " +
+      "2".repeat(40) +
+      '\nExact committed paths: ["old.txt"]\nFinal staged/worktree state: clean.'
+    const operation = spyOn(CommitGit.prototype, "execute").mockImplementation((_input, gate) => {
+      gate()
+      return facts
+    })
+    let ready!: () => void, resume!: () => void
+    const reached = new Promise<void>((resolve) => {
+      ready = resolve
+    })
+    const paused = new Promise<void>((resolve) => {
+      resume = resolve
+    })
+    let finished = false
+    let workerError: unknown
+    const invocation = {
+      sessionID: "ses_committer",
+      agent: "committer",
+      messageID: "commit-effect",
+      id: "commit-effect-call",
+    } as any
+    const input = { operation: "commit", message: "Implement reviewed change" }
+    f.state.onNative = async () => {
+      const part = { type: "tool", id: invocation.id, name: "committer_git", state: { status: "running", input } }
+      f.histories.ses_committer.splice(1, 0, {
+        type: "assistant",
+        id: invocation.messageID,
+        agent: "committer",
+        model,
+        content: [part],
+      })
+      await Effect.runPromise(f.admission.executeCommitterGit(input, invocation))
+      part.state.status = "completed"
+      expect(f.storedReceipts.get(`commit-receipt:v1:${approved.decision.id}`).receipt).toContain(facts)
+      expect(f.receipts).toHaveLength(2) // Native child has not settled; no synthetic terminal receipt yet.
+      ready()
+      await paused
+    }
+    f.state.run = async () => {
+      try {
+        await f.dispatch(JSON.parse(f.wakes.at(-1).text.split("\n")[1]))
+      } catch (error) {
+        workerError = error
+      } finally {
+        finished = true
+      }
+    }
+    try {
+      const fiber = Effect.runFork(f.admission.decideCommit({ decisionID: approved.decision.id, action: "Commit" }))
+      await reached
+      const interrupted = Effect.runPromise(Fiber.interrupt(fiber))
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      await expect(Effect.runPromise(f.admission.executeCommitterGit(input, invocation))).rejects.toThrow(
+        "live consumed authority",
+      )
+      resume()
+      await interrupted
+      expect((await chooseCommit(f, approved.decision.id)).receipt).toContain("stale, spent")
+      expect(f.storedReceipts.get(`commit-receipt:v1:${approved.decision.id}`).receipt).toContain("2".repeat(40))
+      expect(operation).toHaveBeenCalledTimes(1)
+      resume()
+      await settleUntil(() => finished)
+      expect(workerError).toBeDefined()
+      expect(f.originals).toHaveLength(2)
+    } finally {
+      resume()
+      operation.mockRestore()
+    }
+  },
+)
+
+snapshotTest(
+  "Commit storage/publication failures preserve factual results and never resend the effect, worker, or receipt",
+  async (observer) => {
+    for (const failure of ["storage", "publication"] as const) {
+      const f = serverFake(snapshotFixture(observer), observer)
+      const approved = await pendingCommit(f, observer)
+      const facts = "Commit succeeded.\nCommit: " + "2".repeat(40) + "\nFinal staged/worktree state: clean."
+      const operation = spyOn(CommitGit.prototype, "execute").mockImplementation((_input, gate) => {
+        gate()
+        return facts
+      })
+      const final = spyOn(CommitGit.prototype, "final").mockReturnValue(facts)
+      f.state.onNative = async () => {
+        const invocation = {
+          sessionID: "ses_committer",
+          agent: "committer",
+          messageID: "commit-op",
+          id: "commit-op-call",
+        } as any
+        const input = { operation: "commit", message: "Implement reviewed change" }
+        const part = { type: "tool", id: invocation.id, name: "committer_git", state: { status: "running", input } }
+        f.histories.ses_committer.splice(1, 0, {
+          type: "assistant",
+          id: invocation.messageID,
+          agent: "committer",
+          model,
+          content: [part],
+        })
+        if (failure === "storage")
+          await expect(Effect.runPromise(f.admission.executeCommitterGit(input, invocation))).rejects.toThrow(
+            "storage failed",
+          )
+        else await Effect.runPromise(f.admission.executeCommitterGit(input, invocation))
+        part.state.status = failure === "storage" ? "error" : "completed"
+      }
+      if (failure === "storage") f.context.storage.set = () => Effect.fail(new Error("Storage unavailable"))
+      else
+        f.state.onReceipt = () => {
+          throw new Error("Root publication unavailable")
+        }
+      f.state.run = async () => {
+        const work = f.dispatch(JSON.parse(f.wakes.at(-1).text.split("\n")[1]))
+        if (failure === "storage") await expect(work).rejects.toThrow("receipt mismatch")
+        else await work
+      }
+      try {
+        const outcome = await chooseCommit(f, approved.decision.id)
+        expect(outcome.receipt).toContain(
+          failure === "storage" ? "Durable receipt storage failed" : "root receipt publication unavailable",
+        )
+        expect(outcome.receipt).toContain(facts)
+        expect(operation).toHaveBeenCalledTimes(1)
+        expect(f.originals).toHaveLength(2)
+        expect((await chooseCommit(f, approved.decision.id)).receipt).toContain("stale, spent")
+        expect(f.receipts).toHaveLength(failure === "storage" ? 2 : 3)
+        if (failure === "publication")
+          expect(f.storedReceipts.get(`commit-receipt:v1:${approved.decision.id}`).receipt).toContain(facts)
+      } finally {
+        operation.mockRestore()
+        final.mockRestore()
+      }
+    }
+  },
+)

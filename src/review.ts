@@ -12,7 +12,8 @@ export type ReviewFinding = {
   testGap?: string
 }
 export type ReviewResult =
-  | { status: "APPROVED" | "INCONCLUSIVE"; summary: string; findings: [] }
+  | { status: "APPROVED"; summary: string; findings: [] }
+  | { status: "INCONCLUSIVE"; summary: string; findings: [] }
   | { status: "CHANGES_REQUESTED"; summary: string; findings: ReviewFinding[] }
 
 const text = (value: unknown, limit: number): string => {
@@ -126,6 +127,8 @@ export function reviewReceipt(result: ReviewResult): string {
     "Review target remained unchanged at verification. Review grants no mutation or Commit authority.",
     result.status === "CHANGES_REQUESTED"
       ? "No repair or Commit has been authorized. Any Repair requires a separate live Repair / Stop decision. Findings and receipts grant no authority."
-      : "This attempt ended before Commit.",
+      : result.status === "APPROVED"
+        ? "No Commit has been authorized. Any Commit requires a separate live Commit / Stop decision. Approval and receipts grant no authority."
+        : "This attempt ended before Commit.",
   ].join("\n")
 }
