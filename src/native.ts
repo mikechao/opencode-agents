@@ -1742,6 +1742,29 @@ export function nativeAdmission(context: Context) {
             ),
           )
           const child = yield* context.session.get({ sessionID: childID })
+          yield* attempt(() => {
+            live()
+            // Both waits completed. Prove exact terminal execution independently
+            // of authority/history validity, so a rejected settled child can
+            // release exclusion. Unknown child or Git-process settlement cannot.
+            if (
+              executing !== lease ||
+              lease.native?.child.kind !== "exact" ||
+              lease.native.child.childID !== childID ||
+              lease.native.call.sessionID !== rootID ||
+              child.id !== childID ||
+              child.parentID !== rootID ||
+              child.agent !== "committer" ||
+              child.fork ||
+              child.revert ||
+              child.time.archived ||
+              !same(snapshotLocation(child.location), cap.claim.location) ||
+              !child.time.idle ||
+              !["succeeded", "failed", "interrupted"].includes(child.outcome ?? "")
+            )
+              throw new Error("Exact Committer terminal settlement was not proven")
+            settled = true
+          })
           const childHistory = yield* context.session.context({ sessionID: childID })
           const rootHistory = yield* context.session.context({ sessionID: rootID })
           const root = yield* context.session.get({ sessionID: rootID })
@@ -1749,9 +1772,6 @@ export function nativeAdmission(context: Context) {
             local(cap)
             rootIdentity(cap.claim, root)
             commitChild(cap, child, childHistory)
-            if (!child.time.idle || !["succeeded", "failed", "interrupted"].includes(child.outcome ?? ""))
-              throw new Error("Committer settlement unproven")
-            settled = true
             if (Exit.isFailure(outcome)) throw Cause.squash(outcome.cause)
             if (
               cap.toolFailure ||

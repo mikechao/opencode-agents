@@ -10789,6 +10789,121 @@ snapshotTest(
 )
 
 snapshotTest(
+  "errored Committer history rejects success but exact terminal settlement releases exclusion for another governed root",
+  async (observer) => {
+    for (const failure of [
+      "malformed",
+      "errored",
+      "unknown-wait",
+      "unknown-idle",
+      "wrong-child",
+      "unknown-process",
+    ] as const) {
+      const root = snapshotFixture(observer)
+      const f = serverFake(root, observer)
+      const approved = await pendingCommit(f, observer)
+      const operation = spyOn(CommitGit.prototype, "execute")
+      const final =
+        failure === "unknown-process"
+          ? spyOn(CommitGit.prototype, "final").mockImplementation(function (this: CommitGit) {
+              this.processSettled = false
+              return "Commit did not reach a verified successful terminal state. Git process settlement unknown."
+            })
+          : undefined
+      let childWaited = false
+      f.state.onNative = async () => {
+        f.histories.ses_committer.splice(1, 0, {
+          type: "assistant",
+          id: "failed-committer-operation",
+          agent: "committer",
+          model,
+          content: [
+            {
+              type: "tool",
+              id: "failed-tool-call",
+              name: "committer_git",
+              executed: false,
+              state: {
+                status: "error",
+                input: {},
+                error:
+                  failure === "errored"
+                    ? { type: "unknown", message: "Local tool failed" }
+                    : {
+                        type: "tool.input-json",
+                        message:
+                          "Tool call arguments were malformed JSON and were not executed. Retry with valid JSON.",
+                      },
+              },
+            },
+          ],
+        })
+      }
+      f.state.onChildWait = async (id) => {
+        if (id !== "ses_committer") return
+        childWaited = true
+        if (failure === "unknown-wait") throw new Error("Committer wait unavailable")
+        if (failure === "unknown-idle") delete f.sessions.ses_committer.time.idle
+        if (failure === "wrong-child") f.sessions.ses_committer.id = "ses_unrelated"
+      }
+      f.state.run = async () => {
+        await f.dispatch(JSON.parse(f.wakes.at(-1).text.split("\n")[1]))
+      }
+      try {
+        const result = await chooseCommit(f, approved.decision.id)
+        const released = failure === "malformed" || failure === "errored"
+        expect(childWaited).toBe(true)
+        expect(result.receipt).toContain("did not reach a verified successful terminal state")
+        if (released || failure === "unknown-process") {
+          expect(f.sessions.ses_committer.time.idle).toBeDefined()
+          expect(f.sessions.ses_committer.outcome).toBe("succeeded")
+          expect(result.receipt).toContain("errored tool")
+          expect(f.receipts.at(-1).text).toBe(result.receipt)
+          expect(f.storedReceipts.get(`commit-receipt:v1:${approved.decision.id}`).receipt).toBe(result.receipt)
+        } else expect(result.receipt).toContain("publication withheld without proven execution settlement")
+        expect(operation).not.toHaveBeenCalled()
+        expect((await chooseCommit(f, approved.decision.id)).receipt).toContain("stale, spent")
+        await expect(
+          Effect.runPromise(
+            f.admission.executeCommitterGit({ operation: "prepare" }, {
+              sessionID: "ses_committer",
+              agent: "committer",
+              messageID: "retry-operation",
+              id: "retry-call",
+            } as any),
+          ),
+        ).rejects.toThrow()
+
+        // The same activation admits a new governed root only when exact child
+        // settlement was proved. No teardown or recovery of old authority.
+        observer.configure(root, HEAD)
+        f.sessions.ses_next = { ...structuredClone(f.sessions.ses_parent), id: "ses_next" }
+        f.histories.ses_next = []
+        f.state.onNative = undefined
+        f.state.onChildWait = undefined
+        f.state.run = async (id) => {
+          if (f.admission.caps.get(id)?.phase !== "available") return
+          await f.dispatch(undefined, { sessionID: id })
+          observer.configure(root, HEAD, ["old.txt"])
+        }
+        const next = await f.authorizeOutcome({ ...f.claim, rootSessionID: "ses_next" })
+        if (released) {
+          expect(next.receipt).toContain("Implementation gate completed successfully")
+          expect(next.receipt).not.toContain("worktree implementation exclusion")
+          expect(f.originals).toHaveLength(3)
+        } else {
+          expect(next.receipt).toContain("worktree implementation exclusion")
+          expect(f.originals).toHaveLength(2)
+        }
+      } finally {
+        operation.mockRestore()
+        final?.mockRestore()
+      }
+    }
+  },
+)
+
+snapshotTest(
   "Committer permission narrowing and tool admission reject shell, delegation, unauthorized calls and child drift",
   async (observer) => {
     for (const failure of [

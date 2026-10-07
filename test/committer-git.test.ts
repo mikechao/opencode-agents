@@ -91,6 +91,58 @@ test("one-shot pre-spawn spending and postflight inspection survive success, hoo
   }
 })
 
+test("live inspections validate the approved or prepared target and permanently retire observed drift; fixed history does not", () => {
+  const filters = spyOn(git, "requireNoCommitFilters").mockImplementation(() => {})
+  const preparing = spyOn(git, "prepareCommit").mockReturnValue(prepared)
+  const observed = spyOn(git, "observeGit").mockReturnValue(target)
+  const reviewed = spyOn(git, "observeReviewTarget").mockReturnValue(target)
+  const staged = spyOn(git, "requirePreparedCommit").mockImplementation(() => {})
+  const command = spyOn(git, "trustedGit").mockReturnValue(Buffer.from("Trusted inspection"))
+  try {
+    for (const state of ["unprepared", "prepared"] as const) {
+      for (const operation of state === "prepared" ? ["status", "diff", "staged"] : ["status", "diff"]) {
+        reviewed.mockReturnValue(target)
+        staged.mockImplementation(() => {})
+        const owner = new CommitGit(target)
+        if (state === "prepared") owner.execute({ operation: "prepare" }, () => {})
+        const inspected = owner.execute({ operation }, () => {})
+        expect(inspected).toContain(operation === "status" ? target.head : "Trusted inspection")
+        if (state === "prepared") expect(staged).toHaveBeenLastCalledWith(prepared)
+        else expect(reviewed).toHaveBeenLastCalledWith(target.root, target)
+
+        if (state === "prepared")
+          staged.mockImplementation(() => {
+            throw new Error("Prepared target drift")
+          })
+        else
+          reviewed.mockImplementation(() => {
+            throw new Error("Approved target drift")
+          })
+        // Explicitly pinned historical reads observe no live target. They remain
+        // available until a live operation actually detects incompatible state.
+        const reads = reviewed.mock.calls.length + staged.mock.calls.length
+        expect(owner.execute({ operation: "history" }, () => {})).toBe("Trusted inspection")
+        expect(command.mock.calls.at(-1)?.[1]).toContain(target.head)
+        expect(reviewed.mock.calls.length + staged.mock.calls.length).toBe(reads)
+        expect(() => owner.execute({ operation }, () => {})).toThrow("target drift")
+        reviewed.mockReturnValue(target)
+        staged.mockImplementation(() => {})
+        expect(() => owner.execute({ operation: "prepare" }, () => {})).toThrow("closed")
+        expect(() => owner.execute({ operation: "commit", message: "Retry" }, () => {})).toThrow("closed")
+        expect(owner.final()).toContain(`${state === "prepared" ? "Prepared" : "Approved"} target drift`)
+      }
+    }
+    expect(command.mock.calls.some(([, args]) => args[0] === "commit")).toBe(false)
+  } finally {
+    filters.mockRestore()
+    preparing.mockRestore()
+    observed.mockRestore()
+    reviewed.mockRestore()
+    staged.mockRestore()
+    command.mockRestore()
+  }
+})
+
 test("lost live authority or final content proof blocks the commit process", () => {
   const filters = spyOn(git, "requireNoCommitFilters").mockImplementation(() => {})
   const preparing = spyOn(git, "prepareCommit").mockReturnValue(prepared)
