@@ -8,6 +8,7 @@ export type RepairDecision = Readonly<{
   id: string
   rootSessionID: string
   rootIdleID: string
+  rootEventSeq: number
   candidate: IntentCandidate
   target: ReviewTarget
   result: Extract<ReviewResult, { status: "CHANGES_REQUESTED" }>
@@ -34,6 +35,7 @@ export function checkedCycleOutcome(value: unknown): CycleOutcome {
       "id",
       "rootSessionID",
       "rootIdleID",
+      "rootEventSeq",
       "candidate",
       "target",
       "result",
@@ -46,6 +48,8 @@ export function checkedCycleOutcome(value: unknown): CycleOutcome {
     !decision.rootSessionID ||
     typeof decision.rootIdleID !== "string" ||
     !decision.rootIdleID.startsWith("msg_") ||
+    !Number.isSafeInteger(decision.rootEventSeq) ||
+    decision.rootEventSeq < 0 ||
     !exactKeys(decision.candidate, ["kind", "proposal", "root", "head", "encoding", "digest"]) ||
     decision.candidate.kind !== "intent" ||
     !candidateIntact(decision.candidate) ||
@@ -71,6 +75,38 @@ export function checkedCycleOutcome(value: unknown): CycleOutcome {
   )
     throw new Error("Invalid Repair decision")
   return frozenCopy(value) as CycleOutcome
+}
+
+// Only a trusted session-log position proves an event predates verification.
+// Missing, malformed, or foreign envelopes confer no historical exemption.
+export function sessionEventSeq(
+  event: { id?: string; data: Record<string, unknown>; durable?: unknown },
+  rootSessionID: string,
+): number | undefined {
+  const durable = event.durable
+  if (
+    typeof event.id === "string" &&
+    event.id.startsWith("evt_") &&
+    event.data.sessionID === rootSessionID &&
+    exactKeys(durable, ["aggregateID", "seq", "version"]) &&
+    durable.aggregateID === rootSessionID &&
+    typeof durable.seq === "number" &&
+    Number.isSafeInteger(durable.seq) &&
+    durable.seq >= 0 &&
+    typeof durable.version === "number" &&
+    Number.isSafeInteger(durable.version) &&
+    durable.version > 0
+  )
+    return durable.seq
+  return undefined
+}
+
+export function historicalReviewEvent(
+  event: { id?: string; data: Record<string, unknown>; durable?: unknown },
+  boundary: Pick<RepairDecision, "rootSessionID" | "rootEventSeq">,
+): boolean {
+  const seq = sessionEventSeq(event, boundary.rootSessionID)
+  return seq !== undefined && seq <= boundary.rootEventSeq
 }
 
 // Portable Standard Schema: avoid passing an Effect AST to the host's separate

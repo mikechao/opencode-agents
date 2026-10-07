@@ -11,6 +11,7 @@ import { observeGit, requireFresh } from "../../../src/git.ts"
 import {
   authorizeRpc,
   checkedCycleOutcome,
+  historicalReviewEvent,
   type CycleOutcome,
   type RepairDecision,
 } from "../../../src/authorize-rpc.ts"
@@ -1136,6 +1137,7 @@ const plugin: Definition = {
         if (repairOwner && repairOwner.kind !== "transferred") {
           const captured = repairOwner.decision
           if ("sessionID" in event.data && event.data.sessionID === rootSessionID) {
+            if (historicalReviewEvent(event, captured)) return
             // The SSE stream is batched independently of the RPC response.
             // An echo of an already verified idle cannot supersede that review.
             if (

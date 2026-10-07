@@ -4559,7 +4559,14 @@ function serverFake(root: string, _observer: SnapshotObserver, workspaceID?: str
             if (f.reviewRun) await f.reviewRun(sessionID)
             else await dispatchReview(sessionID)
             if (f.reviewWaitError) throw new Error("lost Reviewer root settlement")
-            histories[sessionID].push(idle(`msg_settled-${latestControl.id}`))
+            const terminal = idle(`msg_settled-${latestControl.id}`)
+            histories[sessionID].push(terminal)
+            admission.eventReceived({
+              id: terminal.id.replace(/^msg_/, "evt_"),
+              type: "session.execution.succeeded",
+              data: { sessionID },
+              durable: { aggregateID: sessionID, seq: histories[sessionID].length * 10, version: 1 },
+            })
           } else {
             await f.run?.(sessionID)
             if (f.waitError) throw new Error("lost root settlement")
@@ -9426,6 +9433,7 @@ function tuiRepairOutcome(root: string, id = "live-repair"): CycleOutcome & { ki
       id,
       rootSessionID: "parent",
       rootIdleID: `msg_settled-${id}`,
+      rootEventSeq: id === "live-repair" ? 50 : 100,
       candidate,
       target: { root, head: HEAD, paths: ["old.txt"], digest: "a".repeat(64) },
       result: repairFindings,
@@ -9441,6 +9449,202 @@ function readRepairPages(f: ReturnType<typeof fake>, view: ReturnType<typeof mou
   }
   f.renderer.emit("frame")
 }
+
+const historicalEvent = (rootSessionID: string, seq: number, type = "session.execution.started") => ({
+  id: `evt_historical-${seq}-${type}`,
+  type,
+  data: { sessionID: rootSessionID, inboxID: "review-control" },
+  durable: { aggregateID: rootSessionID, seq, version: 1 },
+})
+
+snapshotTest(
+  "verified session-log boundaries tolerate historical activity through repeated Repair cycles",
+  async (observer) => {
+    const f = serverFake(snapshotFixture(observer), observer)
+    const first = await pendingRepair(f, observer)
+    const start = historicalEvent("ses_parent", first.decision.rootEventSeq - 2)
+    const delivery = historicalEvent("ses_parent", first.decision.rootEventSeq - 1, "session.inbox.delivered")
+    delivery.data.inboxID = f.reviewWakes.at(-1).id
+    for (const event of [start, delivery, start, delivery]) f.admission.eventReceived(event)
+    const second = await chooseRepair(f, first.decision.id)
+    expect(second.kind).toBe("repair")
+    if (second.kind !== "repair") throw new Error(second.receipt)
+    expect(second.decision.rootEventSeq).toBeGreaterThan(first.decision.rootEventSeq)
+    for (const event of [start, delivery, historicalEvent("ses_parent", second.decision.rootEventSeq - 1)])
+      f.admission.eventReceived(event)
+    expect((await chooseRepair(f, second.decision.id, "Stop")).receipt).toContain("Stopped by human")
+    expect((await chooseRepair(f, first.decision.id)).receipt).toContain("stale, spent")
+    expect(f.originals).toHaveLength(2)
+    expect(f.reviewOriginals).toHaveLength(2)
+    expect(f.cap.phase).toBe("closed")
+  },
+)
+
+snapshotTest("newer and unproven root events retire server and TUI Repair decisions", async (observer) => {
+  const invalidEvents = (rootSessionID: string, seq: number) => [
+    historicalEvent(rootSessionID, seq + 1),
+    historicalEvent(rootSessionID, seq + 1, "session.inbox.delivered"),
+    { ...historicalEvent(rootSessionID, seq - 1), durable: undefined },
+    { ...historicalEvent(rootSessionID, seq - 1), id: undefined },
+    { ...historicalEvent(rootSessionID, seq - 1), durable: { aggregateID: "another-root", seq: 0, version: 1 } },
+    { ...historicalEvent(rootSessionID, seq - 1), durable: { aggregateID: rootSessionID, seq: -1, version: 1 } },
+    { ...historicalEvent(rootSessionID, seq - 1), durable: { aggregateID: rootSessionID, seq: 0.5, version: 1 } },
+    { ...historicalEvent(rootSessionID, seq - 1), durable: { aggregateID: rootSessionID, seq: 0, version: 0 } },
+  ]
+  for (let i = 0; i < invalidEvents("", 50).length; i++) {
+    const server = serverFake(snapshotFixture(observer), observer)
+    const pending = await pendingRepair(server, observer)
+    server.admission.eventReceived(invalidEvents("ses_parent", pending.decision.rootEventSeq)[i])
+    expect((await chooseRepair(server, pending.decision.id)).receipt).toContain("stale, spent")
+    expect(server.originals).toHaveLength(1)
+    const root = snapshotFixture(observer),
+      f = fake(root)
+    f.options.onAuthorize = async () => {
+      f.inboxes.parent.splice(0)
+      return tuiRepairOutcome(root)
+    }
+    const cleanup = await activate(f),
+      initial = mount(f)
+    initial.click(0)
+    await settleUntil(() => f.slots.length === 2)
+    const repair = mount(f, "parent", false)
+    readRepairPages(f, repair)
+    f.emit(invalidEvents("parent", 50)[i])
+    expect(f.slots.at(-1).removed).toBe(true)
+    repair.click(0)
+    expect(f.calls.repairs).toHaveLength(0)
+    cleanup()
+    initial.dispose()
+    repair.dispose()
+  }
+})
+
+snapshotTest(
+  "TUI historical review start and control delivery survive RPC delivery and later cycles",
+  async (observer) => {
+    const root = snapshotFixture(observer),
+      f = fake(root)
+    const first = tuiRepairOutcome(root)
+    f.options.onAuthorize = async () => {
+      f.inboxes.parent.splice(0)
+      return first
+    }
+    f.options.onRepair = async () => tuiRepairOutcome(root, "next")
+    const cleanup = await activate(f),
+      initial = mount(f)
+    initial.click(0)
+    await settleUntil(() => f.slots.length === 2)
+    const start = historicalEvent("parent", 48)
+    const delivery = historicalEvent("parent", 49, "session.inbox.delivered")
+    f.emit(start)
+    f.emit(delivery)
+    expect(f.slots.at(-1).removed).toBe(false)
+    expect(f.calls.toasts).toEqual([])
+    const repair = mount(f, "parent", false)
+    readRepairPages(f, repair)
+    repair.click(0)
+    await settleUntil(() => f.slots.length === 3)
+    for (const event of [start, delivery, historicalEvent("parent", 99)]) f.emit(event)
+    expect(f.slots.at(-1).removed).toBe(false)
+    const next = mount(f)
+    readRepairPages(f, next)
+    f.emit(historicalEvent("parent", 101))
+    expect(f.slots.at(-1).removed).toBe(true)
+    next.click(0)
+    repair.click(0)
+    expect(f.calls.repairs).toHaveLength(1)
+    cleanup()
+    initial.dispose()
+    repair.dispose()
+    next.dispose()
+  },
+)
+
+snapshotTest(
+  "verified review waits for its exact terminal notification; teardown cannot restore authority",
+  async (observer) => {
+    for (const teardown of [false, true]) {
+      const f = serverFake(snapshotFixture(observer), observer)
+      const received = f.admission.eventReceived
+      let held: Parameters<typeof received>[0] | undefined
+      const intercepted = spyOn(f.admission, "eventReceived").mockImplementation((event) => {
+        if (event.type === "session.execution.succeeded") held = event
+        else received(event)
+      })
+      try {
+        f.state.reviewOutput = JSON.stringify(repairFindings)
+        f.state.run = async () => {
+          await f.dispatch()
+        }
+        let completed = false
+        const rpc = f.authorizeOutcome().then((outcome) => {
+          completed = true
+          return outcome
+        })
+        await settleUntil(() => !!held && f.reads.includes("context:ses_review"))
+        expect(completed).toBe(false)
+        expect(f.receipts).toHaveLength(1)
+        if (teardown) f.admission.teardown()
+        else received(held!)
+        const outcome = await rpc
+        expect(outcome.kind).toBe(teardown ? "terminal" : "repair")
+        if (outcome.kind === "repair") {
+          expect(outcome.decision.rootEventSeq).toBe((held!.durable as { seq: number }).seq)
+          expect((await chooseRepair(f, outcome.decision.id, "Stop")).receipt).toContain("Stopped by human")
+        } else expect(outcome.receipt).toContain("revoked")
+        expect(f.originals).toHaveLength(1)
+      } finally {
+        intercepted.mockRestore()
+        f.admission.teardown()
+      }
+    }
+  },
+)
+
+snapshotTest("new execution during review publication cannot mint a pending decision", async (observer) => {
+  const f = serverFake(snapshotFixture(observer), observer)
+  f.state.reviewOutput = JSON.stringify(repairFindings)
+  f.state.run = async () => {
+    await f.dispatch()
+  }
+  f.state.onReceipt = () => {
+    if (f.receipts.length === 2)
+      f.admission.eventReceived(historicalEvent("ses_parent", f.histories.ses_parent.length * 10 + 1))
+  }
+  const outcome = await f.authorizeOutcome()
+  expect(outcome.kind).toBe("terminal")
+  expect(outcome.receipt).toContain("root activity was superseded")
+  expect((await chooseRepair(f, "unknown")).receipt).toContain("stale, spent")
+  expect(f.originals).toHaveLength(1)
+})
+
+snapshotTest("an exact terminal ID without trusted log provenance exposes no Repair", async (observer) => {
+  for (const durable of [
+    undefined,
+    { aggregateID: "another-root", seq: 50, version: 1 },
+    { aggregateID: "ses_parent", seq: -1, version: 1 },
+  ]) {
+    const f = serverFake(snapshotFixture(observer), observer)
+    const received = f.admission.eventReceived
+    const intercepted = spyOn(f.admission, "eventReceived").mockImplementation((event) =>
+      received(event.type === "session.execution.succeeded" ? { ...event, durable } : event),
+    )
+    try {
+      f.state.reviewOutput = JSON.stringify(repairFindings)
+      f.state.run = async () => {
+        await f.dispatch()
+      }
+      const outcome = await f.authorizeOutcome()
+      expect(outcome.kind).toBe("terminal")
+      expect(outcome.receipt).toContain("lacks a trusted session-log position")
+      expect(f.admission.currentApproval("ses_parent")).toBeUndefined()
+      expect(f.originals).toHaveLength(1)
+    } finally {
+      intercepted.mockRestore()
+      f.admission.teardown()
+    }
+  }
+})
 
 snapshotTest(
   "exact verified settlement echoes are inert across Repair decisions; unknown successes retire them",
@@ -9937,6 +10141,10 @@ snapshotTest(
       { ...valid, decision: { ...valid.decision, id: "" } },
       { ...valid, decision: { ...valid.decision, rootIdleID: undefined } },
       { ...valid, decision: { ...valid.decision, rootIdleID: "evt_unverified" } },
+      ...[undefined, -1, 0.5, Infinity, "50"].map((rootEventSeq) => ({
+        ...valid,
+        decision: { ...valid.decision, rootEventSeq },
+      })),
     ]) {
       expect(() => checkedCycleOutcome(bad)).toThrow()
       expect(schema["~standard"].validate(bad).issues).toHaveLength(1)

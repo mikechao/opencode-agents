@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process"
 import path from "node:path"
 import type {} from "./fixtures/repair-layout.tsx"
 
-test("Repair remains visible and readable after a delayed settlement echo in the real OpenTUI layout", () => {
+test("Repair remains visible and readable after delayed verified review events in the real OpenTUI layout", () => {
   // attempt.test.ts mocks the Solid reconciler globally for cheap handler tests.
   // Isolate this one headless rendering boundary so it uses the installed
   // reconciler/Yoga, with trusted host/Git doubles and no OpenCode process.

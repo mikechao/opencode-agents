@@ -1,4 +1,4 @@
-import { Cause, DateTime, Effect, Exit } from "effect"
+import { Cause, DateTime, Deferred, Effect, Exit } from "effect"
 import { Tool } from "@opencode/schema/tool"
 import { Session } from "@opencode/schema/session"
 import type { Context } from "@opencode/plugin/effect/plugin"
@@ -38,7 +38,7 @@ import {
 } from "./git.ts"
 import { receiptInput } from "./receipt.ts"
 import { reviewerArguments, parseReviewResult, reviewReceipt, type ReviewResult } from "./review.ts"
-import type { CycleOutcome, RepairDecision } from "./authorize-rpc.ts"
+import { historicalReviewEvent, sessionEventSeq, type CycleOutcome, type RepairDecision } from "./authorize-rpc.ts"
 import { reviewerGitName, reviewerGitArguments } from "./reviewer-git.ts"
 
 const reviewerTool = (name: string) => directRootTool(name) || name === reviewerGitName
@@ -144,7 +144,7 @@ type VerifiedReview = Readonly<{
   implementation: VerifiedImplementation
   result: ReviewResult
   reviewer: RepairDecision["reviewer"]
-  boundary: Readonly<{ length: number; digest: string; created: number; rootIdleID: string }>
+  boundary: Readonly<{ length: number; digest: string; created: number; rootIdleID: string; rootEventSeq: number }>
 }>
 const historyDigest = (history: readonly SessionMessage.Info[]) =>
   createHash("sha256").update(exactEvidence(history)).digest("hex")
@@ -230,6 +230,23 @@ export function nativeAdmission(context: Context) {
   // Settlement notifications can arrive after the RPC that verified them.
   // These exact historical identities are inert facts, never admission evidence.
   const settledRoots = new Map<string, string>()
+  const reviewBoundaries = new Map<string, Pick<RepairDecision, "rootSessionID" | "rootEventSeq">>()
+  // Infinity marks unproven activity: no later log boundary can make it historical.
+  const latestActivity = new Map<string, number>()
+  // Join the supported event subscription to the exact idle verified by context
+  // reads. Notification processing may lag those reads; never guess its seq.
+  const terminalNotifications = new Map<
+    string,
+    Deferred.Deferred<Pick<RepairDecision, "rootSessionID" | "rootEventSeq">, Tool.Error>
+  >()
+  const terminalNotification = (rootIdleID: string) => {
+    let notification = terminalNotifications.get(rootIdleID)
+    if (!notification) {
+      notification = Deferred.makeUnsafe<Pick<RepairDecision, "rootSessionID" | "rootEventSeq">, Tool.Error>()
+      terminalNotifications.set(rootIdleID, notification)
+    }
+    return notification
+  }
   const knownReceipt = (message: SessionMessage.Info) =>
     message.type === "synthetic" && receipts.get(message.id)?.text === message.text
   const bindFreshChild = (execution: { child: ChildBinding }, id: unknown, root: string) => {
@@ -929,7 +946,7 @@ export function nativeAdmission(context: Context) {
       const child = yield* context.session.get({ sessionID: childID })
       const history = yield* context.session.context({ sessionID: root.id })
       const childHistory = yield* context.session.context({ sessionID: childID })
-      return yield* attempt(() => {
+      const evidence = yield* attempt(() => {
         local(cap, claim)
         rootIdentity(claim, root)
         if (
@@ -1030,6 +1047,13 @@ export function nativeAdmission(context: Context) {
             rootIdleID: rootIdle.id,
           },
         })
+      })
+      const boundary = yield* Deferred.await(terminalNotification(evidence.boundary.rootIdleID))
+      return yield* attempt(() => {
+        local(cap, claim)
+        if (boundary.rootSessionID !== claim.rootSessionID || reviews.get(claim.rootSessionID) !== review)
+          throw new Error("Reviewer terminal notification belongs to another root or owner")
+        return frozenCopy({ ...evidence, boundary: { ...evidence.boundary, rootEventSeq: boundary.rootEventSeq } })
       })
     })
   const runReview = (
@@ -1338,6 +1362,9 @@ export function nativeAdmission(context: Context) {
             observeReviewTarget(implementation.claim.location.directory!, evidence.implementation.target),
             evidence.implementation.target,
           )
+          if ((latestActivity.get(rootSessionID) ?? -1) > evidence.boundary.rootEventSeq)
+            throw new Error("Reviewed root activity was superseded during publication")
+          reviewBoundaries.set(rootSessionID, { rootSessionID, rootEventSeq: evidence.boundary.rootEventSeq })
           executing = undefined
           if (evidence.result.status === "APPROVED") currentReviews.set(rootSessionID, evidence)
           if (evidence.result.status !== "CHANGES_REQUESTED") return terminal(combined)
@@ -1350,6 +1377,7 @@ export function nativeAdmission(context: Context) {
               id: decision.id,
               rootSessionID,
               rootIdleID: evidence.boundary.rootIdleID,
+              rootEventSeq: evidence.boundary.rootEventSeq,
               candidate: implementation.claim.candidate,
               target: evidence.implementation.target,
               result: evidence.result,
@@ -1415,10 +1443,27 @@ export function nativeAdmission(context: Context) {
         ),
       )
     }).pipe(Effect.catchCause((cause) => Effect.succeed(terminal(unverified(cause)))))
-  const eventReceived = (event: { id?: string; type: string; data: Record<string, unknown> }) => {
+  const eventReceived = (event: { id?: string; type: string; data: Record<string, unknown>; durable?: unknown }) => {
     if (!("sessionID" in event.data)) return
     const id = event.data.sessionID
     if (typeof id !== "string") return
+    if (
+      event.type === "session.execution.succeeded" &&
+      typeof event.id === "string" &&
+      event.id.startsWith("evt_") &&
+      workers.has(id)
+    ) {
+      const notification = terminalNotification(event.id.replace(/^evt_/, "msg_"))
+      const seq = sessionEventSeq(event, id)
+      Deferred.doneUnsafe(
+        notification,
+        seq !== undefined
+          ? Effect.succeed({ rootSessionID: id, rootEventSeq: seq })
+          : Effect.fail(fail("Reviewer terminal notification lacks a trusted session-log position")),
+      )
+    }
+    const boundary = reviewBoundaries.get(id)
+    if (boundary && historicalReviewEvent(event, boundary)) return
     if (
       event.type === "session.execution.succeeded" &&
       typeof event.id === "string" &&
@@ -1449,6 +1494,10 @@ export function nativeAdmission(context: Context) {
       )
     )
       return
+    if (workers.has(id)) {
+      const seq = sessionEventSeq(event, id) ?? Number.POSITIVE_INFINITY
+      latestActivity.set(id, Math.max(latestActivity.get(id) ?? -1, seq))
+    }
     const owner = workers.get(id)
     if (owner instanceof RepairClaim && (owner.phase === "available" || owner.phase === "reserved")) {
       const control = owner.control
@@ -1502,6 +1551,11 @@ export function nativeAdmission(context: Context) {
     currentReviews.clear()
     receipts.clear()
     settledRoots.clear()
+    reviewBoundaries.clear()
+    latestActivity.clear()
+    for (const notification of terminalNotifications.values())
+      Deferred.doneUnsafe(notification, Effect.fail(fail("Server CAP activation was revoked")))
+    terminalNotifications.clear()
     children.clear()
     contenders.clear()
     planners.clear()

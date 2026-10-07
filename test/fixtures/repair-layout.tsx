@@ -23,6 +23,7 @@ const decision = {
   id: "repair-decision",
   rootSessionID: "root",
   rootIdleID: "msg_review-idle",
+  rootEventSeq: 50,
   candidate,
   target: { root: directory, head, paths: ["README.md"], digest: "b".repeat(64) },
   result: {
@@ -198,6 +199,21 @@ try {
   // RPC may beat the separately batched SSE terminal event, before any Repair frame.
   for (const f of listeners)
     f({ details: { id: "evt_review-idle", type: "session.execution.succeeded", data: { sessionID: "root" } } })
+  // Earlier durable events can lag the same RPC too; their verified log
+  // positions prove they are historical even though no terminal ID matches.
+  for (const [type, seq] of [
+    ["session.execution.started", 48],
+    ["session.inbox.delivered", 49],
+  ] as const)
+    for (const f of listeners)
+      f({
+        details: {
+          id: `evt_review-${seq}`,
+          type,
+          data: { sessionID: "root", inboxID: "review-control" },
+          durable: { aggregateID: "root", seq, version: 1 },
+        },
+      })
   for (let i = 0; i < 5; i++) {
     await t.renderOnce()
     t.renderer.emit("frame")
