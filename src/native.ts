@@ -1644,13 +1644,24 @@ export function nativeAdmission(context: Context) {
     Effect.gen(function* () {
       const selected = yield* attempt(() => {
         live()
+        // Recognize server-owned identity before accepting the payload. An
+        // identifiable malformed selection burns only its exact decision/evidence.
+        const decision =
+          input && typeof input === "object" && "decisionID" in input && typeof input.decisionID === "string"
+            ? pendingCommits.get(input.decisionID)
+            : undefined
         if (
           !exactKeys(input, ["decisionID", "action"]) ||
           typeof input.decisionID !== "string" ||
           (input.action !== "Commit" && input.action !== "Stop")
-        )
+        ) {
+          if (decision) {
+            pendingCommits.delete(decision.id)
+            const rootID = decision.evidence.implementation.claim.rootSessionID
+            if (currentReviews.get(rootID) === decision.evidence) currentReviews.delete(rootID)
+          }
           throw new Error("Malformed Commit selection")
-        const decision = pendingCommits.get(input.decisionID)
+        }
         if (!decision) throw new Error("Commit decision is stale, spent, or unavailable")
         pendingCommits.delete(decision.id) // Human grant spent synchronously before any await.
         const rootID = decision.evidence.implementation.claim.rootSessionID

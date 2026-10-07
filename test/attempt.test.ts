@@ -10581,6 +10581,76 @@ snapshotTest(
 )
 
 snapshotTest(
+  "identifiable malformed Commit selections spend the exact pending decision and its APPROVED eligibility before rejection",
+  async (observer) => {
+    for (const malformed of [{ action: "Commit", paths: [] }, { action: "invalid" }]) {
+      const f = serverFake(snapshotFixture(observer), observer)
+      const approved = await pendingCommit(f, observer)
+      const evidence = f.admission.currentApproval("ses_parent")
+      expect(evidence?.reviewer).toEqual(approved.decision.reviewer)
+      const baseline = observeGit(f.candidate.root)
+      const operation = spyOn(CommitGit.prototype, "execute")
+      try {
+        const rejected = await Effect.runPromise(
+          f.admission.decideCommit({ decisionID: approved.decision.id, ...malformed }),
+        )
+        expect(rejected.kind).toBe("terminal")
+        expect(rejected.receipt).toContain("Malformed Commit selection")
+        expect(f.admission.currentApproval("ses_parent")).toBeUndefined()
+        expect(observeGit(f.candidate.root)).toEqual(baseline)
+        expect(f.originals.map((entry) => entry.input.agent)).toEqual(["authorized_implementer"])
+        expect(operation).not.toHaveBeenCalled()
+
+        for (const action of ["Commit", "Stop"] as const) {
+          const corrected = await chooseCommit(f, approved.decision.id, action)
+          expect(corrected.kind).toBe("terminal")
+          expect(corrected.receipt).toContain("stale, spent, or unavailable")
+        }
+        // Retaining the old presentation/evidence cannot restore a decision or
+        // replay the spent implementation authorization to recreate its approval.
+        expect(evidence?.result.status).toBe("APPROVED")
+        expect(f.admission.currentApproval("ses_parent")).toBeUndefined()
+        expect((await f.authorizeOutcome()).receipt).toContain("One governed")
+        expect(f.originals).toHaveLength(1)
+        expect(f.wakes).toHaveLength(1)
+        expect(f.reviewOriginals).toHaveLength(1)
+        expect(observeGit(f.candidate.root)).toEqual(baseline)
+        expect(operation).not.toHaveBeenCalled()
+      } finally {
+        operation.mockRestore()
+      }
+    }
+  },
+)
+
+snapshotTest(
+  "unidentifiable malformed Commit selections leave unrelated pending approval and its valid Stop decision intact",
+  async (observer) => {
+    const f = serverFake(snapshotFixture(observer), observer)
+    const approved = await pendingCommit(f, observer)
+    const evidence = f.admission.currentApproval("ses_parent")
+    const baseline = observeGit(f.candidate.root)
+    for (const input of [
+      { action: "Commit" },
+      { decisionID: 42, action: "Commit" },
+      { decisionID: "unknown-pending-id", action: "Commit", paths: [] },
+    ]) {
+      const rejected = await Effect.runPromise(f.admission.decideCommit(input))
+      expect(rejected.kind).toBe("terminal")
+      expect(rejected.receipt).toContain("Malformed Commit selection")
+      expect(f.admission.currentApproval("ses_parent")).toBe(evidence)
+      expect(f.originals).toHaveLength(1)
+      expect(observeGit(f.candidate.root)).toEqual(baseline)
+    }
+    expect((await chooseCommit(f, approved.decision.id, "Stop")).receipt).toContain("Stopped by human")
+    expect(f.admission.currentApproval("ses_parent")).toBeUndefined()
+    expect((await chooseCommit(f, approved.decision.id)).receipt).toContain("stale, spent, or unavailable")
+    expect(f.originals).toHaveLength(1)
+    expect(observeGit(f.candidate.root)).toEqual(baseline)
+  },
+)
+
+snapshotTest(
   "Commit revalidates exact target, HEAD, root, settlement, history and activation without event delivery",
   async (observer) => {
     for (const drift of [
