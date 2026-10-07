@@ -7579,9 +7579,10 @@ snapshotTest(
       }
       f.state.reviewOutput = JSON.stringify(result)
       const outcome = await f.authorize()
-      expect(outcome).toContain(`Review ${result.status}.`)
+      const title = result.status === "CHANGES_REQUESTED" ? "Review requested changes" : `Review ${result.status}.`
+      expect(outcome).toContain(title)
       expect(outcome).toContain(result.summary)
-      if (result.status === "CHANGES_REQUESTED") expect(outcome).toContain('"remediation":"Handle empty input"')
+      if (result.status === "CHANGES_REQUESTED") expect(outcome).toContain("Required fix: Handle empty input")
       expect(outcome).toContain("Review grants no mutation or Commit authority")
       expect(f.originals).toHaveLength(1)
       expect(f.reviewOriginals).toHaveLength(1)
@@ -7591,11 +7592,14 @@ snapshotTest(
         `Implementation gate completed successfully.\nHEAD ${HEAD} remained unchanged.\nResulting paths (0): (none).`,
       )
       expect(review.resume).toBe(false)
-      expect(review.text).toStartWith(`Review ${result.status}.\n${result.summary}\n`)
+      expect(review.text).toStartWith(`${title}\n${result.summary}\n`)
       expect(review.text).toContain("Review target remained unchanged at verification.")
       expect(review.text).not.toContain(HEAD)
       expect(review.text).not.toContain("Resulting paths")
-      if (result.status === "CHANGES_REQUESTED") expect(review.text).toContain('"remediation":"Handle empty input"')
+      if (result.status === "CHANGES_REQUESTED") {
+        expect(review.text).toContain("Required fix: Handle empty input")
+        expect(review.text).not.toContain('"remediation":')
+      }
       expect(outcome).toBe(`${implementation.text}\n${review.text}`)
     }
   },
@@ -9120,7 +9124,7 @@ snapshotTest(
       f.state.onReceipt = (input) => {
         // InboxEnqueued updates time.updated, including when resume is false.
         f.sessions.ses_parent.time.updated++
-        if (!input.text.startsWith("Review CHANGES_REQUESTED.")) return
+        if (!input.text.startsWith("Review requested changes")) return
         expect(input.resume).toBe(false)
         expect(f.reviewOriginals.length).toBeGreaterThan(0)
         expect(f.histories.ses_parent.at(-1).type).toBe("idle")
@@ -9546,11 +9550,7 @@ function tuiRepairOutcome(root: string, id = "live-repair"): CycleOutcome & { ki
     },
   }
 }
-function readRepairPages(f: ReturnType<typeof fake>, view: ReturnType<typeof mount>) {
-  for (let i = 0; i < 30; i++) {
-    f.renderer.emit("frame")
-    view.click(3)
-  }
+function readyRepairFrame(f: ReturnType<typeof fake>) {
   f.renderer.emit("frame")
 }
 
@@ -9593,7 +9593,7 @@ snapshotTest(
         if (stage === "repair") {
           await settleUntil(() => f.slots.length === 2)
           repair = mount(f, "parent", false)
-          readRepairPages(f, repair)
+          readyRepairFrame(f)
           repair.click(0)
           await settleUntil(() => f.calls.repairs.length === 1)
         }
@@ -9655,7 +9655,7 @@ snapshotTest(
       initial.click(0)
       await settleUntil(() => f.slots.length === 2)
       const repair = mount(f, "parent", false)
-      readRepairPages(f, repair)
+      readyRepairFrame(f)
       f.emit({
         type: "session.inbox.enqueued",
         data: {
@@ -9745,7 +9745,7 @@ snapshotTest("newer and unproven root events retire server and TUI Repair decisi
     initial.click(0)
     await settleUntil(() => f.slots.length === 2)
     const repair = mount(f, "parent", false)
-    readRepairPages(f, repair)
+    readyRepairFrame(f)
     f.emit(invalidEvents("parent", 50)[i])
     expect(f.slots.at(-1).removed).toBe(true)
     repair.click(0)
@@ -9778,13 +9778,13 @@ snapshotTest(
     expect(f.slots.at(-1).removed).toBe(false)
     expect(f.calls.toasts).toEqual([])
     const repair = mount(f, "parent", false)
-    readRepairPages(f, repair)
+    readyRepairFrame(f)
     repair.click(0)
     await settleUntil(() => f.slots.length === 3)
     for (const event of [start, delivery, historicalEvent("parent", 99)]) f.emit(event)
     expect(f.slots.at(-1).removed).toBe(false)
     const next = mount(f)
-    readRepairPages(f, next)
+    readyRepairFrame(f)
     f.emit(historicalEvent("parent", 101))
     expect(f.slots.at(-1).removed).toBe(true)
     next.click(0)
@@ -9964,7 +9964,7 @@ snapshotTest("TUI tolerates only exact server-verified settlement echoes after t
   const repair = mount(f, "parent", false)
   repair.click(0)
   expect(f.calls.repairs).toEqual([])
-  readRepairPages(f, repair)
+  readyRepairFrame(f)
   repair.click(0)
   await settleUntil(() => f.slots.length === 3)
   f.emit(echo(first.decision.rootIdleID))
@@ -9972,7 +9972,7 @@ snapshotTest("TUI tolerates only exact server-verified settlement echoes after t
   expect(f.slots.at(-1).removed).toBe(false)
   expect(f.calls.repairs).toHaveLength(1)
   const next = mount(f)
-  readRepairPages(f, next)
+  readyRepairFrame(f)
   f.emit(echo("msg_unverified-success"))
   expect(f.slots.at(-1).removed).toBe(true)
   next.click(0)
@@ -9985,7 +9985,7 @@ snapshotTest("TUI tolerates only exact server-verified settlement echoes after t
 })
 
 snapshotTest(
-  "TUI Repair requires all readable evidence pages, sends only selector/action, and retires stale callbacks through another cycle",
+  "TUI Repair accepts the initial readable frame, sends only selector/action, and retires stale callbacks through another cycle",
   async (observer) => {
     const root = snapshotFixture(observer),
       f = fake(root)
@@ -10004,11 +10004,11 @@ snapshotTest(
     review.click(0)
     expect(f.calls.repairs).toEqual([])
     f.renderer.emit("frame")
-    review.click(0) // The first page alone cannot grant Repair.
-    expect(f.calls.repairs).toEqual([])
-    readRepairPages(f, review)
-    expect(review.text()).toContain("outside.txt")
-    expect(review.text()).toContain("Original frozen proposal and exact path ceiling")
+    expect(review.text()).toContain("Original authorized paths")
+    expect(review.text()).toContain("old.txt")
+    expect(review.text()).not.toContain("Reviewed target SHA-256")
+    expect(review.text()).not.toContain("Reviewer message")
+    expect(review.text()).not.toContain("Read every page")
     review.click(0, 2)
     expect(f.calls.repairs).toEqual([])
     review.click(0)
@@ -10020,7 +10020,7 @@ snapshotTest(
     review.click(1)
     expect(f.calls.repairs).toHaveLength(1)
     const next = mount(f)
-    readRepairPages(f, next)
+    readyRepairFrame(f)
     f.options.onRepair = async () => ({ kind: "terminal", receipt: "Stopped by human" })
     next.click(1)
     await settleUntil(() => f.slots.at(-1).removed)
@@ -10050,7 +10050,7 @@ snapshotTest(
     initial.click(0)
     await settleUntil(() => f.slots.length === 2)
     const review = mount(f)
-    readRepairPages(f, review)
+    readyRepairFrame(f)
     setRoute({ type: "session", sessionID: "planner-child" })
     review.dispose()
     review.click(0)
@@ -10059,7 +10059,7 @@ snapshotTest(
     const returned = mount(f, "parent", false)
     returned.click(0)
     expect(f.calls.repairs).toEqual([])
-    readRepairPages(f, returned)
+    readyRepairFrame(f)
     const keyboard = returned.layers[0]()
     ;(f.context.keymap.mode as any).current = () => "dialog"
     expect(layerEnabled(keyboard)).toBe(false)
@@ -10098,7 +10098,7 @@ for (const failure of [
     initial.click(0)
     await settleUntil(() => f.slots.length === 2)
     const review = mount(f)
-    readRepairPages(f, review)
+    readyRepairFrame(f)
     if (failure === "surface") review.dispose()
     if (failure === "resize") {
       f.renderer.emit("resize")
@@ -10406,7 +10406,7 @@ snapshotTest("a late Repair RPC result after surface loss cannot install new dec
   initial.click(0)
   await settleUntil(() => f.slots.length === 2)
   const review = mount(f)
-  readRepairPages(f, review)
+  readyRepairFrame(f)
   review.click(0)
   await settleUntil(() => f.calls.repairs.length === 1)
   f.renderer.emit("destroy")
@@ -10458,7 +10458,7 @@ snapshotTest("Repair navigation during decision reads retires the callback befor
   initial.click(0)
   await settleUntil(() => f.slots.length === 2)
   const review = mount(f)
-  readRepairPages(f, review)
+  readyRepairFrame(f)
   f.options.onGet = () => {
     setRoute({ type: "session", sessionID: "planner-child" })
   }

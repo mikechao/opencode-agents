@@ -20,9 +20,44 @@ for (const value of valid)
     const result = parseReviewResult(JSON.stringify(value))
     expect(result).toEqual(value)
     expect(Object.isFrozen(result)).toBe(true)
-    expect(reviewReceipt(result)).toContain(`Review ${value.status}.`)
+    expect(reviewReceipt(result)).toContain(
+      value.status === "CHANGES_REQUESTED" ? "Review requested changes" : `Review ${value.status}.`,
+    )
     expect(reviewReceipt(result)).toContain("Review grants no mutation or Commit authority")
   })
+
+test("changes requested receipt renders ordered readable findings with optional detail", () => {
+  const result = parseReviewResult(
+    JSON.stringify({
+      status: "CHANGES_REQUESTED",
+      summary: "Two failures need repair",
+      findings: [finding, { severity: "low", scenario: "Missing input", impact: "Fails", remediation: "Validate" }],
+    }),
+  )
+  const receipt = reviewReceipt(result)
+  expect(receipt).toBe(
+    [
+      "Review requested changes",
+      "Two failures need repair",
+      "Finding 1 (high)",
+      "Problem/scenario: An empty input is supplied",
+      "Impact: The request crashes",
+      "Required fix: Handle empty input",
+      "Path: src/app.ts",
+      "Location: load()",
+      "Test gap: Add an empty-input test",
+      "Finding 2 (low)",
+      "Problem/scenario: Missing input",
+      "Impact: Fails",
+      "Required fix: Validate",
+      "Review target remained unchanged at verification. Review grants no mutation or Commit authority.",
+      "No repair or Commit has been authorized. A separate live Repair / Stop decision is available. Findings and receipts grant no authority.",
+    ].join("\n"),
+  )
+  expect(receipt).not.toContain(JSON.stringify(finding))
+  expect(receipt).not.toContain('"remediation":')
+  expect(receipt).not.toContain("undefined")
+})
 
 test("review rejects malformed, contradictory, ambiguous and unbounded results", () => {
   const good = { status: "APPROVED", summary: "Good", findings: [] }

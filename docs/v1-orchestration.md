@@ -290,10 +290,13 @@ one opaque pending Repair / Stop decision. Pending evidence grants nothing.
 The Authorize RPC and each Repair selection return a validated structured
 terminal outcome or a live decision presentation. The separate composer-top
 Repair surface retains pending ownership across navigation, requires new readable
-frames after remount/resize, and pages the original proposal/scope, exact target,
-Reviewer identity and findings. Repair is enabled only after every evidence page
-has a completed readable frame. Host keymap/dialog/focus behavior remains owned
-by OpenCode. Stale callbacks and lost responses never resend a selection.
+frames after remount/resize, and presents the verified review summary, actionable
+findings and original authorized paths. Paging is presentation only; Repair and
+Stop require a completed readable frame of the current page and actions, without
+requiring every page to be visited. Exact target and Reviewer identities remain
+bound in the trusted transport and server authority. Host keymap/dialog/focus
+behavior remains owned by OpenCode. Stale callbacks and lost responses never
+resend a selection.
 The client sends only the opaque decision ID and `Repair` or `Stop`.
 
 Stop retires that exact decision without a worker wake, mutation authority or

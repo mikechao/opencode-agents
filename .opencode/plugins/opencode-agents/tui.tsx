@@ -604,41 +604,28 @@ const plugin: Definition = {
         const [width, setWidth] = createSignal(context.renderer.terminalWidth)
         const [rows, setRows] = createSignal(Math.max(1, Math.min(10, context.renderer.terminalHeight - 10)))
         const [ready, setReady] = createSignal(false)
-        const [readAll, setReadAll] = createSignal(false)
-        const viewed = new Set<number>()
         let surface: Renderable | undefined
         let evidence: Renderable | undefined
         let question: Renderable | undefined
         const buttons: Renderable[] = []
         let proof: { width: number; height: number; frame: Renderable } | undefined
         // ASCII escaping prevents finding/proposal text from changing terminal
-        // geometry. Every page must have a completed readable frame before Repair.
+        // geometry. Paging is presentation only; selection requires a completed
+        // readable frame of the current page and actions.
         const content = [
-          `Verified CHANGES_REQUESTED: ${displayPath(captured.result.summary)}`,
-          `Worktree: ${displayPath(captured.candidate.root)}`,
-          `Original HEAD: ${captured.candidate.head}`,
-          "Original frozen proposal and exact path ceiling:",
-          `Intent: ${displayPath(captured.candidate.proposal.intent)}`,
-          `Plan: ${displayPath(captured.candidate.proposal.plan)}`,
-          `Authorized paths (${captured.candidate.proposal.files.length}):`,
+          `Verified review: ${displayPath(captured.result.summary)}`,
+          `Original authorized paths (${captured.candidate.proposal.files.length}):`,
           ...captured.candidate.proposal.files.map((path) => displayPath(path)),
-          `Reviewed target SHA-256: ${captured.target.digest}`,
-          `Reviewed changed paths (${captured.target.paths.length}):`,
-          ...captured.target.paths.map((path) => displayPath(path)),
-          `Reviewer message: ${displayPath(captured.reviewer.messageID)}`,
-          `Reviewer tool: ${displayPath(captured.reviewer.toolID)}`,
-          `Reviewer child: ${displayPath(captured.reviewer.childID)}`,
-          `Reviewer terminal result: ${displayPath(captured.reviewer.resultID)}`,
           ...captured.result.findings.flatMap((item, index) => [
             `Finding ${index + 1} (${item.severity}):`,
-            `Scenario: ${displayPath(item.scenario)}`,
+            `Problem: ${displayPath(item.scenario)}`,
             `Impact: ${displayPath(item.impact)}`,
-            `Remediation: ${displayPath(item.remediation)}`,
-            ...(item.path ? [`Diagnostic path: ${displayPath(item.path)}`] : []),
+            `Required fix: ${displayPath(item.remediation)}`,
+            ...(item.path ? [`Path: ${displayPath(item.path)}`] : []),
             ...(item.location ? [`Location: ${displayPath(item.location)}`] : []),
             ...(item.testGap ? [`Test gap: ${displayPath(item.testGap)}`] : []),
           ]),
-          "Findings grant no scope. Repair is one new human grant within the original proposal/paths. No Commit authority.",
+          "Repair stays within the original scope. No Commit authority.",
         ]
         const lines = () =>
           content.flatMap((line) => {
@@ -653,8 +640,7 @@ const plugin: Definition = {
             .slice(page() * rows(), (page() + 1) * rows())
             .join("\n")
         const evidenceHeight = () => Math.max(1, lines().slice(page() * rows(), (page() + 1) * rows()).length)
-        const questionText = () =>
-          `Review evidence ${page() + 1}/${pages()}. ${readAll() ? "Repair / Stop?" : "Read every page to enable Repair."}`
+        const questionText = () => `Repair or stop? Page ${page() + 1}/${pages()}`
         const invalidate = () => {
           proof = undefined
           setReady(false)
@@ -683,7 +669,7 @@ const plugin: Definition = {
           question!.width >= columns(questionText()) &&
           buttons.length === 4 &&
           buttons.every((button, index) => inViewport(button, 1) && button.width >= actions[index]!.length + 2)
-        const usable = (action: "Repair" | "Stop") => {
+        const usable = () => {
           repairCurrent(captured)
           if (!repairSelected()) return false
           if (!live(surface)) {
@@ -692,7 +678,6 @@ const plugin: Definition = {
           }
           return (
             ready() &&
-            (action === "Stop" || readAll()) &&
             !!proof &&
             proof.frame === (surface?.parent ?? surface) &&
             proof.width === context.renderer.terminalWidth &&
@@ -756,16 +741,12 @@ const plugin: Definition = {
             if (evidenceWidth === undefined || evidenceWidth <= 0 || !Number.isFinite(evidenceWidth)) return
             const nextRows = Math.max(1, Math.min(10, context.renderer.terminalHeight - 10))
             if (width() !== evidenceWidth || rows() !== nextRows) {
-              viewed.clear()
-              setReadAll(false)
               setPage(0)
               setWidth(evidenceWidth)
               setRows(nextRows)
               return
             }
             if (!valid()) return
-            viewed.add(page())
-            setReadAll(viewed.size === pages())
             proof = { width: context.renderer.terminalWidth, height: context.renderer.terminalHeight, frame }
             setReady(true)
           } catch (error) {

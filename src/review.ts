@@ -110,12 +110,22 @@ export function reviewerArguments(
 
 export function reviewReceipt(result: ReviewResult): string {
   return [
-    `Review ${result.status}.`,
+    result.status === "CHANGES_REQUESTED" ? "Review requested changes" : `Review ${result.status}.`,
     result.summary,
-    ...(result.status === "CHANGES_REQUESTED" ? result.findings.map((item) => JSON.stringify(item)) : []),
+    ...(result.status === "CHANGES_REQUESTED"
+      ? result.findings.flatMap((item, index) => [
+          `Finding ${index + 1} (${item.severity})`,
+          `Problem/scenario: ${item.scenario}`,
+          `Impact: ${item.impact}`,
+          `Required fix: ${item.remediation}`,
+          ...(item.path ? [`Path: ${item.path}`] : []),
+          ...(item.location ? [`Location: ${item.location}`] : []),
+          ...(item.testGap ? [`Test gap: ${item.testGap}`] : []),
+        ])
+      : []),
     "Review target remained unchanged at verification. Review grants no mutation or Commit authority.",
     result.status === "CHANGES_REQUESTED"
-      ? "Repair requires a separate live trusted human Repair decision. Findings and receipts grant no authority."
+      ? "No repair or Commit has been authorized. A separate live Repair / Stop decision is available. Findings and receipts grant no authority."
       : "This attempt ended before Commit.",
   ].join("\n")
 }
