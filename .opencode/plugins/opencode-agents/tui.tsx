@@ -2,10 +2,21 @@ import type { Definition } from "@opencode/plugin/tui/plugin"
 import type { OpenCodeEvent } from "@opencode/client"
 import type { Data } from "@opencode/client/solid"
 import type { Renderable, MouseEvent } from "@opentui/core"
-import { createEffect, createRenderEffect, createRoot, createSignal, onCleanup, untrack, Show } from "solid-js"
+import {
+  createEffect,
+  createMemo,
+  createRenderEffect,
+  createRoot,
+  createSignal,
+  onCleanup,
+  untrack,
+  Show,
+  For,
+} from "solid-js"
 import { displayPath } from "../../../src/proposal.ts"
 import { frozenCopy, type Generation } from "../../../src/cap.ts"
 import { registerAgentModels } from "./agent-models-ui.ts"
+import { repairProse } from "./repair-prose.ts"
 import { editRevision } from "./revision-editor.tsx"
 import { observeGit, requireFresh } from "../../../src/git.ts"
 import {
@@ -598,8 +609,8 @@ const plugin: Definition = {
       function RepairStrip(props: { decision: RepairDecision }) {
         const captured = props.decision
         const theme = context.theme
-        const actions = ["Repair", "Stop", "Previous", "Next"] as const
-        const [selected, setSelected] = createSignal<(typeof actions)[number]>("Stop")
+        const allActions = ["Repair", "Stop", "Previous", "Next"] as const
+        const [selected, setSelected] = createSignal<(typeof allActions)[number]>("Stop")
         const [page, setPage] = createSignal(0)
         const [width, setWidth] = createSignal(context.renderer.terminalWidth)
         const [rows, setRows] = createSignal(Math.max(1, Math.min(10, context.renderer.terminalHeight - 10)))
@@ -607,40 +618,55 @@ const plugin: Definition = {
         let surface: Renderable | undefined
         let evidence: Renderable | undefined
         let question: Renderable | undefined
-        const buttons: Renderable[] = []
+        const buttons = new Map<(typeof allActions)[number], Renderable>()
         let proof: { width: number; height: number; frame: Renderable } | undefined
-        // ASCII escaping prevents finding/proposal text from changing terminal
-        // geometry. Paging is presentation only; selection requires a completed
-        // readable frame of the current page and actions.
+        // Paths retain protocol escaping; prose is sanitized separately and
+        // paged by terminal columns. Selection requires a completed readable
+        // frame of the current page and rendered actions.
         const content = [
-          `Verified review: ${displayPath(captured.result.summary)}`,
+          `Verified review: ${repairProse(captured.result.summary)}`,
           `Original authorized paths (${captured.candidate.proposal.files.length}):`,
           ...captured.candidate.proposal.files.map((path) => displayPath(path)),
           ...captured.result.findings.flatMap((item, index) => [
             `Finding ${index + 1} (${item.severity}):`,
-            `Problem: ${displayPath(item.scenario)}`,
-            `Impact: ${displayPath(item.impact)}`,
-            `Required fix: ${displayPath(item.remediation)}`,
+            `Problem: ${repairProse(item.scenario)}`,
+            `Impact: ${repairProse(item.impact)}`,
+            `Required fix: ${repairProse(item.remediation)}`,
             ...(item.path ? [`Path: ${displayPath(item.path)}`] : []),
-            ...(item.location ? [`Location: ${displayPath(item.location)}`] : []),
-            ...(item.testGap ? [`Test gap: ${displayPath(item.testGap)}`] : []),
+            ...(item.location ? [`Location: ${repairProse(item.location)}`] : []),
+            ...(item.testGap ? [`Test gap: ${repairProse(item.testGap)}`] : []),
           ]),
           "Repair stays within the original scope. No Commit authority.",
         ]
-        const lines = () =>
+        const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" })
+        const lines = createMemo(() =>
           content.flatMap((line) => {
             const result: string[] = []
-            for (let offset = 0; offset < line.length; offset += Math.max(1, width()))
-              result.push(line.slice(offset, offset + Math.max(1, width())))
+            let current = ""
+            let columns = 0
+            for (const { segment } of graphemes.segment(line)) {
+              const size = Bun.stringWidth(segment)
+              if (current && columns + size > Math.max(1, width())) {
+                result.push(current)
+                current = ""
+                columns = 0
+              }
+              current += segment
+              columns += size
+            }
+            if (current) result.push(current)
             return result
-          })
-        const pages = () => Math.max(1, Math.ceil(lines().length / rows()))
+          }),
+        )
+        const pages = createMemo(() => Math.max(1, Math.ceil(lines().length / rows())))
+        const actions = createMemo(() => (pages() > 1 ? allActions : allActions.slice(0, 2)))
+        const selection = () => (actions().includes(selected()) ? selected() : "Stop")
         const evidenceText = () =>
           lines()
             .slice(page() * rows(), (page() + 1) * rows())
             .join("\n")
         const evidenceHeight = () => Math.max(1, lines().slice(page() * rows(), (page() + 1) * rows()).length)
-        const questionText = () => `Repair or stop? Page ${page() + 1}/${pages()}`
+        const questionText = () => (pages() > 1 ? `Repair or stop? Page ${page() + 1}/${pages()}` : "Repair or stop?")
         const invalidate = () => {
           proof = undefined
           setReady(false)
@@ -665,10 +691,15 @@ const plugin: Definition = {
           inViewport(surface, evidenceHeight() + 2) &&
           inViewport(evidence, evidenceHeight()) &&
           evidence!.width >= width() &&
+          evidenceText()
+            .split("\n")
+            .every((line) => Bun.stringWidth(line) <= evidence!.width) &&
           inViewport(question, 1) &&
           question!.width >= columns(questionText()) &&
-          buttons.length === 4 &&
-          buttons.every((button, index) => inViewport(button, 1) && button.width >= actions[index]!.length + 2)
+          actions().every((action) => {
+            const button = buttons.get(action)
+            return !!button && inViewport(button, 1) && button.width >= action.length + 2
+          })
         const usable = () => {
           repairCurrent(captured)
           if (!repairSelected()) return false
@@ -694,8 +725,8 @@ const plugin: Definition = {
           ready() &&
           !!proof &&
           valid()
-        const activate = (action: (typeof actions)[number]) => {
-          if (!keyboardUsable()) return
+        const activate = (action: (typeof allActions)[number]) => {
+          if (!keyboardUsable() || !actions().includes(action)) return
           if (action === "Previous" || action === "Next") {
             invalidate()
             setPage((value) => Math.max(0, Math.min(pages() - 1, value + (action === "Next" ? 1 : -1))))
@@ -710,17 +741,18 @@ const plugin: Definition = {
               bind: "left",
               title: "Previous Repair option",
               run: () => {
-                if (keyboardUsable()) setSelected((value) => actions[(actions.indexOf(value) + 3) % 4]!)
+                if (keyboardUsable())
+                  setSelected(actions()[(actions().indexOf(selection()) + actions().length - 1) % actions().length]!)
               },
             },
             {
               bind: "right",
               title: "Next Repair option",
               run: () => {
-                if (keyboardUsable()) setSelected((value) => actions[(actions.indexOf(value) + 1) % 4]!)
+                if (keyboardUsable()) setSelected(actions()[(actions().indexOf(selection()) + 1) % actions().length]!)
               },
             },
-            { bind: "return", title: "Select Repair option", run: () => activate(selected()) },
+            { bind: "return", title: "Select Repair option", run: () => activate(selection()) },
           ],
         }))
         const completedFrame = () => {
@@ -792,31 +824,33 @@ const plugin: Definition = {
               {questionText()}
             </text>
             <box flexDirection="row" height={1}>
-              {actions.map((action, index) => (
-                <box
-                  ref={(node) => {
-                    buttons[index] = node
-                  }}
-                  paddingX={1}
-                  flexShrink={0}
-                  backgroundColor={
-                    selected() === action
-                      ? theme.background.action.primary.focused
-                      : theme.background.action.secondary.base
-                  }
-                  onMouseUp={(event) => {
-                    if (event.button !== 0) return
-                    event.stopPropagation()
-                    activate(action)
-                  }}
-                >
-                  <text
-                    fg={selected() === action ? theme.text.action.primary.focused : theme.text.action.secondary.base}
+              <For each={actions()}>
+                {(action) => (
+                  <box
+                    ref={(node) => {
+                      buttons.set(action, node)
+                    }}
+                    paddingX={1}
+                    flexShrink={0}
+                    backgroundColor={
+                      selection() === action
+                        ? theme.background.action.primary.focused
+                        : theme.background.action.secondary.base
+                    }
+                    onMouseUp={(event) => {
+                      if (event.button !== 0) return
+                      event.stopPropagation()
+                      activate(action)
+                    }}
                   >
-                    {action}
-                  </text>
-                </box>
-              ))}
+                    <text
+                      fg={selection() === action ? theme.text.action.primary.focused : theme.text.action.secondary.base}
+                    >
+                      {action}
+                    </text>
+                  </box>
+                )}
+              </For>
             </box>
           </box>
         )

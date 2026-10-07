@@ -9990,6 +9990,16 @@ snapshotTest(
     const root = snapshotFixture(observer),
       f = fake(root)
     const first = tuiRepairOutcome(root)
+    first.decision = {
+      ...first.decision,
+      result: {
+        status: "CHANGES_REQUESTED",
+        summary: "A bounded fix is needed.",
+        findings: [
+          { severity: "high", scenario: "Fails", impact: "Incorrect output", remediation: "Fix within scope" },
+        ],
+      },
+    }
     f.options.onAuthorize = async () => {
       f.inboxes.parent.splice(0)
       return first
@@ -10000,7 +10010,7 @@ snapshotTest(
     initial.click(0)
     await settleUntil(() => f.slots.length === 2)
     const review = mount(f, "parent", false)
-    expect(review.buttons).toHaveLength(4)
+    expect(review.buttons).toHaveLength(2)
     review.click(0)
     expect(f.calls.repairs).toEqual([])
     f.renderer.emit("frame")
@@ -10009,6 +10019,16 @@ snapshotTest(
     expect(review.text()).not.toContain("Reviewed target SHA-256")
     expect(review.text()).not.toContain("Reviewer message")
     expect(review.text()).not.toContain("Read every page")
+    expect(review.text()).not.toContain("Page 1/1")
+    expect(review.text()).not.toContain("Previous")
+    expect(review.text()).not.toContain("Next")
+    // Proof checks the controls actually rendered, even on a one-page surface.
+    review.buttons[1].width = 1
+    f.renderer.emit("frame")
+    review.click(0)
+    expect(f.calls.repairs).toEqual([])
+    review.buttons[1].width = 13
+    f.renderer.emit("frame")
     review.click(0, 2)
     expect(f.calls.repairs).toEqual([])
     review.click(0)

@@ -3,7 +3,7 @@ import { createSignal, For, createComponent, ErrorBoundary } from "solid-js"
 import { render } from "@opentui/solid"
 import { createTestRenderer } from "@opentui/core/testing"
 import { makeCandidate, parseProposal } from "../../src/proposal.ts"
-import { checkedCycleOutcome } from "../../src/authorize-rpc.ts"
+import { checkedCycleOutcome, type RepairDecision } from "../../src/authorize-rpc.ts"
 
 const directory = process.cwd()
 const head = "a".repeat(40)
@@ -19,7 +19,7 @@ const candidate = makeCandidate(
   directory,
   head,
 )
-const decision = {
+const decision: RepairDecision = {
   id: "repair-decision",
   rootSessionID: "root",
   rootIdleID: "msg_review-idle",
@@ -48,6 +48,21 @@ const decision = {
   },
   reviewer: { messageID: "review-message", toolID: "review-tool", childID: "review-child", resultID: "review-result" },
   receipts: [{ id: "msg_review-receipt", text: "Verified factual review receipt." }],
+}
+const singleDecision: RepairDecision = {
+  ...decision,
+  result: {
+    status: "CHANGES_REQUESTED",
+    summary: "Missing “line two”.",
+    findings: [
+      {
+        severity: "medium",
+        scenario: "“Line one”\u202e is last.",
+        impact: "Incomplete.",
+        remediation: "Append “line two”.",
+      },
+    ],
+  },
 }
 let currentDecision = decision
 let authorizeReply = Promise.resolve()
@@ -214,7 +229,7 @@ const key = (bind: string) =>
     .run()
 const clickAction = async (action: string) => {
   const rows = t.captureCharFrame().split("\n")
-  const y = rows.findIndex((row) => row.includes("Repair  Stop  Previous  Next"))
+  const y = rows.findIndex((row) => row.includes("Repair  Stop"))
   expect(y).toBeGreaterThanOrEqual(0)
   const x = rows[y]!.indexOf(action)
   expect(x).toBeGreaterThanOrEqual(0)
@@ -238,6 +253,11 @@ try {
       "normal",
       "mouse-stop",
       "paging-repair",
+      "single-right-stop",
+      "single-left-stop",
+      "single-repair",
+      "single-mouse-stop",
+      "resize-controls",
       "authorize-newer",
       "authorize-unproven",
       "repair-newer",
@@ -253,7 +273,13 @@ try {
       layers.splice(0)
       selections.splice(0)
       toasts.splice(0)
-      currentDecision = decision
+      const single = scenario.startsWith("single-")
+      currentDecision = single || scenario === "resize-controls" ? singleDecision : decision
+      if (scenario === "resize-controls")
+        currentDecision = {
+          ...singleDecision,
+          result: { ...singleDecision.result, summary: "Review café 😀 " + "界".repeat(70) },
+        }
       authorizing = false
       repairing = false
       let releaseAuthorize!: () => void
@@ -322,11 +348,87 @@ try {
       })
       expect(toasts).toEqual([])
       expect(claims()).toHaveLength(1)
+      if (scenario === "resize-controls") {
+        // Narrow Unicode evidence needs paging; widening removes it. A selected
+        // paging action must fall back to Stop after the actual controls change.
+        if (t.renderer.terminalWidth !== 50) {
+          t.resize(50, 24)
+          expect(layers.at(-1)().enabled()).toBe(false)
+        }
+        await frames(5)
+        expect(t.captureCharFrame()).toContain("Repair  Stop  Previous  Next")
+        expect(t.captureCharFrame()).toMatch(/Repair or stop\? Page 1\/[2-9]/)
+        expect(layers.at(-1)().enabled()).toBe(true)
+        key("right")
+        key("right") // Next
+        t.resize(248, 58)
+        expect(layers.at(-1)().enabled()).toBe(false)
+        key("return")
+        await drain()
+        expect(selections).toEqual([])
+        await frames(5)
+        expect(t.captureCharFrame()).not.toContain("Previous")
+        expect(t.captureCharFrame()).not.toContain("Next")
+        expect(t.captureCharFrame()).not.toContain("Page 1/1")
+        expect(layers.at(-1)().enabled()).toBe(true)
+        key("return")
+        await drain()
+        expect(selections).toEqual([{ decisionID: decision.id, action: "Stop" }])
+        expect(repairing).toBe(false)
+        continue
+      }
+      if (single) {
+        const frame = t.captureCharFrame()
+        expect(frame).toContain("Repair  Stop")
+        expect(frame).not.toContain("Previous")
+        expect(frame).not.toContain("Next")
+        expect(frame).not.toContain("Page 1/1")
+        expect(
+          frame
+            .split("\n")
+            .find((row) => row.includes("Repair or stop?"))!
+            .trim(),
+        ).toBe("Repair or stop?")
+        expect(frame).toContain('Missing "line two".')
+        expect(frame).toContain('Problem: "Line one"\\u202e is last.')
+        expect(frame).not.toContain("\\u201c")
+        expect(frame).not.toContain("\\u201d")
+        expect(frame).not.toContain("\u202e")
+        expect(layers.at(-1)().enabled()).toBe(true)
+        if (scenario === "single-mouse-stop") await clickAction("Stop")
+        else {
+          const direction = scenario === "single-left-stop" ? "left" : "right"
+          key(direction)
+          key(direction)
+          if (scenario === "single-repair") {
+            key(direction) // Three steps from Stop must select Repair.
+            currentDecision = { ...singleDecision, id: "single-next" }
+          }
+          key("return")
+        }
+        await drain()
+        expect(selections).toEqual([
+          {
+            decisionID: decision.id,
+            action: scenario === "single-repair" ? "Repair" : "Stop",
+          },
+        ])
+        if (scenario === "single-repair") {
+          releaseRepair()
+          await drain()
+          await frames()
+          await clickAction("Stop")
+          await drain()
+          expect(selections.at(-1)).toEqual({ decisionID: "single-next", action: "Stop" })
+        } else expect(repairing).toBe(false)
+        expect(claims()).toHaveLength(0)
+        continue
+      }
       expect(t.captureCharFrame()).toContain("Repair  Stop  Previous  Next")
       expect(layers.at(-1)().enabled()).toBe(true)
       expect(t.captureCharFrame()).toMatch(/Repair or stop\? Page 1\/[2-9]/)
       expect(t.captureCharFrame()).toContain("Original authorized paths (1):")
-      expect(t.captureCharFrame()).toContain('Required fix: "Append line two."')
+      expect(t.captureCharFrame()).toContain("Required fix: Append line two.")
       expect(t.captureCharFrame()).not.toContain("Read every page")
       expect(t.captureCharFrame()).not.toContain("SHA-256")
       expect(t.captureCharFrame()).not.toContain("review-message")
