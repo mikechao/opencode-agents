@@ -26,6 +26,9 @@ Use the following groups to find evidence; this is not an exhaustive file index.
   preserve observed outcomes, rejected target/commit designs and the distinction
   between ordinary child capability and CAP admission. Old dogfood reports apply
   only to their recorded implementation and host versions.
+  [Issue #22 Commit authority inspection](issue-22-commit-authority-inspection.md)
+  records why direct implementation, separate Commit authority and structured Git
+  enforcement fit the existing runtime, including the staging fingerprint transition.
 - **Authorization and presentation:** [published-Plan authorization](published-plan-authorization-investigation.md),
   the `native-*` UX reports, [hybrid decision](hybrid-authorization-ux-decision.md),
   [transcript projection](trusted-transcript-projection-investigation.md) and
